@@ -583,9 +583,14 @@ class LammpsScriptGenerator(QMainWindow):
         try:
             with open(data_file, 'r') as f:
                 for line in f:
-                    if line.strip().startswith("units"):
-                        # Extract units value (format: units <value>)
-                        parts = line.split()
+                    # Check for units in various formats
+                    line = line.strip()
+                    if line.startswith("units") or line.startswith("units ="):
+                        # Extract units value (formats: units <value> or units = <value>)
+                        if "=" in line:
+                            parts = line.split("=", 1)
+                        else:
+                            parts = line.split(None, 1)
                         if len(parts) > 1:
                             units = parts[1].strip()
                             return units
@@ -598,12 +603,28 @@ class LammpsScriptGenerator(QMainWindow):
         try:
             with open(data_file, 'r') as f:
                 for line in f:
-                    if line.strip().startswith("atom_style"):
-                        # Extract atom style value (format: atom_style <value>)
-                        parts = line.split()
+                    # Check for atom style in various formats
+                    line = line.strip()
+                    if line.startswith("atom_style") or line.startswith("atom_style ="):
+                        # Extract atom style value (formats: atom_style <value> or atom_style = <value>)
+                        if "=" in line:
+                            parts = line.split("=", 1)
+                        else:
+                            parts = line.split(None, 1)
                         if len(parts) > 1:
                             atom_style = parts[1].strip()
                             return atom_style
+                    # Also check for "Atoms # atomstyle" format
+                    elif line.startswith("Atoms") and "#" in line:
+                        # Format: Atoms # atomstyle
+                        parts = line.split("#")
+                        if len(parts) > 1:
+                            atom_style_part = parts[1].strip()
+                            if atom_style_part.startswith("atomstyle"):
+                                style_parts = atom_style_part.split(None, 1)
+                                if len(style_parts) > 1:
+                                    atom_style = style_parts[1].strip()
+                                    return atom_style
         except Exception as e:
             print(f"Error reading atom style from data file: {e}")
         return None

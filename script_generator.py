@@ -680,7 +680,7 @@ class LammpsScriptGenerator:
                             script_lines.extend([
                                 f"echo 'Running simulation: {model_name}'",
                                 f"cd {sim_directory}",
-                                f"{command_prefix}echo 'Running LAMMPS simulation: {model_name}' && lmp -in {model_name}.in && echo 'Completed: {model_name}' && cd ../../{command_suffix}",
+                                f"{command_prefix}lmp -in {model_name}.in{command_suffix}",
                                 f"echo 'Started simulation in new terminal: {model_name}'",
                                 f"cd ../../",  # Go back to root directory
                                 ""
@@ -689,7 +689,7 @@ class LammpsScriptGenerator:
                             script_lines.extend([
                                 f"echo 'Running simulation: {model_name}'",
                                 f"cd {sim_directory}",
-                                f"{command_prefix}echo 'Running LAMMPS simulation: {model_name}' && lmp -in {model_name}.in && echo 'Completed: {model_name}' && cd ../../{command_suffix}",
+                                f"{command_prefix}lmp -in {model_name}.in{command_suffix}",
                                 f"echo 'Started simulation in new terminal: {model_name}'",
                                 f"cd ../../",  # Go back to root directory
                                 ""
@@ -842,9 +842,9 @@ class LammpsScriptGenerator:
                     input_file_path = f"{study_name}/{system_name}/{model_name}.in"
                     
                     script_lines.extend([
-                        "echo 'Submitting job for simulation: {model_name}'",
-                        "sbatch --export=INPUT_FILE='{input_file_path}' lammps_simulation.job",
-                        "echo 'Job submitted for: {model_name}'",
+                        f"echo 'Submitting job for simulation: {model_name}'",
+                        f"sbatch --export=INPUT_FILE='{input_file_path}' lammps_simulation.job",
+                        f"echo 'Job submitted for: {model_name}'",
                         ""
                     ])
             
