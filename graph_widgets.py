@@ -349,11 +349,17 @@ class GraphWidget(QWidget):
             if self._dragged_handle_index is None:
                 self._dragged_segment_index = self._get_segment_at(self._drag_start_pos_widget)
                 if self._dragged_segment_index is not None:
-                    # Check if this segment is fixed, which would prevent moving it
-                    if self._dragged_segment_index in self._fixed_segments:
+                    # Check if adjacent segments are fixed, which would constrain movement
+                    i = self._dragged_segment_index
+                    prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
+                    next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
+                    
+                    # Cannot move segment if either adjacent segment is fixed
+                    if prev_segment_fixed or next_segment_fixed:
                         self._dragged_segment_index = None
                         return
-                    i = self._dragged_segment_index; p1_w = self._norm_to_widget(self.points_norm[i])
+                        
+                    p1_w = self._norm_to_widget(self.points_norm[i])
                     self._drag_mouse_to_p1_offset = self._drag_start_pos_widget - p1_w
                     self._segment_drag_offset_norm = self.points_norm[i+1] - self.points_norm[i]
         elif event.button() == Qt.MouseButton.RightButton:
@@ -544,11 +550,16 @@ class GraphWidget(QWidget):
             self._sort_points()
             self._dragged_handle_index = self.points_norm.index(final_p_norm)
         elif self._dragged_segment_index is not None:
-            # Check if this segment is fixed, which would prevent moving it
-            if self._dragged_segment_index in self._fixed_segments:
+            i = self._dragged_segment_index
+            
+            # Check if adjacent segments are fixed, which would constrain movement
+            prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
+            next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
+            
+            # Cannot move segment if either adjacent segment is fixed
+            if prev_segment_fixed or next_segment_fixed:
                 return
                 
-            i = self._dragged_segment_index
             if i == 0:
                 p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
                 p1_new_norm.setX(0)  # Ensure first point stays at x=0
@@ -602,11 +613,15 @@ class GraphWidget(QWidget):
             self._sort_points()
             
         elif self._dragged_segment_index is not None:
-            # Check if this segment is fixed, which would prevent moving it
-            if self._dragged_segment_index in self._fixed_segments:
+            # Check if adjacent segments are fixed, which would constrain movement
+            i = self._dragged_segment_index
+            prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
+            next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
+            
+            # Cannot move segment if either adjacent segment is fixed
+            if prev_segment_fixed or next_segment_fixed:
                 return
                 
-            i = self._dragged_segment_index
             if i < len(self.points_norm) - 1:
                 # Apply grid snapping when releasing, EXCEPT when the segment itself is fixed
                 # Grid snapping should ONLY NOT be applied when a node is moved while adjacent slope is fixed
@@ -723,17 +738,46 @@ class StudyWidget(QWidget):
         controls_layout.addWidget(self.min_strain_spinbox)
         controls_layout.addWidget(self.max_strain_spinbox)
         
-        # Add deformation direction fields to the top row (initially hidden)
-        self.deform_axis_label = QLabel("Deformation Direction:")
+        self.deform_axis_label = QLabel("<b>Deform Direction:</b>")
         self.deform_axis_combo = QComboBox()
         self.deform_axis_combo.addItems(["x", "y", "z"])
-        self.deform_axis_combo.setMinimumWidth(40)
-        self.deform_axis_combo.setMaximumWidth(70)
+        self.deform_axis_combo.setMinimumWidth(30)
+        self.deform_axis_combo.setMaximumWidth(40)
         self.deform_axis_label.setVisible(False)
         self.deform_axis_combo.setVisible(False)
+        self.deform_axis_combo.setStyleSheet(""" 
+            QComboBox {
+                combobox-popup: 0;
+            }
+            QComboBox QAbstractItemView {
+                background-color: white;
+                selection-background-color: #007acc;
+                selection-color: white;
+            }
+        """)
+
+        self.deform_scenario_label = QLabel("<b>Deform Scenario:</b>")
+        self.deform_scenario_combo = QComboBox()
+        self.deform_scenario_combo.addItems(["symmetric", "shift hi, fix lo", "shift lo, fix hi"])
+        self.deform_scenario_label.setVisible(False)
+        self.deform_scenario_combo.setVisible(False)
+        self.deform_scenario_combo.setStyleSheet(""" 
+            QComboBox {
+                combobox-popup: 0;
+            }
+            QComboBox QAbstractItemView {
+                background-color: white;
+                selection-background-color: #007acc;
+                selection-color: white;
+            }
+        """)
         
+        controls_layout.addSpacing(5)
         controls_layout.addWidget(self.deform_axis_label)
         controls_layout.addWidget(self.deform_axis_combo)
+        controls_layout.addSpacing(5)
+        controls_layout.addWidget(self.deform_scenario_label)
+        controls_layout.addWidget(self.deform_scenario_combo)
         
         controls_layout.addStretch()  # Push buttons to the right
         # Add buttons with right alignment
@@ -1201,6 +1245,7 @@ class StudyWidget(QWidget):
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
             'deform_axis': self.deform_axis_combo.currentText(),
+            'deform_scenario': self.deform_scenario_combo.currentText(),
             'mode': self.mode,
             'fixed_segments': list(self.graph_widget._fixed_segments),  # Save fixed segments
             'ensemble': {
@@ -1244,6 +1289,7 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.setValue(state.get('min_strain', 0.0))
         self.max_strain_spinbox.setValue(state.get('max_strain', 1.0))
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
+        self.deform_scenario_combo.setCurrentText(state.get('deform_scenario', 'symmetric'))
 
         self.set_mode(state.get('mode', 'Deformation'))
 
@@ -1381,6 +1427,8 @@ class StudyWidget(QWidget):
         # Show/hide deformation direction fields based on mode
         self.deform_axis_label.setVisible(not is_temp_mode)
         self.deform_axis_combo.setVisible(not is_temp_mode)
+        self.deform_scenario_label.setVisible(not is_temp_mode)
+        self.deform_scenario_combo.setVisible(not is_temp_mode)
 
         self.graph_widget.set_mode(mode)
 

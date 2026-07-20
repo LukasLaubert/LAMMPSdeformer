@@ -424,9 +424,19 @@ class LammpsScriptGenerator:
                         new_lo_var = f"{deform_axis}lo_target_{i+1}"
                         new_hi_var = f"{deform_axis}hi_target_{i+1}"
                         
-                        script_lines.append(f"# Target engineering strain: {end_y:.6f}")
-                        script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_y}) / 2\"")
-                        script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_y}) / 2\"")
+                        deform_scenario = deform_study.get("deform_scenario", "symmetric")
+                        script_lines.append(f"# Target engineering strain: {end_y:.6f}, Scenario: {deform_scenario}")
+
+                        if deform_scenario == "shift hi, fix lo":
+                            script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0\"")
+                            script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_y})\"")
+                        elif deform_scenario == "shift lo, fix hi":
+                            script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_y})\"")
+                            script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0\"")
+                        else:  # symmetric
+                            script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_y}) / 2\"")
+                            script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_y}) / 2\"")
+                        
                         script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
 
                         if abs(y_change) > 1e-12:
