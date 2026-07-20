@@ -326,8 +326,9 @@ class StudyWidget(QWidget):
         
         self.deform_axis_combo = QComboBox()
         self.deform_axis_combo.addItems(["x", "y", "z"])
-        self.deform_axis_combo.setMinimumWidth(100)  # Increase horizontal size
-        bottom_controls_layout.addWidget(QLabel("Deformation Axis:"))
+        self.deform_axis_combo.setMinimumWidth(50)  # Reduce horizontal size
+        self.deform_axis_combo.setMaximumWidth(70)  # Set maximum width
+        bottom_controls_layout.addWidget(QLabel("Deformation Direction:"))
         bottom_controls_layout.addWidget(self.deform_axis_combo)
         
         bottom_controls_layout.addStretch()
@@ -393,9 +394,9 @@ class StudyWidget(QWidget):
         self.redo_button.clicked.connect(self.redo)
 
         self.graph_widget.dataChanged.connect(self._save_state_for_undo)
-        self.max_steps_spinbox.editingFinished.connect(self._save_state_for_undo)
-        self.min_strain_spinbox.editingFinished.connect(self._save_state_for_undo)
-        self.max_strain_spinbox.editingFinished.connect(self._save_state_for_undo)
+        self.max_steps_spinbox.valueChanged.connect(self._save_state_for_undo)
+        self.min_strain_spinbox.valueChanged.connect(self._save_state_for_undo)
+        self.max_strain_spinbox.valueChanged.connect(self._save_state_for_undo)
 
         self.update_undo_redo_buttons()
 
@@ -507,10 +508,14 @@ class DeformationTab(QWidget):
         self._add_study(is_first=True)
 
     def _create_summary_area(self, layout):
-        layout.addWidget(QLabel("<h3>Segment Summaries</h3>"))
-        scroll_area = QScrollArea(); scroll_area.setWidgetResizable(True)
-        self.summary_container = QWidget(); self.summary_layout = QVBoxLayout(self.summary_container)
-        scroll_area.setWidget(self.summary_container); layout.addWidget(scroll_area)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        self.summary_container = QWidget()
+        self.summary_layout = QVBoxLayout(self.summary_container)
+        self.summary_layout.setSpacing(10)  # Add some spacing between summaries
+        self.summary_layout.setContentsMargins(5, 5, 5, 5)  # Add some margins
+        scroll_area.setWidget(self.summary_container)
+        layout.addWidget(scroll_area)
 
     def _add_study(self, is_first=False):
         initial_state = self.tab_widget.currentWidget().get_state() if not is_first and self.tab_widget.count() > 0 else None
@@ -605,6 +610,7 @@ class DeformationTab(QWidget):
             study_widget = self.tab_widget.widget(i)
             self.summary_layout.addWidget(QLabel(f"<b>Summary for {self.tab_widget.tabText(i)}</b>"))
             summary_text = QTextEdit(readOnly=True, font=QFont("Courier New", 10))
+            summary_text.setFixedHeight(200)  # Set a fixed height to prevent scrolling
             summary_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             summary_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             points = study_widget.graph_widget.get_data_points()
@@ -623,8 +629,6 @@ class DeformationTab(QWidget):
                         break
                 lines.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
             summary_text.setText("\n".join(lines))
-            summary_text.document().adjustSize()
-            summary_text.setFixedHeight(int(summary_text.document().size().height() + 5))
             self.summary_layout.addWidget(summary_text)
         self.summary_layout.addStretch()
 

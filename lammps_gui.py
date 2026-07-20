@@ -26,7 +26,8 @@ try:
                                 QGroupBox, QFormLayout, QRadioButton, QButtonGroup, QScrollArea,
                                 QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
                                 QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-                                QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate)
+                                QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate,
+                                QListWidget)
     from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF
     from PyQt6.QtGui import QIcon, QDesktopServices, QCursor, QPalette, QColor
     
@@ -565,7 +566,7 @@ class LammpsScriptGenerator(QMainWindow):
         fixes_layout.addWidget(scroll)
 
         # Bond breakage settings
-        bond_breakage_group = InfoGroupBox("Bond Breakage Settings", "bond_break")
+        bond_breakage_group = InfoGroupBox("Bond Breakage Settings", "fix_bond_break")
         bond_breakage_layout = QVBoxLayout()
 
         self.enable_bond_breakage = QCheckBox("Enable Bond Breakage")
@@ -639,7 +640,7 @@ class LammpsScriptGenerator(QMainWindow):
 
         self.custom_fixes_text = QTextEdit()
         self.custom_fixes_text.setPlaceholderText("Enter custom fix commands here...")
-        self.custom_fixes_text.setMaximumHeight(100)
+        self.custom_fixes_text.setMaximumHeight(100)  # Reduce height to match other custom sections
         self.custom_fixes_text.setEnabled(False)
         self.custom_fixes_text.setToolTip("Custom LAMMPS fix commands")
 
@@ -1162,22 +1163,16 @@ class LammpsScriptGenerator(QMainWindow):
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
         
-        # Stress calculations
-        stress_group = InfoGroupBox("Stress Calculations", "compute_stress_atom")
-        stress_layout = QVBoxLayout()
-        
-        self.enable_stress = QCheckBox("Enable Stress Calculations")
-        self.enable_stress.setChecked(True)
-        self.enable_stress.setToolTip("Enable stress tensor calculations")
-        self.enable_stress.stateChanged.connect(self.toggle_stress_settings)
-        
-        stress_layout.addWidget(self.enable_stress)
-        stress_group.setLayout(stress_layout)
-        scroll_layout.addWidget(stress_group)
-        
         # Custom computes
         custom_computes_group = InfoGroupBox("Custom Computes", "compute")
         custom_computes_layout = QVBoxLayout()
+        
+        # Add compute commands button
+        compute_commands_layout = QHBoxLayout()
+        self.compute_commands_button = QPushButton("Add Compute Command")
+        self.compute_commands_button.clicked.connect(self.show_compute_commands_dialog)
+        compute_commands_layout.addWidget(self.compute_commands_button)
+        compute_commands_layout.addStretch()
         
         self.enable_custom_computes = QCheckBox("Enable Custom Computes")
         self.enable_custom_computes.setChecked(False)
@@ -1190,6 +1185,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.custom_computes_text.setEnabled(False)
         self.custom_computes_text.setToolTip("Custom LAMMPS compute commands")
         
+        custom_computes_layout.addLayout(compute_commands_layout)
         custom_computes_layout.addWidget(self.enable_custom_computes)
         custom_computes_layout.addWidget(self.custom_computes_text)
         custom_computes_group.setLayout(custom_computes_layout)
@@ -1363,6 +1359,51 @@ class LammpsScriptGenerator(QMainWindow):
         """Toggle custom computes settings based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         self.custom_computes_text.setEnabled(enabled)
+        
+    def show_compute_commands_dialog(self):
+        """Show dialog with common compute commands"""
+        commands = [
+            "compute ke all ke/atom",
+            "compute pe all pe/atom",
+            "compute stress all stress/atom NULL",
+            "compute temp all temp",
+            "compute pressure all pressure",
+            "compute msd all msd"
+        ]
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Compute Command")
+        dialog.setMinimumSize(300, 200)
+        
+        layout = QVBoxLayout()
+        
+        list_widget = QListWidget()
+        for command in commands:
+            list_widget.addItem(command)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        
+        layout.addWidget(list_widget)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_items = list_widget.selectedItems()
+            if selected_items:
+                command = selected_items[0].text()
+                # Enable the custom computes checkbox if it's not already enabled
+                if not self.enable_custom_computes.isChecked():
+                    self.enable_custom_computes.setChecked(True)
+                
+                # Add the command to the text field
+                current_text = self.custom_computes_text.toPlainText()
+                if current_text:
+                    self.custom_computes_text.setPlainText(current_text + "\n" + command)
+                else:
+                    self.custom_computes_text.setPlainText(command)
     
     def toggle_custom_dumps(self, state):
         """Toggle custom dumps settings based on checkbox state"""
