@@ -96,6 +96,11 @@ class LammpsScriptGenerator:
             data_files_folder = os.path.join(root_simulation_dir, "input_files")
             os.makedirs(data_files_folder, exist_ok=True)
             
+            # Generate base settings file
+            base_settings_result = self.generate_base_settings_file(root_simulation_dir)
+            if not base_settings_result["success"]:
+                return base_settings_result
+            
             # Copy all data files to input_files
             data_file_dest_paths = {}
             for i, system_file in enumerate(system_files):
@@ -233,9 +238,6 @@ class LammpsScriptGenerator:
             system_config = self.config.get("system", {})
             fixes_config = self.config.get("fixes", {})
             output_config = self.config.get("output", {})
-            job_submission_config = self.config.get("job_submission", {})
-            
-            units = system_config.get("units", "metal")
             
             script_lines = [
                 f"# {model_name}.in",
@@ -243,99 +245,101 @@ class LammpsScriptGenerator:
                 ""
             ]
             
-            # Basic LAMMPS settings
+            # Include the base settings
             script_lines.extend([
                 "#------------------------",
-                "# Basic LAMMPS settings",
+                "# Base settings",
                 "#------------------------",
-                f"units {units}",
-                f"atom_style {system_config.get('atom_style', 'atomic')}",
-                "processors * * *",
-                "dimension 3",
-                f"boundary {system_config.get('boundary_x', 'p')} {system_config.get('boundary_y', 'p')} {system_config.get('boundary_z', 'p')}",
+                "include ../../base_input.in",
                 ""
             ])
             
-            # Read data and set (optional) potentials
-            script_lines.extend([
-                "#------------------------",
-                "# Read data and set (optional) potentials",
-                "#------------------------"
-            ])
-
-            if job_submission_config.get("enable_restart", False):
-                script_lines.extend([
-                    'variable restart_file string "positions.restart"',
-                    'if "${restart} == TRUE" then &',
-                    '    "read_restart ${restart_file}" & ',
-                    'else & ',
-                    f'   "read_data ../../{data_file}"'
-                ])
-            else:
-                script_lines.append(f"read_data ../../{data_file}")
+            # For restart functionality, we need to conditionally read either restart or data files
+            job_submission_config = self.config.get("job_submission", {})
+            enable_restart = job_submission_config.get("enable_restart", False)
             
-            if system_config.get("use_potential_file", False):
-                potential_file = system_config.get("potential_file", "")
-                if potential_file:
-                    potential_name = Path(potential_file).name
-                    potential_path = (Path("input_files") / potential_name).as_posix()
-                    script_lines.append(f"include ../../{potential_path}")
-            script_lines.append("")
-            
-            # Neighbor settings & atom images
-            neighbor_distance = system_config.get("neighbor_distance", 0.3)
-            neigh_modify_every = system_config.get("neigh_modify_every", 1)
-            neigh_modify_delay = system_config.get("neigh_modify_delay", 10)
-            neigh_modify_check = system_config.get("neigh_modify_check", True)
-            
-            script_lines.extend([
-                "#------------------------",
-                "# Neighbor settings & atom images",
-                "#------------------------",
-                "reset_atoms image all",
-                f"neighbor {neighbor_distance} bin",
-                f"neigh_modify every {neigh_modify_every} delay {neigh_modify_delay} {'check yes' if neigh_modify_check else 'check no'}",
-                ""
-            ])
-
-            if job_submission_config.get("enable_restart", False):
+            # Add start settings if restart is enabled (before data/potential)
+            if enable_restart:
                 restart_freq = job_submission_config.get("restart_freq", 1000)
-                halt_freq = job_submission_config.get("halt_freq", 100)
+                halt_freq = job_submission_config.get("halt_freq", 100)  # Default to 100
+                max_time_buffer = job_submission_config.get("max_time_buffer", 600)  # Default 10 minutes
+                
+                # Create restart_files directory and add start settings
                 script_lines.extend([
                     "#------------------------",
-                    "# Restart settings",
+                    "# Start settings",
                     "#------------------------",
-                    f"restart {restart_freq} positions.restart",
-                    f'fix stop all halt {halt_freq} tlimit > ${{maxtime}}',
+                    "# Create directory for restart files",
+                    "shell \"mkdir -p restart_files\"",
+                    f"restart {restart_freq} restart_files/{model_name}.restart.*",
                     ""
                 ])
-
-            # Ensemble settings
+                
+                # Add conditional read commands (replacing the read_data command)
+                script_lines.extend([
+                    "# Conditional read based on restart flag",
+                    f"if \"${{restart}}==TRUE\" then &",
+                    f"    \"read_restart restart_files/{model_name}.restart.*\" &",
+                    f"else &",
+                    f"    \"read_data ../../{data_file}\"",
+                    ""
+                ])
+                
+                # Add potential file include after the conditional logic if needed
+                if system_config.get("use_potential_file", False):
+                    potential_file = system_config.get("potential_file", "")
+                    if potential_file:
+                        potential_name = Path(potential_file).name
+                        potential_path = (Path("input_files") / potential_name).as_posix()
+                        script_lines.extend([
+                            f"include ../../{potential_path}",
+                            ""
+                        ])
+                
+                # Add the halt check command after the potential file is included
+                # This ensures it's not started before the simulation box is loaded
+                script_lines.extend([
+                    "# Halt check: stop simulation before walltime limit to allow for restart",
+                    "# The maxtime variable will be passed from the job script when running with -var maxtime",
+                    f"fix stop_early all halt {halt_freq} tlimit > ${{maxtime}}",
+                    ""
+                ])
+            else:
+                # For non-restart case, read data and potential directly
+                script_lines.extend([
+                    "#------------------------",
+                    "# Read data and set (optional) potentials",
+                    "#------------------------",
+                    f"read_data ../../{data_file}"
+                ])
+                
+                if system_config.get("use_potential_file", False):
+                    potential_file = system_config.get("potential_file", "")
+                    if potential_file:
+                        potential_name = Path(potential_file).name
+                        potential_path = (Path("input_files") / potential_name).as_posix()
+                        script_lines.append(f"include ../../{potential_path}")
+                script_lines.append("")
+            
+            # Ensemble settings (specific to each study)
             ensemble_config = deform_study.get("ensemble", {})
             ensemble = ensemble_config.get("ensemble", "NVT")
             temp = ensemble_config.get("temperature", 300.0)
             pressure = ensemble_config.get("pressure", 1.0)
             
-            script_lines.extend([
-                "#------------------------",
-                "# Ensemble settings",
-                "#------------------------"
-            ])
-            
+            # Velocity settings (specific to each study)
             if system_config.get("enable_velocity", True):
+                script_lines.extend([
+                    "#------------------------",
+                    "# Ensemble settings (per study)",
+                    "#------------------------"
+                ])
                 initial_velocity_seed = system_config.get("initial_velocity_seed", 12345)
                 script_lines.extend([
                     "# Initial velocity",
                     f"velocity all create {temp} {initial_velocity_seed} mom yes rot yes dist gaussian",
                     ""
                 ])
-            
-            timestep = system_config.get("timestep", 0.001)
-            script_lines.extend([
-                "# Timestep",
-                f"timestep {timestep}",
-                ""
-            ])
             
             # Bond breakage if enabled (per study)
             bond_breakage_config = deform_study.get("bond_breakage", {})
@@ -358,50 +362,59 @@ class LammpsScriptGenerator:
                     ""
                 ])
 
-            # Output settings
+            # Additional output settings specific to this study
             thermo_output_freq = output_config.get("thermo_freq", 100)
-            trj_output_freq = output_config.get("thermo_freq", 1000)
+            trj_output_freq = thermo_output_freq  # Use the same frequency for trajectory
 
-            script_lines.extend([
-                "#------------------------",
-                "# Output settings",
-                "#------------------------"
-            ])
-
+            output_lines = []
+            
+            # Thermo output settings
             if output_config.get("enable_thermo", True):
                 thermo_style = output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
-                script_lines.extend([
+                output_lines.extend([
                     f"thermo {thermo_output_freq}",
                     f"thermo_style custom {thermo_style}",
                     "thermo_modify lost warn flush yes",
                     ""
                 ])
 
+            # Trajectory output settings
+            if output_config.get("enable_trajectory", True):
+                traj_format = output_config.get("traj_format", "lammpstrj")
+                trj_output_items = output_config.get("trj_output_items", "id type x y z fx fy fz")
+                output_lines.extend([
+                    f"dump trajectory all custom {trj_output_freq} {model_name}.{traj_format} {trj_output_items}",
+                    ""
+                ])
+
+            # Custom computes
             if output_config.get("enable_custom_computes", False):
                 custom_computes = output_config.get("custom_computes", "")
                 if custom_computes:
-                    script_lines.extend([
+                    output_lines.extend([
                         "# Custom computes",
                         custom_computes,
                         ""
                     ])
 
-            if output_config.get("enable_trajectory", True):
-                traj_format = output_config.get("traj_format", "lammpstrj")
-                trj_output_items = output_config.get("trj_output_items", "id type x y z fx fy fz")
-                script_lines.extend([
-                    f"dump trajectory all custom {trj_output_freq} {model_name}.{traj_format} {trj_output_items}",
-                    ""
-                ])
-
+            # Custom dumps
             if output_config.get("enable_custom_dumps", False):
                 custom_dumps = output_config.get("custom_dumps", "")
                 if custom_dumps:
-                    script_lines.extend([
+                    output_lines.extend([
                         "# Custom dumps",
                         custom_dumps,
                         ""
                     ])
+            
+            # Only add the heading if there are output settings
+            if output_lines:
+                script_lines.extend([
+                    "#------------------------",
+                    "# Output settings",
+                    "#------------------------"
+                ])
+                script_lines.extend(output_lines)
             
             # Deformation
             script_lines.extend([
@@ -425,7 +438,7 @@ class LammpsScriptGenerator:
                     script_lines.append(f"variable L0 equal $(l{deform_axis})")
                     script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0}}\"")
                     script_lines.append("")
-                
+
                 for i in range(len(points) - 1):
                     p1 = points[i]
                     p2 = points[i+1]
@@ -523,6 +536,8 @@ class LammpsScriptGenerator:
                     ""
                 ])
             
+
+            
             full_script = "\n".join(script_lines)
             
             return full_script
@@ -566,6 +581,10 @@ class LammpsScriptGenerator:
             job_submission_config = self.config.get("job_submission", {})
             local_lammps_cmd = job_submission_config.get("local_lammps_cmd", "lmp")
             
+            # Check if restart functionality is enabled
+            enable_restart = job_submission_config.get("enable_restart", False)
+            
+            # Local execution with restart support
             for study in deform_studies:
                 study_name = study.get("name", "study")
                 
@@ -577,25 +596,62 @@ class LammpsScriptGenerator:
                     script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
                     sim_directory = f"{study_name}/{system_name}"
                     
-                    # Local execution - change to simulation directory and run in new terminal
-                    if current_os in ['linux', 'darwin']:
-                        script_lines.extend([
-                            f"echo 'Running simulation: {model_name}'",
-                            f"cd {sim_directory}",
-                            f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
-                            f"echo 'Started simulation in new terminal: {model_name}'",
-                            f"cd ../../",  # Go back to root directory
-                            ""
-                        ])
-                    else:  # Windows
-                        script_lines.extend([
-                            f"echo 'Running simulation: {model_name}'",
-                            f"cd {sim_directory}",
-                            f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
-                            f"echo 'Started simulation in new terminal: {model_name}'",
-                            f"cd ../../",  # Go back to root directory
-                            ""
-                        ])
+                    if enable_restart:
+                        # Get max time buffer from configuration
+                        max_time_buffer = job_submission_config.get("max_time_buffer", 600)  # Default 10 minutes
+                        # Calculate MAXTIME (24 hours - buffer in seconds)
+                        max_time = 24*3600 - max_time_buffer
+                        
+                        # Local execution with restart support - change to simulation directory and run in new terminal
+                        if current_os in ['linux', 'darwin']:
+                            script_lines.extend([
+                                f"echo 'Running simulation: {model_name}'",
+                                f"cd {sim_directory}",
+                                "# Check if restart files exist for this model",
+                                f"if [ -f \"restart_files/{model_name}.restart\" ]; then",
+                                f"  echo \"Found restart file: restart_files/{model_name}.restart\"",
+                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
+                                "else",
+                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
+                                "fi",
+                                f"echo 'Started simulation in new terminal: {model_name}'",
+                                f"cd ../../",  # Go back to root directory
+                                ""
+                            ])
+                        else:  # Windows
+                            script_lines.extend([
+                                f"echo 'Running simulation: {model_name}'",
+                                f"cd {sim_directory}",
+                                "REM Check if restart files exist for this model",
+                                f"if exist \"restart_files\\{model_name}.restart\" (",
+                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
+                                ") else (",
+                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
+                                ")",
+                                f"echo 'Started simulation in new terminal: {model_name}'",
+                                f"cd ../../",  # Go back to root directory
+                                ""
+                            ])
+                    else:
+                        # Local execution without restart - change to simulation directory and run in new terminal
+                        if current_os in ['linux', 'darwin']:
+                            script_lines.extend([
+                                f"echo 'Running simulation: {model_name}'",
+                                f"cd {sim_directory}",
+                                f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
+                                f"echo 'Started simulation in new terminal: {model_name}'",
+                                f"cd ../../",  # Go back to root directory
+                                ""
+                            ])
+                        else:  # Windows
+                            script_lines.extend([
+                                f"echo 'Running simulation: {model_name}'",
+                                f"cd {sim_directory}",
+                                f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
+                                f"echo 'Started simulation in new terminal: {model_name}'",
+                                f"cd ../../",  # Go back to root directory
+                                ""
+                            ])
             
             if current_os in ['linux', 'darwin']:
                 script_lines.extend([
@@ -626,17 +682,7 @@ class LammpsScriptGenerator:
             return {"success": False, "message": f"Error generating execution script: {str(e)}"}
     
     def generate_cluster_submission_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
-        """Generate cluster submission scripts, handling restartable jobs if enabled."""
-        job_submission_config = self.config.get("job_submission", {})
-        enable_restart = job_submission_config.get("enable_restart", False)
-
-        if enable_restart:
-            return self.generate_restartable_cluster_jobs(root_simulation_dir, system_files, deform_studies)
-        else:
-            return self.generate_master_cluster_job(root_simulation_dir, system_files, deform_studies)
-
-    def generate_master_cluster_job(self, root_simulation_dir, system_files, deform_studies):
-        """Generate a single master job file and a submission script (original behavior)."""
+        """Generate single master cluster job file and submission script"""
         try:
             # Create single master job file that accepts input file as argument
             master_job_path = os.path.join(root_simulation_dir, "lammps_simulation.job")
@@ -646,33 +692,86 @@ class LammpsScriptGenerator:
             cluster_lammps_cmd = job_submission_config.get("cluster_lammps_cmd", "lmp")
             srun_cmd = job_submission_config.get("srun_cmd", "srun")
             sbatch_cmd = job_submission_config.get("sbatch_cmd", "sbatch")
-            slurm_header = job_submission_config.get("slurm_header", "#!/bin/bash -l\n#SBATCH --job-name=lammps_simulation\n#SBATCH --partition=singlenode\n#SBATCH --nodes=1\n#SBATCH --ntasks-per-node=72\n#SBATCH --cpus-per-task=1\n#SBATCH --time=24:00:00\n#SBATCH --export=NONE\n#SBATCH --output=lammps_output_%j.txt\n#SBATCH --error=lammps_error_%j.txt\n\nunset SLURM_EXPORT_ENV")
+            slurm_header = job_submission_config.get("slurm_header", "#!/bin/bash\n -l#SBATCH --job-name=lammps_simulation\n#SBATCH --partition=singlenode\n#SBATCH --nodes=1\n#SBATCH --ntasks-per-node=72\n#SBATCH --cpus-per-task=1\n#SBATCH --time=24:00:00\n#SBATCH --export=NONE\n#SBATCH --output=lammps_output_%j.txt\n#SBATCH --error=lammps_error_%j.txt\n\nunset SLURM_EXPORT_ENV")
 
-            # Generate master job file that accepts input file as argument
-            job_lines = [
-                slurm_header,
-                "", 
-                "# Get input file path from first argument",
-                "input=$1",
-                "if [ -z \"$input\" ]; then",
-                "    echo 'Error: No input file specified'",
-                "    exit 1",
-                "fi",
-                "",
-                "# Extract model name from input file",
-                "MODEL_NAME=$(basename \"$input\" .in)",
-                "",
-                "echo 'Running LAMMPS simulation: $MODEL_NAME'",
-                "echo 'Input file: $input'",
-                "",
-                "# Load modules",
-                f"module load {job_submission_config.get('module_load', 'lammps')}",
-                "",                
-                "# Run LAMMPS with input file",
-                f'{srun_cmd} {cluster_lammps_cmd} -in \"$input.in\"',
-                "",
-                "echo 'Completed simulation: $MODEL_NAME'",
-            ]
+            # Check if restart functionality is enabled globally
+            enable_restart = job_submission_config.get("enable_restart", False)
+            
+            if enable_restart:
+                # Get max time buffer from configuration
+                max_time_buffer = job_submission_config.get("max_time_buffer", 600)  # Default 10 minutes
+                
+                # Generate master job file that handles restart functionality according to HPC documentation
+                job_lines = [
+                    slurm_header,
+                    "", 
+                    "# Get input file path from first argument",
+                    "input=$1",
+                    "if [ -z \"$input\" ]; then",
+                    "    echo 'Error: No input file specified'",
+                    "    exit 1",
+                    "fi",
+                    "",
+                    "# Extract model name from input file",
+                    "MODEL_NAME=$(basename \"$input\" .in)",
+                    "",
+                    "# Calculate maxtime (24 hours - buffer in seconds)",
+                    f"MAXTIME=$((24*3600-{max_time_buffer}))",
+                    "",
+                    "echo 'Running LAMMPS simulation: $MODEL_NAME'",
+                    "echo 'Input file: $input'",
+                    "",
+                    "# Load modules",
+                    f"module load {job_submission_config.get('module_load', 'lammps')}",
+                    "",
+                    "# Handle restart: check if restart files exist and use the latest one",
+                    "cd \"$(dirname \"$input\")\"  # Change to the directory containing the input file",
+                    "",
+                    "# Check if restart files exist for this model",
+                    "if compgen -G \"restart_files/${MODEL_NAME}.restart.*\" > /dev/null; then",
+                    "  # Find the latest restart file",
+                    "  latest_restart=$(ls restart_files/${MODEL_NAME}.restart.* | sort -V | tail -n 1)",
+                    "  echo \"Found restart file: $latest_restart\"",
+                    "  echo \"Moving $latest_restart to restart_files/${MODEL_NAME}.restart for LAMMPS to use\"",
+                    "  mv \"$latest_restart\" \"restart_files/${MODEL_NAME}.restart\"",
+                    "  # Run LAMMPS with restart flag set to TRUE",
+                    f"  {srun_cmd} {cluster_lammps_cmd} -in \"$input\" -var restart TRUE -var maxtime $MAXTIME",
+                    "else",
+                    "  # No restart files, run initial simulation",
+                    f"  {srun_cmd} {cluster_lammps_cmd} -in \"$input\" -var restart FALSE -var maxtime $MAXTIME",
+                    "fi",
+                    "",
+                    "# Check if job ran for significant time and resubmit if needed",
+                    "if [ \"$SECONDS\" -gt \"3600\" ]; then",
+                    "  cd \"$SLURM_SUBMIT_DIR\"",
+                    f"  {sbatch_cmd} \"$SLURM_SUBMIT_DIR/lammps_simulation.job\" \"$input\"",
+                    "fi",
+                    "",
+                    "cd \"$SLURM_SUBMIT_DIR\"",
+                    "echo 'Completed simulation: $MODEL_NAME'",
+                ]
+            else:
+                # Generate simple job file without restart functionality
+                job_lines = [
+                    slurm_header,
+                    "", 
+                    "# Get input file path from first argument",
+                    "input=$1",
+                    "if [ -z \"$input\" ]; then",
+                    "    echo 'Error: No input file specified'",
+                    "    exit 1",
+                    "fi",
+                    "",
+                    "echo 'Running LAMMPS simulation with input: $input'",
+                    "",
+                    "# Load modules",
+                    f"module load {job_submission_config.get('module_load', 'lammps')}",
+                    "",                
+                    "# Run LAMMPS with input file",
+                    f"{srun_cmd} {cluster_lammps_cmd} -in \"$input\"",
+                    
+                    "echo 'Completed simulation for: $input'",
+                ]
             
             # Write master job file with UNIX line endings
             with open(master_job_path, 'w', newline='\n') as f:
@@ -700,13 +799,15 @@ class LammpsScriptGenerator:
                 
                 for system_file in system_files:
                     system_name = Path(system_file).stem
-                    model_name = f"{study_name}_{system_name}"
+                    model_name = f"{study_name}_{system_name}"  # Changed to study_name_first
                     
+                    # Determine input file path and directory
+                    input_file_path = f"{model_name}.in"
                     sim_directory = f"{study_name}/{system_name}"
                     
                     script_lines.extend([
                         f"cd {sim_directory}",
-                        f'{sbatch_cmd} --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"',
+                        f"{sbatch_cmd} --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{input_file_path}\"",
                         f"cd ../../",
                         ""
                     ])
@@ -717,6 +818,7 @@ class LammpsScriptGenerator:
                 ""
             ])
             
+            # Write cluster submission script with UNIX line endings
             with open(cluster_script_path, 'w', newline='\n') as f:
                 f.write("\n".join(script_lines))
             
@@ -727,105 +829,70 @@ class LammpsScriptGenerator:
             
         except Exception as e:
             return {"success": False, "message": f"Error generating cluster submission scripts: {str(e)}"}
-
-    def generate_restartable_cluster_jobs(self, root_simulation_dir, system_files, deform_studies):
-        """Generate individual, restartable job scripts and a main submission script."""
+        
+    def generate_base_settings_file(self, root_simulation_dir):
+        """Generate baseSettings.in file with common LAMMPS configuration"""
         try:
-            job_submission_config = self.config.get("job_submission", {})
-            sbatch_cmd = job_submission_config.get("sbatch_cmd", "sbatch")
-
-            cluster_script_path = os.path.join(root_simulation_dir, "run_cluster_jobs.sh")
-            submission_script_lines = [
-                "#!/bin/bash",
-                "# Cluster job submission script for multiple restartable LAMMPS simulations",
-                "",
-                "echo 'Starting cluster job submissions...'",
+            system_config = self.config.get("system", {})
+            fixes_config = self.config.get("fixes", {})
+            output_config = self.config.get("output", {})
+            
+            units = system_config.get("units", "metal")
+            
+            base_settings_lines = [
+                "#------------------------",
+                "# Basic LAMMPS settings",
+                "#------------------------",
+                f"units {units}",
+                f"atom_style {system_config.get('atom_style', 'atomic')}",
+                "processors * * *",
+                "dimension 3",
+                f"boundary {system_config.get('boundary_x', 'p')} {system_config.get('boundary_y', 'p')} {system_config.get('boundary_z', 'p')}",
                 ""
             ]
-
-            for study in deform_studies:
-                study_name = study.get("name", "study")
-                for system_file in system_files:
-                    system_name = Path(system_file).stem
-                    model_name = f"{study_name}_{system_name}"
-                    
-                    job_script_name = f"{model_name}.job"
-                    job_script_path = os.path.join(root_simulation_dir, job_script_name)
-
-                    self.generate_single_restartable_job_script(job_script_path, model_name, study_name, system_name)
-
-                    submission_script_lines.extend([
-                        f"cd {study_name}/{system_name}",
-                        f"{sbatch_cmd} ../../{job_script_name}",
-                        f"cd ../../",
-                        ""
-                    ])
-
-            submission_script_lines.extend([
-                "echo 'All cluster jobs submitted!'",
-                "echo 'Use squeue to monitor job status'",
+            
+            # Ensemble settings
+            # Note: We can't add temperature/ensemble settings here since they vary per study
+            timestep = system_config.get("timestep", 0.001)
+            base_settings_lines.extend([
+                "#------------------------",
+                "# Ensemble settings",
+                "#------------------------",
+                "# Timestep",
+                f"timestep {timestep}",
                 ""
             ])
-
-            with open(cluster_script_path, 'w', newline='\n') as f:
-                f.write("\n".join(submission_script_lines))
             
-            os.chmod(cluster_script_path, 0o755)
-            self.generated_files.append(cluster_script_path)
-
-            return {"success": True, "message": "Restartable cluster scripts generated."}
+            # Neighbor settings
+            neighbor_distance = system_config.get("neighbor_distance", 0.3)
+            neigh_modify_every = system_config.get("neigh_modify_every", 1)
+            neigh_modify_delay = system_config.get("neigh_modify_delay", 10)
+            neigh_modify_check = system_config.get("neigh_modify_check", True)
+            
+            base_settings_lines.extend([
+                "#------------------------",
+                "# Neighbor settings",
+                "#------------------------",
+                f"neighbor {neighbor_distance} bin",
+                f"neigh_modify every {neigh_modify_every} delay {neigh_modify_delay} {'check yes' if neigh_modify_check else 'check no'}",
+                ""
+            ])
+            
+            # We can't include velocity creation here since it might vary per study
+            # We'll handle initial velocity in the individual study files
+            
+            # Create the base_input.in file
+            base_settings_file = os.path.join(root_simulation_dir, "base_input.in")
+            
+            with open(base_settings_file, 'w') as f:
+                f.write("\n".join(base_settings_lines))
+            
+            self.generated_files.append(base_settings_file)
+            
+            return {"success": True, "message": f"Base settings file generated: {base_settings_file}", "file_path": base_settings_file}
+            
         except Exception as e:
-            return {"success": False, "message": f"Error generating restartable cluster scripts: {str(e)}"}
-
-    def generate_single_restartable_job_script(self, job_script_path, model_name, study_name, system_name):
-        """Generates a single SLURM job script with restart logic."""
-        job_submission_config = self.config.get("job_submission", {})
-        slurm_header = job_submission_config.get("slurm_header", "")
-        
-        slurm_header_lines = [line for line in slurm_header.split('\n') if not line.strip().startswith('#SBATCH --job-name')]
-        slurm_header = "\n".join(slurm_header_lines)
-
-        max_time_buffer = job_submission_config.get("max_time_buffer", 600)
-        module_load = job_submission_config.get("module_load", "lammps")
-        srun_cmd = job_submission_config.get("srun_cmd", "srun")
-        cluster_lammps_cmd = job_submission_config.get("cluster_lammps_cmd", "lmp")
-        sbatch_cmd = job_submission_config.get("sbatch_cmd", "sbatch")
-
-        job_script_name = os.path.basename(job_script_path)
-        input_file = f"{model_name}.in"
-
-        script_content = f'''{slurm_header}
-#SBATCH --job-name={model_name}
-
-unset SLURM_EXPORT_ENV
-
-# Change to the simulation directory
-cd {study_name}/{system_name}
-
-# load required modules
-module load {module_load}
-MAXTIME=$((24*3600-{max_time_buffer}))
-
-# run lammps
-if compgen -G "positions.restart.*" > /dev/null; then
-  filename=$(ls positions.restart.* |sort -V |tail -n 1)
-  mv -v $filename positions.restart
-  {srun_cmd} {cluster_lammps_cmd} -i {input_file} -var restart TRUE -var maxtime $MAXTIME
-else
-  {srun_cmd} {cluster_lammps_cmd} -i {input_file} -var restart FALSE -var maxtime $MAXTIME
-fi
-
-if [ "$SECONDS" -gt "3600" ]; then
-  cd ${{SLURM_SUBMIT_DIR}}
-  {sbatch_cmd} ../../{job_script_name}
-fi
-'''
-        with open(job_script_path, 'w', newline='\n') as f:
-            f.write(script_content)
-        
-        os.chmod(job_script_path, 0o755)
-        self.generated_files.append(job_script_path)
-
+            return {"success": False, "message": f"Error generating base settings file: {str(e)}"}
         
     def read_units_from_data_file(self, data_file):
         """Read units from LAMMPS data file"""

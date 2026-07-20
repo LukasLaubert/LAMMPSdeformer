@@ -201,7 +201,7 @@ class NumericTableWidgetItem(QTableWidgetItem):
         else:
             super().setData(role, value)
 
-class LammpsScriptGenerator(QMainWindow):
+class LammpsGui(QMainWindow):
     """Main application window for LAMMPS script generation"""
     
     def __init__(self):
@@ -2423,7 +2423,7 @@ def main():
     app.setStyle('Fusion')
     
     # Create and show the main window
-    window = LammpsScriptGenerator()
+    window = LammpsGui()
     window.show()
     
     # Run the application
