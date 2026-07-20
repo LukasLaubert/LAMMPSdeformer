@@ -47,6 +47,11 @@ class LammpsScriptGenerator:
             else:
                 return {"success": False, "message": "Invalid system path."}
             
+            # Check if multi-system processing is enabled
+            enable_multi_system = self.config.get("multistudy", {}).get("enable_multi_system", False)
+            if is_multi_system and not enable_multi_system:
+                return {"success": False, "message": "Multiple .data files found but multi-system processing is not enabled."}
+            
             # Create output directory structure
             output_path = self.config.get("output", {}).get("output_path", "")
             if not output_path:
@@ -118,13 +123,11 @@ class LammpsScriptGenerator:
                     
                     if not result["success"]:
                         return result
-                    
-                    # Don't generate individual job files anymore - we'll create one master job file
             
             # Generate execution script based on execution mode
             execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
-            if execution_mode == "local":
-                # Always run in parallel for local execution
+            if execution_mode == "local" and self.config.get("multistudy", {}).get("sequential_execution", True):
+                # Sequential execution only for local runs
                 exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
                 if not exec_script_result["success"]:
                     return exec_script_result
@@ -441,6 +444,19 @@ class LammpsScriptGenerator:
                     ""
                 ])
             
+            # Bond breakage if enabled
+            if deform_config.get("enable_bond_breakage", False):
+                break_distance = deform_config.get("break_distance", 1.5)
+                break_force = deform_config.get("break_force", 50.0)
+                
+                script_lines.extend([
+                    "#------------------------",
+                    "# Bond breakage",
+                    "#------------------------",
+                    f"fix break_all all bond/break 1 1 {break_distance} {break_force}",
+                    ""
+                ])
+            
             # Output settings
             thermo_output_freq = deform_study.get("thermo_freq", 100)
             trj_output_freq = deform_study.get("thermo_freq", 1000)  # Use same as thermo for simplicity
@@ -470,6 +486,16 @@ class LammpsScriptGenerator:
                     ""
                 ])
             
+            # Custom computes
+            if output_config.get("enable_custom_computes", False):
+                custom_computes = output_config.get("custom_computes", "")
+                if custom_computes:
+                    script_lines.extend([
+                        "# Custom computes",
+                        custom_computes,
+                        ""
+                    ])
+            
             # Trajectory output
             if output_config.get("enable_trajectory", True):
                 traj_format = output_config.get("traj_format", "lammpstrj")
@@ -481,16 +507,6 @@ class LammpsScriptGenerator:
                     f"dump trajectory all custom {trj_output_freq} {output_dir}/{model_name}.{traj_format} {trj_output_items}",
                     ""
                 ])
-            
-            # Custom computes
-            if output_config.get("enable_custom_computes", False):
-                custom_computes = output_config.get("custom_computes", "")
-                if custom_computes:
-                    script_lines.extend([
-                        "# Custom computes",
-                        custom_computes,
-                        ""
-                    ])
             
             # Custom dumps
             if output_config.get("enable_custom_dumps", False):

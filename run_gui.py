@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 LAMMPS Input Script Generator Launcher - PyQt6 Version
+
+A simple launcher for the LAMMPS Input Script Generator GUI application.
 """
 
 import sys
@@ -10,7 +12,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import and run the main application
-from lammps_gui import main
+from lammps_gui_new import main
 
 if __name__ == "__main__":
     main()
