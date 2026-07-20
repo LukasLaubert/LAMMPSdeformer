@@ -21,10 +21,41 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVB
                             QGroupBox, QFormLayout, QRadioButton, QButtonGroup, QScrollArea,
                             QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-                            QDialogButtonBox, QToolTip, QFrame, QSizePolicy)
-from PyQt5.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize
-from PyQt5.QtGui import QFont, QIcon, QDesktopServices, QCursor, QPalette, QColor
+                            QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate)
+from PyQt5.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QRegExp
+from PyQt5.QtGui import QFont, QIcon, QDesktopServices, QCursor, QPalette, QColor, QRegExpValidator, QDoubleValidator, QIntValidator
 from script_generator import LammpsScriptGenerator as ScriptGen
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    """Custom table widget item that validates numeric input"""
+    
+    def __init__(self, value=0.0, is_float=True, min_val=None, max_val=None):
+        super().__init__(str(value))
+        self.is_float = is_float
+        self.min_val = min_val
+        self.max_val = max_val
+        self.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        
+    def setData(self, role, value):
+        if role == Qt.EditRole:
+            try:
+                if self.is_float:
+                    num_value = float(value)
+                else:
+                    num_value = int(value)
+                    
+                # Check bounds if specified
+                if self.min_val is not None and num_value < self.min_val:
+                    return
+                if self.max_val is not None and num_value > self.max_val:
+                    return
+                    
+                super().setData(role, str(num_value))
+            except (ValueError, TypeError):
+                # Invalid input, ignore
+                return
+        else:
+            super().setData(role, value)
 
 class LammpsScriptGenerator(QMainWindow):
     """Main application window for LAMMPS script generation"""
@@ -206,8 +237,8 @@ class LammpsScriptGenerator(QMainWindow):
         self.units_combo.setCurrentText("metal")
         self.units_combo.setToolTip("Select the unit system for the simulation")
         
-        self.timestep_display = QLabel("Timestep: 0.001 ps")
-        self.timestep_display.setToolTip("Current timestep value in the selected units")
+        self.timestep_display = QLabel("Timestep unit: ps")
+        self.timestep_display.setToolTip("Timestep unit based on selected units system")
         
         # Update timestep display when units change
         self.units_combo.currentTextChanged.connect(self.update_timestep_display)
@@ -299,6 +330,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.enable_velocity = QCheckBox("Enable Velocity Initialization")
         self.enable_velocity.setChecked(True)
         self.enable_velocity.setToolTip("Enable initial velocity generation")
+        self.enable_velocity.stateChanged.connect(self.toggle_velocity_settings)
         
         velocity_form_layout = QFormLayout()
         
@@ -388,33 +420,18 @@ class LammpsScriptGenerator(QMainWindow):
         timestep_group.setLayout(timestep_layout)
         scroll_layout.addWidget(timestep_group)
         
-        # Wall settings for wall movement
-        wall_settings_group = QGroupBox("Wall Settings (for Wall Movement)")
-        wall_settings_layout = QFormLayout()
-        
-        self.wall_thickness = QDoubleSpinBox()
-        self.wall_thickness.setRange(0.1, 50.0)
-        self.wall_thickness.setValue(5.0)
-        self.wall_thickness.setSingleStep(1.0)
-        self.wall_thickness.setDecimals(1)
-        self.wall_thickness.setToolTip("Wall thickness as percentage of box size in deformation direction")
-        
-        wall_settings_label = QLabel("Wall Thickness (%):")
-        wall_settings_label.setStyleSheet("color: blue; text-decoration: underline;")
-        wall_settings_label.setCursor(QCursor(Qt.PointingHandCursor))
-        wall_settings_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_wall")
-        wall_settings_label.setToolTip("Click to open LAMMPS fix_wall documentation")
-        
-        wall_settings_layout.addRow(wall_settings_label, self.wall_thickness)
-        wall_settings_group.setLayout(wall_settings_layout)
-        scroll_layout.addWidget(wall_settings_group)
-        
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
     def toggle_ensemble_settings(self, ensemble):
         """Toggle pressure field based on ensemble selection"""
         self.pressure.setEnabled(ensemble == "NPT")
+        
+    def toggle_velocity_settings(self, state):
+        """Toggle velocity initialization fields based on checkbox state"""
+        enabled = state == Qt.Checked
+        self.initial_velocity_seed.setEnabled(enabled)
+        self.damping_factor.setEnabled(enabled)
         
     def update_system_type(self):
         """Update system type display based on selected path"""
@@ -440,23 +457,23 @@ class LammpsScriptGenerator(QMainWindow):
             self.system_type_label.setText("System Type: Path does not exist")
             
     def update_timestep_display(self, units):
-        """Update timestep display based on selected units"""
-        # Default timestep values from LAMMPS documentation
-        default_timesteps = {
-            "lj": "0.005",
-            "real": "1.0 fs",
-            "metal": "0.001 ps", 
-            "si": "1.0e-8 s (10 ns)",
-            "cgs": "1.0e-8 s (10 ns)",
-            "electron": "0.001 fs",
-            "micro": "2.0",
-            "nano": "0.00045 ns"
+        """Update timestep unit display based on selected units"""
+        # Default timestep units from LAMMPS documentation
+        default_timestep_units = {
+            "lj": "lj",
+            "real": "fs", 
+            "metal": "ps", 
+            "si": "s",
+            "cgs": "s",
+            "electron": "fs",
+            "micro": "μs",
+            "nano": "ns"
         }
         
-        default_timestep = default_timesteps.get(units, "0.001")
-        self.timestep_display.setText(f"Timestep: {default_timestep}")
+        default_unit = default_timestep_units.get(units, "ps")
+        self.timestep_display.setText(f"Timestep unit: {default_unit}")
         
-        # Update the actual timestep value
+        # Update the actual timestep value (keep default values)
         if units == "lj":
             self.timestep.setValue(0.005)
         elif units == "real":
@@ -550,16 +567,37 @@ class LammpsScriptGenerator(QMainWindow):
         
         self.enable_multi_system = QCheckBox("Enable Multi-System Processing")
         self.enable_multi_system.setChecked(False)
-        self.enable_multi_system.setToolTip("Process multiple data files automatically")
+        self.enable_multi_system.setToolTip("When enabled, the GUI will automatically process all .data files found in the system directory.\n\nEach .data file will be processed with all deformation studies, creating separate simulation folders and input files for each combination.\n\nThis is useful for running the same set of deformation studies on multiple different systems or configurations.")
         
         self.sequential_execution = QCheckBox("Sequential Execution")
         self.sequential_execution.setChecked(True)
-        self.sequential_execution.setToolTip("Execute systems one after another")
+        self.sequential_execution.setToolTip("When enabled, simulations will run one after another to avoid resource conflicts.\n\nWhen disabled, simulations may run in parallel (if supported by the execution environment), but this requires careful resource management to avoid overloading the system.")
         
         processing_layout.addWidget(self.enable_multi_system)
         processing_layout.addWidget(self.sequential_execution)
         processing_group.setLayout(processing_layout)
         scroll_layout.addWidget(processing_group)
+        
+        # Wall settings for wall movement
+        wall_settings_group = QGroupBox("Wall Settings (for Wall Movement)")
+        wall_settings_layout = QFormLayout()
+        
+        self.wall_thickness = QDoubleSpinBox()
+        self.wall_thickness.setRange(0.1, 50.0)
+        self.wall_thickness.setValue(5.0)
+        self.wall_thickness.setSingleStep(1.0)
+        self.wall_thickness.setDecimals(1)
+        self.wall_thickness.setToolTip("Wall thickness as percentage of box size in deformation direction")
+        
+        wall_settings_label = QLabel("Wall Thickness (%):")
+        wall_settings_label.setStyleSheet("color: blue; text-decoration: underline;")
+        wall_settings_label.setCursor(QCursor(Qt.PointingHandCursor))
+        wall_settings_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_wall")
+        wall_settings_label.setToolTip("Click to open LAMMPS fix_wall documentation")
+        
+        wall_settings_layout.addRow(wall_settings_label, self.wall_thickness)
+        wall_settings_group.setLayout(wall_settings_layout)
+        scroll_layout.addWidget(wall_settings_group)
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
@@ -569,22 +607,73 @@ class LammpsScriptGenerator(QMainWindow):
         use_rate = self.use_strain_rate.isChecked()
         
         if use_rate:
-            headers = ["Name", "Method", "Rate", "Axis", "Style/Direction", "Steps", "Thermo Freq"]
+            headers = ["Name", "Method", "Rate", "Axis", "Style", "Steps", "Thermo Freq"]
         else:
-            headers = ["Name", "Method", "Max Strain", "Axis", "Style/Direction", "Steps", "Thermo Freq"]
+            headers = ["Name", "Method", "Max Strain", "Axis", "Style", "Steps", "Thermo Freq"]
             
         self.studies_table.setColumnCount(len(headers))
         self.studies_table.setHorizontalHeaderLabels(headers)
         
     def add_sample_study_data(self, row, name, method, rate_strain, axis, style_dir, steps, thermo_freq):
-        """Add sample study data to table"""
+        """Add sample study data to table with dropdowns for non-numeric fields"""
+        # Name column (text)
         self.studies_table.setItem(row, 0, QTableWidgetItem(name))
-        self.studies_table.setItem(row, 1, QTableWidgetItem(method))
-        self.studies_table.setItem(row, 2, QTableWidgetItem(rate_strain))
-        self.studies_table.setItem(row, 3, QTableWidgetItem(axis))
-        self.studies_table.setItem(row, 4, QTableWidgetItem(style_dir))
-        self.studies_table.setItem(row, 5, QTableWidgetItem(steps))
-        self.studies_table.setItem(row, 6, QTableWidgetItem(thermo_freq))
+        
+        # Method column (dropdown)
+        method_combo = QComboBox()
+        method_combo.addItems(["fix_deform", "wall_movement"])
+        method_combo.setCurrentText(method)
+        method_combo.currentTextChanged.connect(lambda text, r=row: self.on_method_changed(r, text))
+        self.studies_table.setCellWidget(row, 1, method_combo)
+        
+        # Rate/Strain column (numeric - float)
+        rate_item = NumericTableWidgetItem(rate_strain, is_float=True, min_val=0.0, max_val=10.0)
+        self.studies_table.setItem(row, 2, rate_item)
+        
+        # Axis column (dropdown)
+        axis_combo = QComboBox()
+        axis_combo.addItems(["x", "y", "z"])
+        axis_combo.setCurrentText(axis)
+        self.studies_table.setCellWidget(row, 3, axis_combo)
+        
+        # Style column (dropdown - context-aware based on method)
+        style_combo = QComboBox()
+        self.update_style_options(style_combo, method)
+        style_combo.setCurrentText(style_dir)
+        self.studies_table.setCellWidget(row, 4, style_combo)
+        
+        # Steps column (numeric - integer)
+        steps_item = NumericTableWidgetItem(steps, is_float=False, min_val=1, max_val=1000000)
+        self.studies_table.setItem(row, 5, steps_item)
+        
+        # Thermo Freq column (numeric - integer)
+        thermo_item = NumericTableWidgetItem(thermo_freq, is_float=False, min_val=1, max_val=10000)
+        self.studies_table.setItem(row, 6, thermo_item)
+        
+    def update_style_options(self, style_combo, method):
+        """Update style dropdown options based on method"""
+        style_combo.clear()
+        if method == "fix_deform":
+            style_combo.addItems(["final", "linear", "volume"])
+            style_combo.setToolTip("Deformation style for fix_deform")
+        elif method == "wall_movement":
+            style_combo.addItems(["positive", "negative", "symmetric"])
+            style_combo.setToolTip("Wall movement direction")
+        else:
+            style_combo.addItems(["unknown"])
+            
+    def on_method_changed(self, row, new_method):
+        """Handle method change and update style options"""
+        style_combo = self.studies_table.cellWidget(row, 4)
+        if style_combo:
+            current_style = style_combo.currentText()
+            self.update_style_options(style_combo, new_method)
+            # Try to maintain current style if it exists in new options
+            index = style_combo.findText(current_style)
+            if index >= 0:
+                style_combo.setCurrentIndex(index)
+            else:
+                style_combo.setCurrentIndex(0)
         
     def add_deformation_study(self):
         """Add a new deformation study to the table"""
@@ -593,12 +682,24 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Copy settings from the row above if available
         if row_count > 0:
-            for col in range(self.studies_table.columnCount()):
-                item = self.studies_table.item(row_count - 1, col)
-                if item:
-                    self.studies_table.setItem(row_count, col, QTableWidgetItem(item.text()))
-                else:
-                    self.studies_table.setItem(row_count, col, QTableWidgetItem(""))
+            # Get values from previous row
+            name_item = self.studies_table.item(row_count - 1, 0)
+            method_combo = self.studies_table.cellWidget(row_count - 1, 1)
+            rate_item = self.studies_table.item(row_count - 1, 2)
+            axis_combo = self.studies_table.cellWidget(row_count - 1, 3)
+            style_combo = self.studies_table.cellWidget(row_count - 1, 4)
+            steps_item = self.studies_table.item(row_count - 1, 5)
+            thermo_item = self.studies_table.item(row_count - 1, 6)
+            
+            name = name_item.text() if name_item else f"study{row_count + 1}"
+            method = method_combo.currentText() if method_combo else "fix_deform"
+            rate = rate_item.text() if rate_item else "0.001"
+            axis = axis_combo.currentText() if axis_combo else "x"
+            style = style_combo.currentText() if style_combo else "final"
+            steps = steps_item.text() if steps_item else "10000"
+            thermo = thermo_item.text() if thermo_item else "100"
+            
+            self.add_sample_study_data(row_count, name, method, rate, axis, style, steps, thermo)
         else:
             # Set default values
             self.add_sample_study_data(row_count, f"study{row_count + 1}", "fix_deform", "0.001", "x", "final", "10000", "100")
@@ -1051,13 +1152,16 @@ class LammpsScriptGenerator(QMainWindow):
         deform_studies = multistudy_config.get("deform_studies", [])
         self.studies_table.setRowCount(len(deform_studies))
         for i, study in enumerate(deform_studies):
-            self.studies_table.setItem(i, 0, QTableWidgetItem(study.get("name", f"study{i+1}")))
-            self.studies_table.setItem(i, 1, QTableWidgetItem(study.get("method", "fix_deform")))
-            self.studies_table.setItem(i, 2, QTableWidgetItem(str(study.get("rate_strain", 0.001))))
-            self.studies_table.setItem(i, 3, QTableWidgetItem(study.get("axis", "x")))
-            self.studies_table.setItem(i, 4, QTableWidgetItem(study.get("style_dir", "final")))
-            self.studies_table.setItem(i, 5, QTableWidgetItem(str(study.get("steps", 10000))))
-            self.studies_table.setItem(i, 6, QTableWidgetItem(str(study.get("thermo_freq", 100))))
+            self.add_sample_study_data(
+                i, 
+                study.get("name", f"study{i+1}"),
+                study.get("method", "fix_deform"),
+                str(study.get("rate_strain", 0.001)),
+                study.get("axis", "x"),
+                study.get("style_dir", "final"),
+                str(study.get("steps", 10000)),
+                str(study.get("thermo_freq", 100))
+            )
             
     def create_bottom_buttons(self):
         """Create bottom buttons"""
@@ -1117,7 +1221,7 @@ class LammpsScriptGenerator(QMainWindow):
             
             if result["success"]:
                 # Show generated scripts and commands
-                self.show_generated_scripts(result["files"], generator)
+                self.show_generated_scripts(result["files"], generator, config)
                 # Don't show success popup as requested
             else:
                 QMessageBox.critical(self, "Error", result["message"])
@@ -1193,21 +1297,21 @@ class LammpsScriptGenerator(QMainWindow):
         # Collect deformation studies
         for row in range(self.studies_table.rowCount()):
             name_item = self.studies_table.item(row, 0)
-            method_item = self.studies_table.item(row, 1)
+            method_combo = self.studies_table.cellWidget(row, 1)
             rate_strain_item = self.studies_table.item(row, 2)
-            axis_item = self.studies_table.item(row, 3)
-            style_dir_item = self.studies_table.item(row, 4)
+            axis_combo = self.studies_table.cellWidget(row, 3)
+            style_combo = self.studies_table.cellWidget(row, 4)
             steps_item = self.studies_table.item(row, 5)
             thermo_item = self.studies_table.item(row, 6)
             
-            if all([name_item, method_item, rate_strain_item, axis_item, style_dir_item, steps_item, thermo_item]):
+            if all([name_item, method_combo, rate_strain_item, axis_combo, style_combo, steps_item, thermo_item]):
                 try:
                     study = {
                         "name": name_item.text(),
-                        "method": method_item.text(),
+                        "method": method_combo.currentText(),
                         "rate_strain": float(rate_strain_item.text()),
-                        "axis": axis_item.text(),
-                        "style_dir": style_dir_item.text(),
+                        "axis": axis_combo.currentText(),
+                        "style_dir": style_combo.currentText(),
                         "steps": int(steps_item.text()),
                         "thermo_freq": int(thermo_item.text())
                     }
@@ -1263,7 +1367,7 @@ class LammpsScriptGenerator(QMainWindow):
             
         return {"valid": True}
         
-    def show_generated_scripts(self, files, generator):
+    def show_generated_scripts(self, files, generator, config):
         """Show generated scripts and execution commands"""
         dialog = QDialog(self)
         dialog.setWindowTitle("Generated Scripts")
@@ -1287,12 +1391,19 @@ class LammpsScriptGenerator(QMainWindow):
         commands_text = QTextEdit()
         commands = []
         
+        # Check execution mode
+        is_cluster_execution = config.get("cluster", {}).get("execution_mode") == "cluster"
+        
         for file_path in files:
             if file_path.endswith(".in"):
-                commands.append(f"lmp -in {file_path}")
+                # Only show lmp command for local execution
+                if not is_cluster_execution:
+                    commands.append(f"lmp -in {file_path}")
             elif file_path.endswith(".job"):
+                # For cluster execution, only show sbatch command
                 commands.append(f"sbatch {file_path}")
             elif file_path.endswith(".sh"):
+                # For shell scripts, show bash command
                 commands.append(f"bash {file_path}")
                 
         commands_text.setPlainText("\n".join(commands))
