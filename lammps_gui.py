@@ -329,6 +329,107 @@ class FlowLayout(QLayout):
             self._item_list.insert(to_index, item)
             self.invalidate()
 
+class CountModeSpinBox(QSpinBox):
+    """A QSpinBox that can display a comma-separated list of resolved
+    per-study values ('display mode') and switch to showing the integer
+    target N ('edit mode') on focus / wheel / step / mode-dropdown change.
+    The internal value() is always the integer target N, so collect_config
+    and QSettings integration work unchanged."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._resolved_text = ""
+        self._in_edit_mode = False
+        self._user_value = super().value()
+        self._suppress_user_value_tracking = False
+        self.lineEdit().installEventFilter(self)
+        self.valueChanged.connect(self._remember_user_value)
+
+    def _remember_user_value(self, value):
+        if not self._suppress_user_value_tracking:
+            self._user_value = int(value)
+
+    def value(self):
+        return int(self._user_value)
+
+    def setValue(self, value):
+        self._user_value = int(value)
+        super().setValue(value)
+
+    def _sync_qt_value_to_user_value(self):
+        self._suppress_user_value_tracking = True
+        try:
+            super().setValue(int(self._user_value))
+        finally:
+            self._suppress_user_value_tracking = False
+
+    def set_resolved_text(self, text):
+        self._resolved_text = text
+        if not self._in_edit_mode:
+            current_user_value = int(self._user_value)
+            self._suppress_user_value_tracking = True
+            self.blockSignals(True)
+            self.lineEdit().blockSignals(True)
+            try:
+                # Display text is cosmetic. Qt may parse lineEdit text back
+                # into QSpinBox's numeric value, so restore the actual user
+                # value after writing the display string.
+                self.lineEdit().setText(text)
+                super().setValue(current_user_value)
+                self.lineEdit().setText(text)
+            finally:
+                self.lineEdit().blockSignals(False)
+                self.blockSignals(False)
+                self._suppress_user_value_tracking = False
+                self._user_value = current_user_value
+
+    def enter_edit_mode(self):
+        self._sync_qt_value_to_user_value()
+        if not self._in_edit_mode:
+            self._in_edit_mode = True
+            self.lineEdit().setText(str(self.value()))
+            self.lineEdit().setCursorPosition(len(self.lineEdit().text()))
+
+    def leave_edit_mode(self):
+        if self._in_edit_mode:
+            self._in_edit_mode = False
+            self.set_resolved_text(self._resolved_text)
+
+    def is_in_edit_mode(self):
+        return self._in_edit_mode
+
+    def focusInEvent(self, event):
+        self.enter_edit_mode()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        # IMPORTANT: super().focusOutEvent(event) must run FIRST. The QSpinBox
+        # base class calls interpretText() inside focusOutEvent, which commits
+        # the user's typed text in the lineEdit to value() and then emits
+        # editingFinished. If we called leave_edit_mode() first, it would
+        # overwrite the lineEdit text with the OLD resolved display text,
+        # causing interpretText() to commit the OLD value and silently
+        # discard the user's typing. By calling super() first, the typed
+        # value is committed, editingFinished fires (so the routine runs
+        # and updates _resolved_text to the NEW value), and then
+        # leave_edit_mode() sets the lineEdit to the now-updated
+        # _resolved_text. This makes focus-loss behave identically to
+        # pressing Enter.
+        super().focusOutEvent(event)
+        self._user_value = int(super().value())
+        self.leave_edit_mode()
+
+    def stepBy(self, steps):
+        self.enter_edit_mode()
+        super().stepBy(steps)
+        self._user_value = int(super().value())
+
+    def eventFilter(self, obj, event):
+        if obj is self.lineEdit() and event.type() == QEvent.Type.Wheel:
+            if not self._in_edit_mode:
+                self.enter_edit_mode()
+        return super().eventFilter(obj, event)
+
 class DraggableChip(QFrame):
     """A chip that can be dragged, styled exactly like the original Chip."""
     removed = pyqtSignal(str)
@@ -1267,13 +1368,44 @@ class LAMMPSdeformerGui(QMainWindow):
         super().__init__()
         self.setWindowTitle("LAMMPSdeformer")
         self.setGeometry(100, 100, 1200, 800)
-        
+
         # Apply modern stylesheet
         self.apply_modern_stylesheet()
-        
+
         # Initialize settings with organization and app name
         self.settings = QSettings("LAMMPSdeformer", "LAMMPSdeformer")
-        
+
+        # Per-mode memory for (Nevery, Nrepeat).
+        # Keyed by (thermo_mode, nrepeat_unit). Populated from QSettings
+        # after the combos are created; defaults are sane legacy values.
+        self._avg_memory = {
+            ("frequency", "steps"):   (10, 10),
+            ("frequency", "percent"): (10, 50),
+            ("count",    "steps"):   (10, 10),
+            ("count",    "percent"): (10, 50),
+        }
+        # Per-mode memory for the Thermo Output spinbox value (Nfreq in
+        # Frequency mode, target N in Count mode). Keyed by thermo_mode only
+        # (the nrepeat unit doesn't affect the Thermo Output value). When the
+        # user switches the Frequency/Count dropdown, the spinbox is restored
+        # to the value stored for the newly-selected mode so the user's
+        # previous entry is preserved across toggles.
+        self._thermo_freq_memory = {
+            "frequency": 100,
+            "count":    100,
+        }
+        # Same per-mode memory for Trajectory Output. Without this, saving in
+        # one mode loses the previous value from the other mode.
+        self._traj_freq_memory = {
+            "frequency": 100,
+            "count":    100,
+        }
+        self._avg_memory_loaded = False
+        self._suppress_avg_memory_save = False
+        # Last committed Nevery value (used by validate_and_round_nevery to
+        # detect a user change and decide whether to revert).
+        self._committed_nevery = 10
+
         # Emergency save timer
         self.emergency_save_timer = QTimer()
         self.emergency_save_timer.timeout.connect(self.emergency_save)
@@ -1555,6 +1687,14 @@ class LAMMPSdeformerGui(QMainWindow):
         # Thermostating settings
         thermostating_group = InfoGroupBox("Thermostating", "fix_nh")
         thermostating_layout = QHBoxLayout()
+        
+        self.enable_thermostating = QCheckBox("Enable thermostating")
+        self.enable_thermostating.setChecked(True)
+        self.enable_thermostating.setToolTip("Enable thermostating (NVT/NPT ensembles). If unchecked, runs under NVE/NPH.")
+        self.enable_thermostating.stateChanged.connect(self.toggle_thermostating_settings)
+        thermostating_layout.addWidget(self.enable_thermostating)
+        
+        thermostating_layout.addSpacing(20)
         
         self.damping_factor = QDoubleSpinBox()
         self.damping_factor.setRange(0.1, 1000)
@@ -1992,85 +2132,1230 @@ class LAMMPSdeformerGui(QMainWindow):
         """Remove a Cauchy stress chip."""
         self._re_add_item_to_combo(text, self.cauchy_stresses_combo, self.all_cauchy_stresses)
 
+    def _nevery_works(self, candidate_nevery, thermo_count_mode, target_n):
+        """Return True iff `candidate_nevery` is a valid value given the
+        current Thermo output. Used by both the round-to-nearest search
+        and the existing per-study stability check.
+
+        Frequency mode: candidate_nevery must divide the current Thermo
+        output (LAMMPS constraint Nfreq % Nevery == 0). A value of 0 or
+        negative, or a target_n of 0, always works (no constraint).
+        Count mode: per-study thermo_freqs computed with candidate_nevery
+        must equal those computed with the currently committed Nevery
+        (so the achieved count per study doesn't drift).
+        """
+        if candidate_nevery <= 0:
+            return False
+        if not thermo_count_mode:
+            # Frequency mode: divisibility of the Thermo output.
+            if target_n <= 0:
+                return True
+            return (target_n % candidate_nevery) == 0
+        # Count mode: per-study thermo_freqs must match the committed ones.
+        old_nevery = getattr(self, "_committed_nevery", candidate_nevery)
+        new_freqs = self._compute_thermo_freqs_for_nevery(
+            candidate_nevery, target_n, target_n
+        )
+        old_freqs = self._compute_thermo_freqs_for_nevery(
+            old_nevery, target_n, target_n
+        )
+        return new_freqs == old_freqs
+
+    def _find_nearest_working_nevery(self, desired, thermo_count_mode, target_n,
+                                     lo=1, hi=10_000_000):
+        """Return the integer nevery in [lo, hi] that is closest to `desired`
+        and satisfies the averaging constraint (`_nevery_works`). On ties
+        (e.g. desired=7, both 6 and 8 work) the SMALLER value wins, so the
+        field "rounds down" when equidistant. Returns `desired` itself if
+        it already works. Returns None if no value in the search range
+        satisfies the constraint.
+        """
+        if self._nevery_works(desired, thermo_count_mode, target_n):
+            return desired
+        # Search outward by increasing distance. At each delta, check the
+        # smaller candidate first so ties resolve to the smaller side.
+        span = max(hi - desired, desired - lo) + 1
+        for delta in range(1, span + 1):
+            smaller = desired - delta
+            if smaller >= lo and self._nevery_works(smaller, thermo_count_mode, target_n):
+                return smaller
+            larger = desired + delta
+            if larger <= hi and self._nevery_works(larger, thermo_count_mode, target_n):
+                return larger
+        return None
+
     def validate_and_round_nevery(self):
-        """Validate that avg_nevery is a divisor of thermo_freq, rounding to the nearest valid divisor if not."""
-        thermo_freq = self.thermo_freq_spinbox.value()
+        """Validate that a Nevery change is compatible with the current Thermo
+        output field. Per LAMMPS docs (fix ave/time): Nfreq must be a multiple
+        of Nevery. The Thermo output field must NEVER be modified as a side
+        effect of editing the Sample-every (Nevery) field.
+
+        Behaviour when the user-entered Nevery does NOT satisfy the
+        constraint: instead of jumping to a "distant" value (the previous
+        committed Nevery), the field is rounded to the NEAREST integer
+        Nevery that does satisfy the constraint. On ties, the smaller value
+        is chosen so the field "rounds down" rather than up. This avoids
+        the surprise of a small edit producing a large jump.
+
+        Two cases for the constraint:
+        - Frequency mode: the Thermo output is a single value used for all
+          studies. The Nevery must divide the current Thermo output
+          (LAMMPS constraint Nfreq % Nevery == 0).
+        - Count mode: the Thermo output is a target count. The per-study
+          thermo_freqs are computed from the target count and snapped to
+          multiples of Nevery. The Nevery must keep the per-study
+          thermo_freqs unchanged so the achieved count per study doesn't
+          drift.
+
+        Both checks are gated on `self._averaging_active()`: with no chips
+        in the Average selector, the `fix ave/time` constraint doesn't
+        apply and Nevery is accepted unconditionally.
+
+        If no value in the search range satisfies the constraint (very
+        edge-case for Count mode with unusual study sizes), Nevery falls
+        back to the previously committed value so the user is never left
+        with an inconsistent state.
+
+        The grey label (and the per-study Nfreq in it) is refreshed exactly
+        ONCE at the end, AFTER the check has potentially rounded Nevery,
+        so the displayed value always reflects the final committed state.
+
+        The Thermo output spinbox is NEVER modified by this method.
+        """
         nevery = self.avg_nevery_spinbox.value()
 
-        if thermo_freq <= 0 or nevery <= 0:  # Avoid division by zero and invalid values
-            self.validate_nrepeat() # Still validate nrepeat in case thermo_freq changed
+        if nevery <= 0:
             return
 
-        # If it's already a valid divisor, do nothing.
-        if thermo_freq % nevery == 0:
-            self.validate_nrepeat() # Still validate nrepeat in case thermo_freq changed
-            return
+        old_nevery = getattr(self, "_committed_nevery", nevery)
+        if nevery != old_nevery and self._averaging_active():
+            thermo_count_mode = self._is_thermo_count_mode()
+            target_n = int(self.thermo_freq_spinbox.value())
+            if not self._nevery_works(nevery, thermo_count_mode, target_n):
+                # Round to the nearest working value.
+                nearest = self._find_nearest_working_nevery(
+                    nevery, thermo_count_mode, target_n
+                )
+                if nearest is None:
+                    # No value in the search range satisfies the constraint.
+                    # Fall back to the previous committed Nevery so the user
+                    # is not left with an inconsistent state.
+                    nearest = old_nevery
+                if nearest != nevery:
+                    self.avg_nevery_spinbox.blockSignals(True)
+                    self.avg_nevery_spinbox.setValue(nearest)
+                    self.avg_nevery_spinbox.blockSignals(False)
+                    nevery = nearest
 
-        # Find all divisors of thermo_freq
-        divisors = set()
-        for i in range(1, int(thermo_freq**0.5) + 1):
-            if thermo_freq % i == 0:
-                divisors.add(i)
-                divisors.add(thermo_freq // i)
-
-        if not divisors:
-            self.validate_nrepeat()
-            return
-
-        # Find the closest divisor to the current nevery value
-        closest_divisor = min(divisors, key=lambda d: abs(d - nevery))
-
-        # Set the spinbox value to the closest divisor, blocking signals to prevent recursion
-        self.avg_nevery_spinbox.blockSignals(True)
-        self.avg_nevery_spinbox.setValue(closest_divisor)
-        self.avg_nevery_spinbox.blockSignals(False)
-
-        # Now that nevery is valid, trigger validation for nrepeat
-        self.validate_nrepeat()
+        # Always commit the (possibly rounded) value and refresh the grey
+        # label once, AFTER the check has finished. This guarantees the
+        # displayed Nfreq and Nevery reflect the final state.
+        self._committed_nevery = nevery
+        self.update_avg_params_label()
 
     def validate_nrepeat(self):
-        """Ensure nrepeat is valid based on thermo_freq and nevery."""
-        thermo_freq = self.thermo_freq_spinbox.value()
-        nevery = self.avg_nevery_spinbox.value()
-        nrepeat = self.avg_nrepeat_spinbox.value()
+        """Ensure nrepeat is valid based on nevery and the per-study thermo_freq.
 
-        if nevery <= 0:  # Avoid division by zero
+        In steps unit: nrepeat must be a single user value that satisfies
+        nrepeat * nevery <= thermo_freq for every study. Capped to the minimum
+        across studies of floor(thermo_freq/nevery). Shows a popup if capping
+        is required (percent-unit caps are handled in
+        _check_percent_nrepeat_cap, called from the valueChanged slot).
+
+        In percent unit: the user value is just the percent; the per-study
+        nrepeat is computed at script generation time and capped silently
+        in _compute_per_study_output_freqs. The popup for percent capping
+        is fired by _check_percent_nrepeat_cap.
+        """
+        nevery = max(1, self.avg_nevery_spinbox.value())
+        nrepeat_user = self.avg_nrepeat_spinbox.value()
+        nrepeat_is_percent = (
+            hasattr(self, 'avg_nrepeat_unit_combo')
+            and self.avg_nrepeat_unit_combo.currentText().startswith("percent")
+        )
+
+        # In percent unit, the spinbox holds the percent (1..100); do not cap here.
+        if nrepeat_is_percent:
+            if hasattr(self, 'avg_nrepeat_spinbox'):
+                self.avg_nrepeat_spinbox.blockSignals(True)
+                if self.avg_nrepeat_spinbox.value() < 1:
+                    self.avg_nrepeat_spinbox.setValue(1)
+                elif self.avg_nrepeat_spinbox.value() > 100:
+                    self.avg_nrepeat_spinbox.setValue(100)
+                self.avg_nrepeat_spinbox.blockSignals(False)
+            self.update_avg_params_label()
             return
 
-        # We enforce thermo_freq = nevery * nrepeat.
-        # The validation for nevery ensures it's a divisor of thermo_freq.
-        # Therefore, the maximum allowed nrepeat is thermo_freq / nevery.
-        max_nrepeat = thermo_freq // nevery
-
-        # nrepeat must be at least 1.
-        if max_nrepeat < 1:
-            max_nrepeat = 1
-
-        if nrepeat > max_nrepeat:
+        # Steps unit: cap to the minimum across studies of floor(thermo_freq/nevery).
+        per_study = self._compute_per_study_output_freqs()
+        if not per_study:
+            self.update_avg_params_label()
+            return
+        max_allowed = min(self._max_nrepeat_for_study(p['thermo_freq'], nevery) for p in per_study)
+        if nrepeat_user > max_allowed:
             self.avg_nrepeat_spinbox.blockSignals(True)
-            self.avg_nrepeat_spinbox.setValue(max_nrepeat)
+            self.avg_nrepeat_spinbox.setValue(max(1, max_allowed))
+            self.avg_nrepeat_spinbox.blockSignals(False)
+        elif nrepeat_user < 1:
+            self.avg_nrepeat_spinbox.blockSignals(True)
+            self.avg_nrepeat_spinbox.setValue(1)
             self.avg_nrepeat_spinbox.blockSignals(False)
 
         self.update_avg_params_label()
 
     def update_avg_params_label(self):
-        """Update the informational label for averaging parameters."""
+        """Update the informational label for averaging parameters.
+
+        Nevery is always the user-entered value (single).
+        Nrepeat in steps unit is the user value (single); in percent unit it is
+        derived per study from the per-study thermo_freq.
+        thermo_freq in Frequency mode is the user value; in Count mode it is
+        derived per study (and may diverge across studies).
+        """
         if not hasattr(self, 'avg_params_label'):
             return
 
+        thermo_count = self._is_thermo_count_mode()
+        nrepeat_is_percent = (
+            hasattr(self, 'avg_nrepeat_unit_combo')
+            and self.avg_nrepeat_unit_combo.currentText().startswith("percent")
+        )
+        nevery_user = self.avg_nevery_spinbox.value()
+
+        if not thermo_count:
+            nevery = nevery_user
+            thermo_freq = self.thermo_freq_spinbox.value()
+            if nrepeat_is_percent:
+                # No studies known in this branch in single-study test, but for
+                # the label we use the (single) thermo_freq and no max_steps.
+                # Show the percent explicitly for clarity.
+                # In the averaging context (Nevery, Nrepeat, ...) the
+                # per-study thermo output frequency is the Nfreq argument of
+                # `fix ave/time Nevery Nrepeat Nfreq`.
+                self.avg_params_label.setText(
+                    f"(Nevery = {nevery}, Nrepeat = {self.avg_nrepeat_spinbox.value()}%, Nfreq = {thermo_freq})"
+                )
+            else:
+                nrepeat = self.avg_nrepeat_spinbox.value()
+                self.avg_params_label.setText(
+                    f"(Nevery = {nevery}, Nrepeat = {nrepeat}, Nfreq = {thermo_freq})"
+                )
+            self.avg_params_label.setToolTip("")
+            return
+
+        per_study = self._compute_per_study_output_freqs()
+        if not per_study:
+            self.avg_params_label.setText("")
+            self.avg_params_label.setToolTip("")
+            return
+
+        def fmt(key):
+            vals = sorted({p[key] for p in per_study})
+            return str(vals[0]) if len(vals) == 1 else "/".join(str(v) for v in vals)
+
+        nevery_s = str(nevery_user)  # single
+        thermo_freq_s = fmt("thermo_freq")  # dict key; this IS the Nfreq
+        if nrepeat_is_percent:
+            nrepeat_s = f"{self.avg_nrepeat_spinbox.value()}% (" + fmt("nrepeat") + ")"
+        else:
+            nrepeat_s = fmt("nrepeat")
+        # In the averaging context (Nevery, Nrepeat, ...) the per-study
+        # thermo output frequency is the Nfreq argument of
+        # `fix ave/time Nevery Nrepeat Nfreq`, so the grey label calls it Nfreq.
+        self.avg_params_label.setText(
+            f"(Nevery = {nevery_s}, Nrepeat = {nrepeat_s}, Nfreq = {thermo_freq_s})"
+        )
+
+        lines = ["Per-study effective averaging parameters:"]
+        for p in per_study:
+            lines.append(
+                f"  {p['name']}: max_steps={p['max_steps']}, Nfreq={p['thermo_freq']}, "
+                f"Nevery={p['nevery']}, Nrepeat={p['nrepeat']}"
+                + (" (capped)" if p.get('nrepeat_capped') else "")
+            )
+        self.avg_params_label.setToolTip("\n".join(lines))
+
+    def _is_thermo_count_mode(self):
+        if not hasattr(self, 'thermo_mode_combo'):
+            return False
+        return self.thermo_mode_combo.currentText() == "Count"
+
+    def _is_traj_count_mode(self):
+        if not hasattr(self, 'traj_mode_combo'):
+            return False
+        return self.traj_mode_combo.currentText() == "Count"
+
+    def _averaging_active(self):
+        """True iff the Average selector has at least one chip. Used to gate
+        Nevery change-isolation: when no chips are selected, the LAMMPS
+        `fix ave/time` constraint doesn't matter and Nevery can change freely
+        without affecting any output frequency."""
+        if not hasattr(self, 'avg_selector'):
+            return False
+        try:
+            return len(self.avg_selector.chips) > 0
+        except Exception:
+            return False
+
+    def _compute_thermo_freqs_for_nevery(self, nevery, target_n, thermo_freq_user):
+        """Per-study resolved thermo_freq using a hypothetical nevery value.
+
+        Used by Nevery change-isolation: we want to know what the per-study
+        thermo_freqs WOULD be if Nevery were set to a new value, without
+        actually changing the spinbox. Returns a tuple of ints (one per
+        study, in the order produced by _iter_studies) so callers can
+        compare sets.
+
+        In Frequency mode: returns the (snapped) thermo_freq_user for every
+        study (it's a single value, not per-study-derived). In Count mode:
+        returns the nearest-multiple-of-nevery of ms/target_n for each study.
+        """
+        nevery_n = max(1, int(nevery))
+        target_n_n = max(0, int(target_n))
+        out = []
+        if not self._is_thermo_count_mode():
+            base = max(nevery_n, int(thermo_freq_user))
+            k = max(1, round(base / nevery_n))
+            snapped = max(nevery_n, k * nevery_n)
+            for _sw, _name, ms in self._iter_studies():
+                out.append(snapped)
+            return tuple(out)
+        for _sw, _name, ms in self._iter_studies():
+            if ms > 0 and target_n_n > 0:
+                raw = ms / float(target_n_n)
+                k = max(1, round(raw / nevery_n))
+                tf = max(nevery_n, k * nevery_n)
+            else:
+                base = max(nevery_n, int(thermo_freq_user))
+                k = max(1, round(base / nevery_n))
+                tf = max(nevery_n, k * nevery_n)
+            out.append(tf)
+        return tuple(out)
+
+    def _is_thermo_count_achievable(self):
+        """True iff for every study the achieved count equals the target count.
+
+        Achieved count for a study = max_steps // thermo_freq, where
+        thermo_freq is the snapped multiple of Nevery. If any study's
+        achieved count differs from the target count in the spinbox, the
+        target is not achievable and the count field should be marked red.
+        Returns True when there are no studies (nothing to validate) or
+        when we're not in Count mode (the count concept doesn't apply).
+        """
+        if not self._is_thermo_count_mode():
+            return True
+        if not hasattr(self, 'thermo_freq_spinbox'):
+            return True
+        target = int(self.thermo_freq_spinbox.value())
+        if target <= 0:
+            return True
+        studies = list(self._iter_studies())
+        if not studies:
+            return True
+        nevery = max(1, int(self.avg_nevery_spinbox.value()))
+        for _sw, _name, ms in studies:
+            if ms <= 0:
+                continue
+            raw = ms / float(target)
+            k = max(1, round(raw / nevery))
+            tf = max(nevery, k * nevery)
+            achieved = max(1, ms // tf)
+            if achieved != target:
+                return False
+        return True
+
+    def _is_nevery_valid_for_current_thermo_output(self):
+        """True iff the current Nevery (Sample every) is compatible with the
+        current Thermo output value, in either mode. Used to decide whether
+        the Sample-every (Nevery) field should be marked red. The Thermo
+        Output field is the "strong" box (it accepts whatever the user
+        enters) and is never marked red; when the user changes the Thermo
+        Output, the Nevery field is what must adapt and is marked red if
+        it doesn't.
+
+        - Frequency mode: thermo_freq % nevery == 0 (LAMMPS Nfreq % Nevery == 0).
+        - Count mode: per-study thermo_freqs unchanged for every study.
+        - No chips in the Average selector: no constraint, always valid.
+        """
+        if not self._averaging_active():
+            return True
+        if not hasattr(self, 'thermo_freq_spinbox') or not hasattr(self, 'avg_nevery_spinbox'):
+            return True
+        try:
+            target_n = int(self.thermo_freq_spinbox.value())
+            nevery = int(self.avg_nevery_spinbox.value())
+        except (TypeError, ValueError):
+            return True
+        return self._nevery_works(nevery, self._is_thermo_count_mode(), target_n)
+
+    def _mark_nevery_invalid(self):
+        """Mark the Sample-every (Nevery) spinbox red so the user knows the
+        current Nevery is incompatible with the current Thermo Output. The
+        Thermo Output spinbox is NEVER marked red (it's the "strong" box
+        that always accepts the user's input)."""
+        if not hasattr(self, 'avg_nevery_spinbox'):
+            return
+        self.avg_nevery_spinbox.setStyleSheet(
+            "QSpinBox, QAbstractSpinBox { border: 2px solid #c62828; "
+            "border-radius: 3px; background-color: #ffebee; }"
+        )
+
+    def _clear_nevery_invalid(self):
+        """Clear any red marking on the Sample-every (Nevery) spinbox
+        (no-op if the widget is missing or has no style set)."""
+        if not hasattr(self, 'avg_nevery_spinbox'):
+            return
+        self.avg_nevery_spinbox.setStyleSheet("")
+
+    def _largest_divisor_le(self, n, bound):
+        """Return the largest divisor of n that is <= bound.
+        Returns 1 if n <= 0. Returns n if n <= bound and n divides n."""
+        if n <= 0:
+            return 1
+        if bound >= n:
+            return n
+        if bound <= 0:
+            return 1
+        # search downward from bound for a divisor of n
+        for d in range(bound, 0, -1):
+            if n % d == 0:
+                return d
+        return 1
+
+    def _iter_studies(self):
+        """Yield (study_widget, study_name, max_steps) for every study
+        in the Processing tab, including the placeholder '+' tab is skipped."""
+        if not hasattr(self, 'deformation_tab_widget'):
+            return
+        tw = self.deformation_tab_widget.tab_widget
+        for i in range(tw.count()):
+            name = tw.tabText(i)
+            if name == "+":
+                continue
+            sw = tw.widget(i)
+            if sw is None:
+                continue
+            try:
+                ms = int(sw.max_steps_spinbox.value())
+            except Exception:
+                ms = 0
+            yield sw, name, ms
+
+    def _resolve_nrepeat_user_value(self, thermo_freq, max_steps=None, nrepeat_user=None):
+        """Resolve the effective nrepeat for a study given the current user input and unit.
+
+        Steps unit: returns the user value as-is.
+        Percent unit: nrepeat = round((pct/100) * (thermo_freq / nevery)).
+        This is the per-study formula derived from
+            nevery * nrepeat / output_freq = pct / 100
+        (the percent of the range between each thermo output that contributes
+        to the average).
+
+        The caller is responsible for clamping to floor(thermo_freq / nevery).
+        """
+        if nrepeat_user is None:
+            nrepeat_user = self.avg_nrepeat_spinbox.value()
+        if hasattr(self, 'avg_nrepeat_unit_combo') and self.avg_nrepeat_unit_combo.currentText().startswith("percent"):
+            nevery = max(1, self.avg_nevery_spinbox.value())
+            if thermo_freq:
+                return max(1, round((nrepeat_user / 100.0) * (float(thermo_freq) / nevery)))
+            return max(1, round(nrepeat_user / 100.0))
+        return max(1, int(nrepeat_user))
+
+    def _max_nrepeat_for_study(self, thermo_freq, nevery):
+        """Maximum nrepeat that satisfies nrepeat*nevery <= thermo_freq (LAMMPS
+        constraint on fix ave/time: Nrepeat*Nevery <= Nfreq)."""
+        if thermo_freq <= 0 or nevery <= 0:
+            return 1
+        return max(1, thermo_freq // nevery)
+
+    def _compute_per_study_output_freqs(self):
+        """Compute per-study resolved output frequencies.
+
+        Returns a list of dicts:
+            [{'name', 'max_steps', 'thermo_freq', 'traj_freq',
+              'thermo_count', 'traj_count',
+              'nevery', 'nrepeat', 'nrepeat_capped'}, ...]
+
+        Semantics:
+        - Nevery: always the user-entered value (single across studies).
+          This is the first argument of `fix ave/time Nevery Nrepeat Nfreq`
+          in LAMMPS.
+        - thermo_freq (Frequency mode): the user value, snapped to a multiple
+          of Nevery. In LAMMPS this is what gets passed as the Nfreq argument
+          of `fix ave/time`; we call it thermo_freq in the GUI to avoid
+          confusion with the averaging-scheme Nfreq.
+        - thermo_freq (Count mode): nearest multiple of Nevery to
+          max_steps/target_n.
+        - Nrepeat (steps unit): user value, capped at floor(thermo_freq/Nevery).
+        - Nrepeat (percent unit): round((pct/100) * (thermo_freq/Nevery)),
+          capped at floor(thermo_freq/Nevery). The cap is silent; a popup is
+          shown elsewhere when capping is required.
+        - Trajectory freq: only used in Count mode for the traj spinbox display;
+          the same divisor-of-Nevery rule does not apply (LAMMPS does not
+          constrain dump frequency that way), so we keep the legacy
+          "largest divisor of ms <= target_n" rule for traj.
+        - The LAMMPS averaging-scheme constraint on `fix ave/time` is:
+          thermo_freq % Nevery == 0  and  Nrepeat*Nevery <= thermo_freq.
+          We enforce both silently (silent cap on Nrepeat; nearest-multiple
+          snap on thermo_freq).
+        """
+        thermo_count = self._is_thermo_count_mode()
+        traj_count = self._is_traj_count_mode()
+        thermo_target_n = self.thermo_freq_spinbox.value()
+        traj_target_n = self.traj_freq_spinbox.value()
+        thermo_freq_user = self.thermo_freq_spinbox.value()
+        traj_freq_user = self.traj_freq_spinbox.value()
+        nevery_user = max(1, self.avg_nevery_spinbox.value())
+        nrepeat_user = self.avg_nrepeat_spinbox.value()
+        nrepeat_is_percent = (
+            hasattr(self, 'avg_nrepeat_unit_combo')
+            and self.avg_nrepeat_unit_combo.currentText().startswith("percent")
+        )
+
+        out = []
+        for sw, name, ms in self._iter_studies():
+            # Thermo thermo_freq (what LAMMPS calls the Nfreq argument of fix ave/time)
+            if thermo_count:
+                if ms > 0 and thermo_target_n > 0:
+                    # Floor of max_steps/target_n, then snap to nearest
+                    # multiple of nevery. The count is max_steps/thermo_freq.
+                    raw_thermo_freq = ms / float(thermo_target_n)
+                    k = max(1, round(raw_thermo_freq / nevery_user))
+                    thermo_freq_s = max(nevery_user, k * nevery_user)
+                    thermo_count_s = max(1, ms // thermo_freq_s)
+                else:
+                    thermo_count_s = max(1, thermo_target_n)
+                    thermo_freq_s = max(nevery_user, thermo_freq_user)
+                    # Snap to multiple of nevery for consistency
+                    k = max(1, round(thermo_freq_s / nevery_user))
+                    thermo_freq_s = max(nevery_user, k * nevery_user)
+                    thermo_count_s = max(1, ms // thermo_freq_s) if ms > 0 else max(1, thermo_target_n)
+            else:
+                thermo_count_s = 0  # not applicable in Frequency mode
+                thermo_freq_s = max(nevery_user, thermo_freq_user)
+                # Snap to multiple of nevery
+                k = max(1, round(thermo_freq_s / nevery_user))
+                thermo_freq_s = max(nevery_user, k * nevery_user)
+
+            # Trajectory freq (independent of thermo)
+            if traj_count:
+                if ms > 0 and traj_target_n > 0:
+                    # Largest divisor of ms that is <= target_n
+                    traj_count_s = self._largest_divisor_le(ms, min(traj_target_n, ms))
+                    if traj_count_s <= 0:
+                        traj_count_s = 1
+                    traj_freq_s = max(1, ms // traj_count_s)
+                else:
+                    traj_count_s = max(1, traj_target_n)
+                    traj_freq_s = max(1, traj_freq_user)
+            else:
+                traj_count_s = 0
+                traj_freq_s = max(1, traj_freq_user)
+
+            # Nrepeat
+            nevery_s = nevery_user  # single across studies
+            nrepeat_capped = False
+            if nrepeat_is_percent:
+                # nevery * nrepeat / thermo_freq = pct / 100
+                # -> nrepeat = (pct/100) * (thermo_freq / nevery)
+                if thermo_freq_s > 0 and nevery_s > 0:
+                    nrepeat_s = max(1, round((nrepeat_user / 100.0) * (float(thermo_freq_s) / nevery_s)))
+                else:
+                    nrepeat_s = max(1, nrepeat_user)
+            else:
+                nrepeat_s = max(1, int(nrepeat_user))
+            # Enforce LAMMPS constraint: nrepeat * nevery <= thermo_freq
+            max_allowed = self._max_nrepeat_for_study(thermo_freq_s, nevery_s)
+            if nrepeat_s > max_allowed:
+                nrepeat_s = max_allowed
+                nrepeat_capped = True
+
+            out.append({
+                'name': name,
+                'max_steps': ms,
+                'thermo_count': thermo_count_s,
+                'traj_count': traj_count_s,
+                'thermo_freq': thermo_freq_s,
+                'traj_freq': traj_freq_s,
+                'nevery': nevery_s,
+                'nrepeat': nrepeat_s,
+                'nrepeat_capped': nrepeat_capped,
+                'thermo_output_count': (ms / thermo_freq_s) if (ms > 0 and thermo_freq_s > 0) else 0,
+            })
+        return out
+
+    def _format_unique_dedup(self, values):
+        """Render a list of integers as either a single number (if all equal)
+        or a slash-separated, sorted, deduped string."""
+        unique = sorted({int(v) for v in values})
+        if len(unique) == 1:
+            return str(unique[0])
+        return "/".join(str(v) for v in unique)
+
+    def _format_unique_dedup_comma(self, values):
+        """Comma-separated, sorted, deduped (for the spinbox display)."""
+        unique = sorted({int(v) for v in values})
+        if len(unique) == 1:
+            return str(unique[0])
+        return ", ".join(str(v) for v in unique)
+
+    def _current_mode_unit_key(self):
+        """Return (thermo_mode, nrepeat_unit) as ('frequency'|'count', 'steps'|'percent')."""
+        mode = "count" if self._is_thermo_count_mode() else "frequency"
+        if hasattr(self, 'avg_nrepeat_unit_combo') and self.avg_nrepeat_unit_combo.currentText().startswith("percent"):
+            unit = "percent"
+        else:
+            unit = "steps"
+        return (mode, unit)
+
+    def _save_current_avg_to_memory(self, persist=True):
+        """Store the current (nevery, nrepeat) into the in-memory dict under
+        the current (mode, unit) key, and the current Thermo Output spinbox
+        value into the per-mode _thermo_freq_memory. If persist=True, also
+        write all entries to QSettings so they survive a session restart.
+
+        The thermo_freq is saved per-mode (not per-mode-and-unit) so switching
+        the Frequency/Count dropdown restores the user's previous entry for
+        the newly-selected mode, while switching the nrepeat unit (steps /
+        percent) does NOT change the Thermo Output value.
+        """
+        if not hasattr(self, 'avg_nevery_spinbox'):
+            return
+        key = self._current_mode_unit_key()
+        nevery = int(self.avg_nevery_spinbox.value())
+        nrepeat = int(self.avg_nrepeat_spinbox.value())
+        self._avg_memory[key] = (nevery, nrepeat)
+        if hasattr(self, 'thermo_freq_spinbox'):
+            current_mode = "count" if self._is_thermo_count_mode() else "frequency"
+            self._thermo_freq_memory[current_mode] = int(self.thermo_freq_spinbox.value())
+        if persist and not self._suppress_avg_memory_save:
+            for (m, u), (n, r) in self._avg_memory.items():
+                self.settings.setValue(f"output/avg_nevery_{m}_{u}", n)
+                self.settings.setValue(f"output/avg_nrepeat_{m}_{u}", r)
+            for m, f in self._thermo_freq_memory.items():
+                self.settings.setValue(f"output/avg_thermo_freq_{m}", f)
+
+    def _save_avg_to_memory_key(self, mode, unit):
+        """Store the current (nevery, nrepeat) into the dict under an
+        explicit (mode, unit) key, and the current Thermo Output spinbox
+        value into the per-mode _thermo_freq_memory under the given mode.
+        Use this when you need to save under a different key than the live
+        combo (e.g. during a mode transition where the combo has already
+        moved to the new mode).
+
+        The thermo_freq is read from the live Thermo Output spinbox, which
+        still holds the OLD value at the moment this is called (we save
+        BEFORE we change the spinbox to the new mode's stored value).
+        """
+        if not hasattr(self, 'avg_nevery_spinbox'):
+            return
+        if unit not in ("steps", "percent") or mode not in ("frequency", "count"):
+            return
+        nevery = int(self.avg_nevery_spinbox.value())
+        nrepeat = int(self.avg_nrepeat_spinbox.value())
+        self._avg_memory[(mode, unit)] = (nevery, nrepeat)
+        if hasattr(self, 'thermo_freq_spinbox'):
+            self._thermo_freq_memory[mode] = int(self.thermo_freq_spinbox.value())
+
+    def _load_avg_from_memory_for_mode(self, mode, unit):
+        """Set the avg spinboxes to the (nevery, nrepeat) stored for
+        (mode, unit). Blocks signals while setting so the valueChanged
+        doesn't recurse.
+
+        Note: the Thermo Output spinbox value is NOT touched here — it is
+        stored separately in _thermo_freq_memory (per-mode, not per-mode-
+        and-unit) and is loaded only when the Frequency/Count dropdown
+        changes (see _load_thermo_freq_for_mode).
+        """
+        key = (mode, unit)
+        if key not in self._avg_memory:
+            return
+        nevery, nrepeat = self._avg_memory[key]
+        self.avg_nevery_spinbox.blockSignals(True)
+        self.avg_nrepeat_spinbox.blockSignals(True)
+        self.avg_nevery_spinbox.setValue(max(1, int(nevery)))
+        self.avg_nrepeat_spinbox.setValue(max(1, int(nrepeat)))
+        self.avg_nevery_spinbox.blockSignals(False)
+        self.avg_nrepeat_spinbox.blockSignals(False)
+
+    def _load_thermo_freq_for_mode(self, mode):
+        """Set the Thermo Output spinbox to the value stored in
+        _thermo_freq_memory for the given mode. Blocks signals while
+        setting so valueChanged doesn't recurse.
+
+        Called from _on_thermo_mode_changed (Frequency <-> Count toggle)
+        so the user's previous entry for the newly-selected mode is
+        restored. The spinbox is the "strong" box — it always accepts
+        whatever value is stored.
+
+        IMPORTANT: also updates _resolved_text to the new value. Without
+        this, the subsequent leave_edit_mode() in _on_thermo_mode_changed
+        would set the lineEdit text to the OLD _resolved_text (from the
+        previous mode). In Qt6, setText on the lineEdit of a QSpinBox
+        triggers a value update that would revert the spinbox value to
+        the OLD value, corrupting _thermo_freq_memory when
+        _save_current_avg_to_memory runs at the end of the mode switch.
+        set_resolved_text only updates the lineEdit if _in_edit_mode is
+        False; if the spinbox is still in edit mode (from the previous
+        Count mode), only _resolved_text is updated, which is exactly
+        what we need — leave_edit_mode() will then set the lineEdit to
+        the new value, matching the new spinbox value (no value change).
+        """
+        if not hasattr(self, 'thermo_freq_spinbox'):
+            return
+        if mode not in self._thermo_freq_memory:
+            return
+        val = max(1, int(self._thermo_freq_memory[mode]))
+        self.thermo_freq_spinbox.blockSignals(True)
+        self.thermo_freq_spinbox.setValue(val)
+        self.thermo_freq_spinbox.blockSignals(False)
+        # Update _resolved_text to the new value so the subsequent
+        # leave_edit_mode() in _on_thermo_mode_changed sets the lineEdit
+        # to the correct text (preventing the Qt6 value-revert bug).
+        self.thermo_freq_spinbox.set_resolved_text(str(val))
+
+    def _load_traj_freq_for_mode(self, mode):
+        """Set the Trajectory Output spinbox to the value stored for the
+        selected mode. Mirrors _load_thermo_freq_for_mode, but trajectory has
+        no averaging constraints attached to it.
+        """
+        if not hasattr(self, 'traj_freq_spinbox'):
+            return
+        if mode not in self._traj_freq_memory:
+            return
+        val = max(1, int(self._traj_freq_memory[mode]))
+        self.traj_freq_spinbox.blockSignals(True)
+        self.traj_freq_spinbox.setValue(val)
+        self.traj_freq_spinbox.blockSignals(False)
+        self.traj_freq_spinbox.set_resolved_text(str(val))
+
+    def _restore_all_avg_memory_from_settings(self):
+        """Read all 4 (nevery, nrepeat) entries and the 2 per-mode thermo_freq
+        entries from QSettings into the dicts. Called from
+        load_settings/apply_config.
+
+        Backward compat: older sessions only saved (nevery, nrepeat) under
+        output/avg_nevery_/output/avg_nrepeat keys, without the per-mode
+        thermo_freq. If a per-mode thermo_freq key is missing we fall back
+        to the legacy output/thermo_freq (for frequency mode) or
+        output/thermo_target_n (for count mode), and ultimately to 100.
+        """
+        legacy_thermo_freq = self.settings.value("output/thermo_freq", 100, type=int)
+        legacy_thermo_target_n = self.settings.value(
+            "output/thermo_target_n", legacy_thermo_freq, type=int
+        )
+        for mode in ("frequency", "count"):
+            for unit in ("steps", "percent"):
+                n = self.settings.value(f"output/avg_nevery_{mode}_{unit}", None)
+                r = self.settings.value(f"output/avg_nrepeat_{mode}_{unit}", None)
+                if n is not None and r is not None:
+                    try:
+                        self._avg_memory[(mode, unit)] = (
+                            max(1, int(n)),
+                            max(1, int(r)),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+            # Per-mode thermo_freq (the user's previous Thermo Output value
+            # for this mode). If the key is missing, fall back to the legacy
+            # value appropriate for this mode.
+            f = self.settings.value(f"output/avg_thermo_freq_{mode}", None)
+            if f is None:
+                f = legacy_thermo_target_n if mode == "count" else legacy_thermo_freq
+            try:
+                self._thermo_freq_memory[mode] = max(1, int(f))
+            except (TypeError, ValueError):
+                pass
+
+    def _restore_traj_memory_from_settings(self):
+        """Read per-mode trajectory values from QSettings.
+
+        Backward compat: older sessions only saved output/traj_freq and
+        output/traj_target_n, so those remain the fallback values.
+        """
+        legacy_traj_freq = self.settings.value("output/traj_freq", 100, type=int)
+        legacy_traj_target_n = self.settings.value(
+            "output/traj_target_n", legacy_traj_freq, type=int
+        )
+
+        stored = self.settings.value("output/traj_freq_memory", None)
+        if isinstance(stored, dict):
+            for mode, value in stored.items():
+                if mode in ("frequency", "count"):
+                    try:
+                        self._traj_freq_memory[mode] = max(1, int(value))
+                    except (TypeError, ValueError):
+                        pass
+
+        for mode, fallback in (
+            ("frequency", legacy_traj_freq),
+            ("count", legacy_traj_target_n),
+        ):
+            value = self.settings.value(f"output/traj_freq_memory_{mode}", None)
+            if value is None and mode not in self._traj_freq_memory:
+                value = fallback
+            elif value is None:
+                continue
+            try:
+                self._traj_freq_memory[mode] = max(1, int(value))
+            except (TypeError, ValueError):
+                pass
+
+    def _on_avg_value_changed(self, _value):
+        """Slot for both Nevery/Nrepeat spinbox valueChanged. Saves the current
+        (mode, unit) entry to memory and persists. Silent — no popup here;
+        the percent-cap popup is handled separately.
+        """
+        if self._suppress_avg_memory_save:
+            return
+        if not self._avg_memory_loaded:
+            return
+        self._save_current_avg_to_memory(persist=True)
+
+    def _maybe_warn_per_study_diverge(self, kind, per_study_pairs):
+        """If per-study values diverge, show a modal warning.
+
+        per_study_pairs: iterable of (study_name, value).
+        Only fires if there are 2+ distinct values across studies.
+        """
+        unique = sorted({v for _, v in per_study_pairs})
+        if len(unique) <= 1:
+            return
+        lines = [
+            f"{kind} could not be matched exactly for all studies.",
+            "Each study's value was rounded to the nearest divisor of its max_steps:",
+            "",
+        ]
+        for name, val in per_study_pairs:
+            lines.append(f"  {name}: {val}")
+        QMessageBox.warning(self, f"{kind} rounded per study", "\n".join(lines))
+
+    def _on_thermo_mode_changed(self, text):
+        """Switch the thermo spinbox between edit and display mode and refresh.
+
+        The integer-divisor check (and possible popup) only fires when the user
+        actively *transitions* into Count from a different mode. Re-selecting
+        Count while already in Count, or switching away from Count, is silent.
+
+        Also handles per-mode memory: saves the current
+        (nevery, nrepeat, thermo_freq) under the OLD (mode, unit) key, then
+        loads the values for the NEW (mode, unit) key. The Thermo Output
+        spinbox is set to the value the user last had for the newly-selected
+        mode, so toggling Frequency <-> Count preserves the user's previous
+        entry. The order is critical: FIRST set the spinbox to the new mode's
+        stored value, THEN run all the checks and updates (grey text,
+        tooltip, per-study label, popup on divergence, Nevery red marking).
+
+        The thermo mode switch is the only place where Count-mode pops up
+        with a possible modal warning (on per-study Nfreq divergence).
+
+        NOTE: The combo's current text has already been set to `text` by the
+        activated wrapper before this slot runs. We use the stored
+        `_current_thermo_mode_text` to determine the OLD key for the save.
+        """
+        prev_text = getattr(self, '_current_thermo_mode_text', "Frequency")
+        new_mode = "count" if text == "Count" else "frequency"
+        prev_mode = "count" if prev_text == "Count" else "frequency"
+        transitioning_to_count = (new_mode == "count" and prev_mode != "count")
+
+        # Per-mode memory: save current values under the OLD (mode, unit) key
+        # (using the stored prev mode, not the live combo text). The
+        # thermo_freq is read from the live spinbox at this point (it still
+        # holds the OLD value).
+        self._suppress_avg_memory_save = True
+        try:
+            self._save_avg_to_memory_key(prev_mode, self._current_nrepeat_unit)
+            # Switch the unit combo's range based on the current unit
+            if hasattr(self, 'avg_nrepeat_unit_combo'):
+                unit_text = self.avg_nrepeat_unit_combo.currentText()
+                if unit_text.startswith("percent"):
+                    self.avg_nrepeat_spinbox.setRange(1, 100)
+                else:
+                    self.avg_nrepeat_spinbox.setRange(1, 10000000)
+            # Load values for the new (mode, unit) key.
+            self._load_avg_from_memory_for_mode(new_mode, self._current_nrepeat_unit)
+            # FIRST: value update in the Thermo Output spinbox — restore the
+            # user's previous entry for the newly-selected mode. This must
+            # run BEFORE the checks and updates below, so the grey text,
+            # tooltip, per-study label, popup and Nevery red marking all
+            # operate on the spinbox's NEW value.
+            self._load_thermo_freq_for_mode(new_mode)
+        finally:
+            self._suppress_avg_memory_save = False
+
+        if text == "Count":
+            self.thermo_freq_spinbox.enter_edit_mode()
+            self.thermo_freq_spinbox.setMinimumWidth(280)
+        else:
+            self.thermo_freq_spinbox.leave_edit_mode()
+            self.thermo_freq_spinbox.setMinimumWidth(150)
+        # THEN: all the checks and updates (grey text, tooltip, per-study
+        # label, popup on Nfreq divergence, Nevery red marking). These run
+        # against the spinbox's NEW value.
+        self._refresh_thermo_freq_display(popup_on_diff=transitioning_to_count)
+        self._refresh_traj_freq_display(popup_on_diff=False)
+        self._update_per_study_freq_label()
+        self.update_avg_params_label()
+        # Refresh the Nevery (Sample every) red marking. The Thermo Output
+        # field is the "strong" box and is never marked red; the Nevery
+        # field is what must adapt and is marked red when it doesn't satisfy
+        # the current Thermo output (in either Frequency or Count mode).
+        if self._is_nevery_valid_for_current_thermo_output():
+            self._clear_nevery_invalid()
+        else:
+            self._mark_nevery_invalid()
+        self._current_thermo_mode_text = text
+        # Persist the new (mode, unit) value
+        self._save_current_avg_to_memory(persist=True)
+
+    def _on_traj_mode_changed(self, text):
+        """Switch the traj spinbox between edit and display mode and refresh.
+
+        The integer-divisor check (and possible popup) only fires when the user
+        actively *transitions* into Count from a different mode. Re-selecting
+        Count while already in Count, or switching away from Count, is silent.
+        """
+        prev_text = getattr(self, '_current_traj_mode_text', "Frequency")
+        new_mode = "count" if text == "Count" else "frequency"
+        prev_mode = "count" if prev_text == "Count" else "frequency"
+        transitioning_to_count = (new_mode == "count" and prev_mode != "count")
+
+        if hasattr(self, '_traj_freq_memory'):
+            self._traj_freq_memory[prev_mode] = int(self.traj_freq_spinbox.value())
+            self._load_traj_freq_for_mode(new_mode)
+
+        if text == "Count":
+            self.traj_freq_spinbox.enter_edit_mode()
+            self.traj_freq_spinbox.setMinimumWidth(280)
+        else:
+            self.traj_freq_spinbox.leave_edit_mode()
+            self.traj_freq_spinbox.setMinimumWidth(150)
+        self._refresh_traj_freq_display(popup_on_diff=transitioning_to_count)
+        self._refresh_thermo_freq_display(popup_on_diff=False)
+        self._current_traj_mode_text = text
+
+    def _on_thermo_mode_activated(self, index):
+        """Wrapper for thermo_mode_combo.activated: forwards the new text
+        to the change handler. We compare to the current text to avoid
+        firing on a no-op re-click (in case the OS does fire activated
+        for the already-selected item).
+        """
+        new_text = self.thermo_mode_combo.itemText(index)
+        if new_text == self._current_thermo_mode_text:
+            return
+        # activated doesn't move the current index on some platforms, so we
+        # explicitly set it.
+        self.thermo_mode_combo.setCurrentIndex(index)
+        self._on_thermo_mode_changed(new_text)
+
+    def _on_traj_mode_activated(self, index):
+        """Wrapper for traj_mode_combo.activated. See _on_thermo_mode_activated."""
+        new_text = self.traj_mode_combo.itemText(index)
+        if new_text == self._current_traj_mode_text:
+            return
+        self.traj_mode_combo.setCurrentIndex(index)
+        self._on_traj_mode_changed(new_text)
+
+    def _on_avg_nrepeat_unit_activated(self, index):
+        """Wrapper for avg_nrepeat_unit_combo.activated. The activated signal
+        only fires on user click; programmatic setCurrentText during load
+        is a no-op here. We still need to explicitly set the index and
+        forward the new text to the change handler.
+        """
+        new_text = self.avg_nrepeat_unit_combo.itemText(index)
+        self.avg_nrepeat_unit_combo.setCurrentIndex(index)
+        self._on_avg_nrepeat_unit_changed(new_text)
+
+    def _on_avg_nrepeat_unit_changed(self, text):
+        """Switch the nrepeat spinbox between steps and percent.
+
+        Saves the current (nevery, nrepeat) under the OLD (mode, unit) key,
+        adjusts the spinbox range for the new unit, and loads the values
+        stored for the new (mode, unit) key. Silent — no popup here, but
+        if the new unit is percent, a per-study cap popup may fire via
+        _check_percent_nrepeat_cap (called by the valueChanged slot).
+
+        NOTE: The unit combo's current text has already been set to `text` by
+        the activated wrapper before this slot runs. We use the stored
+        `_current_nrepeat_unit` to determine the OLD unit.
+        """
+        new_unit = "percent" if text.startswith("percent") else "steps"
+        prev_unit = getattr(self, '_current_nrepeat_unit', "steps")
+        current_mode = "count" if self._is_thermo_count_mode() else "frequency"
+
+        # Save current under (current_mode, prev_unit) — explicit, so we use
+        # the stored prev_unit rather than the live combo text.
+        self._suppress_avg_memory_save = True
+        try:
+            self._save_avg_to_memory_key(current_mode, prev_unit)
+            # Clamp the range for the new unit
+            if new_unit == "percent":
+                self.avg_nrepeat_spinbox.setRange(1, 100)
+            else:
+                self.avg_nrepeat_spinbox.setRange(1, 10000000)
+            # Load values for (current_mode, new_unit)
+            self._load_avg_from_memory_for_mode(current_mode, new_unit)
+        finally:
+            self._suppress_avg_memory_save = False
+
+        self._current_nrepeat_unit = new_unit
+        # Persist
+        self._save_current_avg_to_memory(persist=True)
+        # Update the grey label and possibly show the percent-cap popup
+        self.update_avg_params_label()
+        self._check_percent_nrepeat_cap()
+
+    def _check_percent_nrepeat_cap(self):
+        """If the current percent value would cause nrepeat to exceed
+        floor(thermo_freq/nevery) for any study, show a popup explaining the cap
+        and the auto-capped per-study values (which also appear in the grey
+        label). Only fires for percent unit, and only when at least one study
+        would be capped.
+
+        Percent formula (in the averaging context, `fix ave/time
+        Nevery Nrepeat Nfreq`):  Nevery × Nrepeat / Nfreq = pct / 100,
+        so Nrepeat = round((pct/100) × (Nfreq / Nevery)). In the GUI Nfreq is
+        the same as thermo_freq (the third argument of fix ave/time equals
+        the value passed to `thermo N`).
+        """
+        if not hasattr(self, 'avg_nrepeat_unit_combo'):
+            return
+        if not self.avg_nrepeat_unit_combo.currentText().startswith("percent"):
+            return
+        per_study = self._compute_per_study_output_freqs()
+        capped = [p for p in per_study if p.get('nrepeat_capped')]
+        if not capped:
+            return
+        pct = self.avg_nrepeat_spinbox.value()
         nevery = self.avg_nevery_spinbox.value()
-        nrepeat = self.avg_nrepeat_spinbox.value()
-        thermo_freq = self.thermo_freq_spinbox.value()
+        lines = [
+            f"Nrepeat at {pct}% of the range between each thermo output would",
+            f"violate the LAMMPS constraint  Nrepeat × Nevery ≤ Nfreq  for at",
+            f"least one study (Nevery = {nevery}).",
+            "",
+            f"Formula:  Nrepeat = round(({pct}/100) × (Nfreq / {nevery}))",
+            "",
+            "Each study's Nrepeat has been auto-capped to the maximum allowed",
+            "value (the grey label and tooltip show the values that will be used):",
+            "",
+        ]
+        for p in capped:
+            thermo_freq = p['thermo_freq']  # dict key; this IS the Nfreq
+            requested = max(1, round((pct / 100.0) * (thermo_freq / nevery))) if thermo_freq > 0 else pct
+            max_allowed = max(1, thermo_freq // nevery) if thermo_freq > 0 else 1
+            lines.append(
+                f"  {p['name']}: max_steps={p['max_steps']}, Nfreq={thermo_freq}, "
+                f"requested Nrepeat={requested}, "
+                f"capped Nrepeat={p['nrepeat']} (max floor(Nfreq/Nevery)=floor({thermo_freq}/{nevery})={max_allowed})"
+            )
+        QMessageBox.information(self, "Nrepeat auto-capped", "\n".join(lines))
 
-        # Nfreq must always match thermo_freq for the output to occur at thermo output
-        nfreq = thermo_freq
+    def _update_per_study_freq_label(self):
+        """Update the small italic-grey QLabel that shows the actual per-study
+        Nfreq next to the thermo spinbox. Visible only in Count mode.
 
-        self.avg_params_label.setText(f"(Nevery = {nevery}, Nrepeat = {nrepeat}, Nfreq = {nfreq})")
+        In Count mode the spinbox shows the target COUNT, but the actual
+        per-study output frequency (the Nfreq argument of `fix ave/time
+        Nevery Nrepeat Nfreq`) is adapted so that Nfreq % Nevery == 0.
+        This label shows the comma-separated Nfreqs in italic grey, with
+        a tooltip mapping each value to its study. Format:
+        "Frequencies: 2000, 20000, 200000" (no parens).
+        """
+        if not hasattr(self, 'thermo_per_study_freq_label'):
+            return
+        if not self._is_thermo_count_mode():
+            self.thermo_per_study_freq_label.setVisible(False)
+            self.thermo_per_study_freq_label.setText("")
+            self.thermo_per_study_freq_label.setToolTip("")
+            return
+        per_study = self._compute_per_study_output_freqs()
+        if not per_study:
+            self.thermo_per_study_freq_label.setVisible(False)
+            self.thermo_per_study_freq_label.setText("")
+            self.thermo_per_study_freq_label.setToolTip("")
+            return
+        freqs = [p['thermo_freq'] for p in per_study]  # dict key; this IS the Nfreq
+        display = self._format_unique_dedup_comma(freqs)
+        self.thermo_per_study_freq_label.setText(f"Frequencies: {display}")
+        self.thermo_per_study_freq_label.setVisible(True)
+        lines = ["Output frequency (Nfreq) per study in Count mode:"]
+        for p in per_study:
+            lines.append(
+                f"  {p['name']}: max_steps={p['max_steps']}, "
+                f"count={p['thermo_count']}, Nfreq={p['thermo_freq']}"
+            )
+        self.thermo_per_study_freq_label.setToolTip("\n".join(lines))
+
+    def _refresh_thermo_freq_display(self, popup_on_diff=False):
+        """Re-render the thermo spinbox (display text + tooltip) and grey label."""
+        if not hasattr(self, 'thermo_freq_spinbox'):
+            return
+        if not self._is_thermo_count_mode():
+            self.thermo_freq_spinbox.set_resolved_text(str(self.thermo_freq_spinbox.value()))
+            self.thermo_freq_spinbox.setToolTip("")
+            self._update_per_study_freq_label()
+            self.update_avg_params_label()
+            return
+
+        per_study = self._compute_per_study_output_freqs()
+        if not per_study:
+            self.thermo_freq_spinbox.set_resolved_text(str(self.thermo_freq_spinbox.value()))
+            self.thermo_freq_spinbox.setToolTip("")
+            self._update_per_study_freq_label()
+            self.update_avg_params_label()
+            return
+
+        # In Count mode the spinbox shows the COUNT (single value when all
+        # studies agree, comma-separated when they diverge).
+        counts = [p['thermo_count'] for p in per_study if p['thermo_count'] > 0]
+        display = self._format_unique_dedup_comma(counts) if counts else "0"
+        self.thermo_freq_spinbox.set_resolved_text(display)
+
+        # Tooltip: full per-study breakdown (count + Nfreq of the averaging)
+        lines = ["Thermo Output Count per study (Count mode):"]
+        for p in per_study:
+            lines.append(
+                f"  {p['name']}: max_steps={p['max_steps']}, "
+                f"count={p['thermo_count']}, Nfreq={p['thermo_freq']}"
+            )
+        self.thermo_freq_spinbox.setToolTip("\n".join(lines))
+
+        if popup_on_diff:
+            # Fire the warning on Output frequency divergence (not just count):
+            # two studies can land on the same count with different thermo_freqs,
+            # and the per-study grey label needs to show that.
+            self._maybe_warn_per_study_diverge(
+                "Thermo Output frequency",
+                [(p['name'], p['thermo_freq']) for p in per_study],
+            )
+
+        self._update_per_study_freq_label()
+        self.update_avg_params_label()
+
+    def _refresh_traj_freq_display(self, popup_on_diff=False):
+        """Re-render the trajectory spinbox (display text + tooltip)."""
+        if not hasattr(self, 'traj_freq_spinbox'):
+            return
+        if not self._is_traj_count_mode():
+            self.traj_freq_spinbox.set_resolved_text(str(self.traj_freq_spinbox.value()))
+            self.traj_freq_spinbox.setToolTip("")
+            return
+
+        per_study = self._compute_per_study_output_freqs()
+        if not per_study:
+            self.traj_freq_spinbox.set_resolved_text(str(self.traj_freq_spinbox.value()))
+            self.traj_freq_spinbox.setToolTip("")
+            return
+
+        # In Count mode the spinbox shows the COUNT.
+        counts = [p['traj_count'] for p in per_study if p['traj_count'] > 0]
+        display = self._format_unique_dedup_comma(counts) if counts else "0"
+        self.traj_freq_spinbox.set_resolved_text(display)
+
+        lines = ["Trajectory Output Count per study (Count mode):"]
+        for p in per_study:
+            lines.append(
+                f"  {p['name']}: max_steps={p['max_steps']}, "
+                f"count={p['traj_count']}, output frequency={p['traj_freq']}"
+            )
+        self.traj_freq_spinbox.setToolTip("\n".join(lines))
+
+        if popup_on_diff:
+            # Fire on Output frequency divergence (not just count) so the
+            # per-study grey label can be cross-checked.
+            self._maybe_warn_per_study_diverge(
+                "Trajectory Output frequency",
+                [(p['name'], p['traj_freq']) for p in per_study],
+            )
+
+    def _refresh_output_freq_displays(self):
+        """Single entry point: silent refresh of both spinboxes + grey label.
+        Used by Processing-tab-driven updates (no popup)."""
+        self._refresh_thermo_freq_display(popup_on_diff=False)
+        self._refresh_traj_freq_display(popup_on_diff=False)
+        self._update_per_study_freq_label()
+        self.update_avg_params_label()
+
+    def _on_thermo_freq_committed(self):
+        """Slot for thermo spinbox's editingFinished: silent refresh, then
+        leave edit mode so the resolved display text is shown.
+
+        The 'Output frequency rounded per study' popup is intentionally NOT
+        shown here. editingFinished fires both on Enter/Tab and on focus loss
+        (e.g. when the user clicks another tab), so this slot cannot tell the
+        two apart. The popup is fired from _on_thermo_mode_changed when the
+        user transitions to Count mode (a deliberate, unambiguous action),
+        and from per-study maxStepsChanged (a deliberate, unambiguous action).
+
+        After the refresh, the Sample-every (Nevery) field is marked red if
+        the current Nevery is incompatible with the just-committed Thermo
+        output (in either Frequency or Count mode); cleared otherwise. The
+        Thermo Output spinbox itself is the "strong" box and is never
+        marked red.
+
+        The just-committed value is also saved to _thermo_freq_memory under
+        the current mode key and persisted to QSettings, so switching the
+        Frequency/Count dropdown and switching back restores the value the
+        user just typed (not an older value from a previous dropdown switch).
+        """
+        self._refresh_thermo_freq_display(popup_on_diff=False)
+        if self._is_nevery_valid_for_current_thermo_output():
+            self._clear_nevery_invalid()
+        else:
+            self._mark_nevery_invalid()
+        # Persist the just-committed value to the per-mode memory so the
+        # next dropdown toggle (and back) restores it. Gated on the same
+        # flags as _save_current_avg_to_memory to avoid overwriting the
+        # memory during startup / apply_config.
+        if (hasattr(self, '_thermo_freq_memory')
+                and not self._suppress_avg_memory_save
+                and self._avg_memory_loaded):
+            current_mode = "count" if self._is_thermo_count_mode() else "frequency"
+            self._thermo_freq_memory[current_mode] = int(self.thermo_freq_spinbox.value())
+            self.settings.setValue(
+                f"output/avg_thermo_freq_{current_mode}",
+                self._thermo_freq_memory[current_mode],
+            )
+        self.thermo_freq_spinbox.leave_edit_mode()
+
+    def _on_traj_freq_committed(self):
+        """Slot for traj spinbox's editingFinished: silent refresh, then
+        leave edit mode so the resolved display text is shown. See
+        _on_thermo_freq_committed for why the popup is suppressed here."""
+        self._refresh_traj_freq_display(popup_on_diff=False)
+        if hasattr(self, '_traj_freq_memory'):
+            current_mode = "count" if self._is_traj_count_mode() else "frequency"
+            self._traj_freq_memory[current_mode] = int(self.traj_freq_spinbox.value())
+            self.settings.setValue(
+                f"output/traj_freq_memory_{current_mode}",
+                self._traj_freq_memory[current_mode],
+            )
+        self.traj_freq_spinbox.leave_edit_mode()
+
+    def _wire_study_max_steps_signals(self):
+        """Connect each StudyWidget's maxStepsChanged to a silent refresh."""
+        if not hasattr(self, 'deformation_tab_widget'):
+            return
+        tw = self.deformation_tab_widget.tab_widget
+        for i in range(tw.count()):
+            sw = tw.widget(i)
+            if sw is None or not hasattr(sw, 'maxStepsChanged'):
+                continue
+            try:
+                sw.maxStepsChanged.disconnect(self._refresh_output_freq_displays)
+            except (TypeError, RuntimeError):
+                pass
+            sw.maxStepsChanged.connect(self._refresh_output_freq_displays)
 
     def toggle_velocity_settings(self, state):
         """Toggle velocity initialization fields based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         self.initial_velocity_seed.setEnabled(enabled)
+        
+    def toggle_thermostating_settings(self, state):
+        """Toggle thermostating parameter fields based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
         self.damping_factor.setEnabled(enabled)
         
     def toggle_bond_breakage_settings(self, state):
@@ -2244,6 +3529,12 @@ class LAMMPSdeformerGui(QMainWindow):
         self.timestep.valueChanged.connect(lambda val: self.deformation_tab_widget.update_all_graphs(val, self.units_combo.currentText()))
         self.units_combo.currentTextChanged.connect(lambda text: self.deformation_tab_widget.update_all_graphs(self.timestep.value(), text))
         self.deformation_tab_widget.studiesChanged.connect(self._update_output_tab_visibility)
+        # Wire per-study maxStepsChanged to a silent refresh of the Count-mode
+        # display (no popup). Also re-wire the connections on studiesChanged so
+        # newly added studies are picked up.
+        self.deformation_tab_widget.studiesChanged.connect(self._wire_study_max_steps_signals)
+        self.deformation_tab_widget.studiesChanged.connect(self._refresh_output_freq_displays)
+        self._wire_study_max_steps_signals()
         
     def update_deformation_table_headers(self):
         """Update table headers and column states based on calculation mode"""
@@ -2545,27 +3836,58 @@ class LAMMPSdeformerGui(QMainWindow):
         self.enable_thermo = QCheckBox("Enable Thermo Output")
         self.enable_thermo.setChecked(True)
         self.enable_thermo.stateChanged.connect(self.toggle_thermo_settings)
-        thermo_top_layout.addWidget(self.enable_thermo, 1)
+        thermo_top_layout.addWidget(self.enable_thermo)
 
         thermo_freq_layout = QHBoxLayout()
-        thermo_freq_label = QLabel("Thermo Output Frequency:")
-        self.thermo_freq_spinbox = QSpinBox()
-        self.thermo_freq_spinbox.setRange(1, 2147483647) 
+        thermo_freq_label = QLabel("Thermo Output:")
+        self.thermo_mode_combo = QComboBox()
+        self.thermo_mode_combo.addItems(["Frequency", "Count"])
+        self.thermo_mode_combo.setToolTip(
+            "Frequency: write every N steps (constant across studies).\n"
+            "Count: write exactly N times per study; the per-study output\n"
+            "frequency (the Nfreq argument of `fix ave/time Nevery Nrepeat\n"
+            "Nfreq`) is adapted so that Nfreq % Nevery == 0 and\n"
+            "Nrepeat*Nevery <= Nfreq."
+        )
+        self.thermo_freq_spinbox = CountModeSpinBox()
+        self.thermo_freq_spinbox.setRange(1, 2147483647)
         self.thermo_freq_spinbox.setValue(100)
         self.thermo_freq_spinbox.setSingleStep(100)
         self.thermo_freq_spinbox.setMinimumWidth(150)
-        self.thermo_freq_spinbox.valueChanged.connect(self.validate_and_round_nevery)
+        # Note: validate_and_round_nevery is connected via editingFinished only
+        # so the integer-divisor check fires when the user commits (Enter/Tab/leave)
+        # rather than on every keystroke. update_avg_params_label still updates
+        # the grey label on every change.
+        self.thermo_freq_spinbox.editingFinished.connect(self._on_thermo_freq_committed)
+        # Use activated(int) instead of currentTextChanged: activated only fires
+        # on user click, not on programmatic setCurrentText during load.
+        self.thermo_mode_combo.activated.connect(self._on_thermo_mode_activated)
+        self._current_thermo_mode_text = self.thermo_mode_combo.currentText()  # "Frequency" by default
+
+        # Per-study thermo_freq QLabel (visible only in Count mode).
+        # In Count mode the spinbox shows the target N, but the actual
+        # thermo_freq depends on each study's max_steps. We display the
+        # comma-separated thermo_freqs here in italic grey, with a tooltip
+        # mapping each value to its study.
+        self.thermo_per_study_freq_label = QLabel("")
+        self.thermo_per_study_freq_label.setStyleSheet(
+            "color: #666666; font-style: italic; margin-left: 6px;"
+        )
+        self.thermo_per_study_freq_label.setVisible(False)
+
         thermo_freq_layout.addWidget(thermo_freq_label)
+        thermo_freq_layout.addWidget(self.thermo_mode_combo)
         thermo_freq_layout.addWidget(self.thermo_freq_spinbox)
+        thermo_freq_layout.addWidget(self.thermo_per_study_freq_label)
         thermo_freq_layout.addStretch()
-        thermo_top_layout.addLayout(thermo_freq_layout, 2)
+        thermo_top_layout.addLayout(thermo_freq_layout, 1)
 
         self.target_temp_widget = QWidget()
         target_temp_layout = QHBoxLayout(self.target_temp_widget)
         target_temp_layout.setContentsMargins(0,0,0,0)
         self.add_target_to_thermo_check = QCheckBox("Add target temperature to thermo output")
         target_temp_layout.addWidget(self.add_target_to_thermo_check)
-        thermo_top_layout.addWidget(self.target_temp_widget, 2)
+        thermo_top_layout.addWidget(self.target_temp_widget)
         thermo_layout.addLayout(thermo_top_layout)
 
         # Row 2: Thermo Style Selector
@@ -2620,8 +3942,23 @@ class LAMMPSdeformerGui(QMainWindow):
         self.avg_nrepeat_spinbox.setFixedWidth(80)
         self.avg_nrepeat_spinbox.editingFinished.connect(self.validate_nrepeat)
         avg_settings_layout.addWidget(self.avg_nrepeat_spinbox)
-        
-        avg_settings_layout.addWidget(QLabel("values before each thermo output"))
+
+        self.avg_nrepeat_unit_combo = QComboBox()
+        self.avg_nrepeat_unit_combo.addItems([
+            "values before each thermo output",
+            "percent of range between each thermo output",
+        ])
+        self.avg_nrepeat_unit_combo.setToolTip(
+            "values: fixed number of samples per thermo output.\n"
+            "percent: percent of the range between each thermo output that contributes\n"
+            "to the average:  Nevery × Nrepeat / Output frequency = percent / 100.\n"
+            "Resulting Nrepeat = round((pct/100) × (Output frequency / Nevery))."
+        )
+        self.avg_nrepeat_unit_combo.activated.connect(self._on_avg_nrepeat_unit_activated)
+        self._current_nrepeat_unit = (
+            "percent" if self.avg_nrepeat_unit_combo.currentText().startswith("percent") else "steps"
+        )
+        avg_settings_layout.addWidget(self.avg_nrepeat_unit_combo)
 
         self.avg_params_label = QLabel("(Nevery = 10, Nrepeat = 10, Nfreq = 100)")
         self.avg_params_label.setStyleSheet("color: #666666; font-style: italic; margin-left: 10px;")
@@ -2640,8 +3977,18 @@ class LAMMPSdeformerGui(QMainWindow):
         # Connect changes to parameter label update
         self.avg_nevery_spinbox.valueChanged.connect(self.update_avg_params_label)
         self.avg_nrepeat_spinbox.valueChanged.connect(self.update_avg_params_label)
-        self.thermo_freq_spinbox.valueChanged.connect(self.validate_and_round_nevery)
-        
+        # Per-mode memory: every value change writes the current (nevery,
+        # nrepeat) to the in-memory dict under the current (mode, unit) key
+        # and persists to QSettings. Suppressed during load via _suppress flag.
+        self.avg_nevery_spinbox.valueChanged.connect(self._on_avg_value_changed)
+        self.avg_nrepeat_spinbox.valueChanged.connect(self._on_avg_value_changed)
+        # Note: validate_and_round_nevery is connected via editingFinished only
+        # (on avg_nevery_spinbox above) so the integer-divisor check only fires
+        # when the user commits a change (Enter/Tab/focus loss), not on every
+        # keystroke. update_avg_params_label still updates the grey label on
+        # every value change.
+        self.avg_nrepeat_spinbox.valueChanged.connect(self._check_percent_nrepeat_cap)
+
         # Initialize visibility and labels
         self.update_avg_settings_visibility()
         self.update_avg_params_label()
@@ -2661,13 +4008,23 @@ class LAMMPSdeformerGui(QMainWindow):
 
         traj_top_layout.addStretch(2)
 
-        traj_freq_label = QLabel("Trajectory Write Frequency:")
-        self.traj_freq_spinbox = QSpinBox()
+        traj_freq_label = QLabel("Trajectory Output:")
+        self.traj_mode_combo = QComboBox()
+        self.traj_mode_combo.addItems(["Frequency", "Count"])
+        self.traj_mode_combo.setToolTip(
+            "Frequency: dump every N steps (constant across studies).\n"
+            "Count: dump exactly N times per study; the dump cadence is adapted per study."
+        )
+        self.traj_freq_spinbox = CountModeSpinBox()
         self.traj_freq_spinbox.setRange(1, 2147483647)
         self.traj_freq_spinbox.setValue(100)
         self.traj_freq_spinbox.setSingleStep(100)
-        self.traj_freq_spinbox.setFixedWidth(100)  # Reduced by 20%
+        self.traj_freq_spinbox.setMinimumWidth(150)
+        self.traj_mode_combo.activated.connect(self._on_traj_mode_activated)
+        self._current_traj_mode_text = self.traj_mode_combo.currentText()  # "Frequency" by default
+        self.traj_freq_spinbox.editingFinished.connect(self._on_traj_freq_committed)
         traj_top_layout.addWidget(traj_freq_label)
+        traj_top_layout.addWidget(self.traj_mode_combo)
         traj_top_layout.addWidget(self.traj_freq_spinbox)
 
         traj_top_layout.addStretch(1)
@@ -2823,11 +4180,6 @@ class LAMMPSdeformerGui(QMainWindow):
         self.cluster_lammps_cmd.setToolTip("Command to run LAMMPS on the cluster.")
         cluster_layout.addRow("Cluster LAMMPS Command:", self.cluster_lammps_cmd)
 
-        self.module_load_cmd = QLineEdit()
-        self.module_load_cmd.setPlaceholderText("lammps")
-        self.module_load_cmd.setToolTip("Module to load on the cluster.")
-        cluster_layout.addRow("Module Load:", self.module_load_cmd)
-
         self.slurm_header_text = QTextEdit()
         self.slurm_header_text.setPlainText("""#!/bin/bash -l
 #SBATCH --job-name=lammps_simulation
@@ -2839,9 +4191,9 @@ class LAMMPSdeformerGui(QMainWindow):
 #SBATCH --export=NONE
 #SBATCH --output=job_%j.log
 #SBATCH --error=Job_%j.err""")
-        self.slurm_header_text.setToolTip("SLURM batch script header.")
+        self.slurm_header_text.setToolTip("SLURM batch script header and supplementary commands (e.g. module load).")
         self.slurm_header_text.setMinimumHeight(300)
-        cluster_layout.addRow("SLURM Header:", self.slurm_header_text)
+        cluster_layout.addRow("SLURM Header &&\nSupplementary Commands:", self.slurm_header_text)
 
         # Restart settings
         self.enable_restart_checkbox = QCheckBox("Enable automatic restart")
@@ -3402,6 +4754,22 @@ class LAMMPSdeformerGui(QMainWindow):
 
         avg_items = self.avg_selector.get_selected_items()
 
+        thermo_mode = self.thermo_mode_combo.currentText().lower()
+        traj_mode = self.traj_mode_combo.currentText().lower()
+
+        # Flush the visible values into the per-mode memories before saving.
+        # This keeps JSON/QSettings correct even when the user saves without
+        # first toggling modes again.
+        if hasattr(self, '_avg_memory') and hasattr(self, 'avg_nevery_spinbox'):
+            self._save_current_avg_to_memory(persist=False)
+        if hasattr(self, '_traj_freq_memory'):
+            self._traj_freq_memory[traj_mode] = int(self.traj_freq_spinbox.value())
+
+        thermo_freq_value = int(self._thermo_freq_memory.get("frequency", self.thermo_freq_spinbox.value()))
+        thermo_target_n = int(self._thermo_freq_memory.get("count", self.thermo_freq_spinbox.value()))
+        traj_freq_value = int(self._traj_freq_memory.get("frequency", self.traj_freq_spinbox.value()))
+        traj_target_n = int(self._traj_freq_memory.get("count", self.traj_freq_spinbox.value()))
+
         # Collect system sets
         system_sets_config = []
         for i in range(self.system_sets_tab_widget.count()):
@@ -3427,6 +4795,7 @@ class LAMMPSdeformerGui(QMainWindow):
                 "boundary_z": self.boundary_z_combo.currentText(),
                 "enable_velocity": self.enable_velocity.isChecked(),
                 "initial_velocity_seed": self.initial_velocity_seed.value(),
+                "enable_thermostating": self.enable_thermostating.isChecked(),
                 "damping_factor": self.damping_factor.value(),
                 
                 "timestep": self.timestep.value(),
@@ -3438,19 +4807,35 @@ class LAMMPSdeformerGui(QMainWindow):
             "output": {
                 "output_path": self.output_path_edit.text(),
                 "enable_trajectory": self.enable_trajectory.isChecked(),
-                "traj_freq": self.traj_freq_spinbox.value(),
+                "traj_freq": traj_freq_value,
+                "traj_mode": traj_mode,
+                "traj_target_n": traj_target_n,
+                "traj_freq_memory": {
+                    m: int(f) for m, f in self._traj_freq_memory.items()
+                },
                 "traj_format": self.traj_format.currentText(),
                 "avoid_coefficients": self.avoid_coefficients_checkbox.isChecked(),
                 "export_bonds": self.export_bonds_checkbox.isChecked(),
                 "trj_output_items": traj_items_str,
                 "enable_thermo": self.enable_thermo.isChecked(),
-                "thermo_freq": self.thermo_freq_spinbox.value(),
+                "thermo_freq": thermo_freq_value,
+                "thermo_mode": thermo_mode,
+                "thermo_target_n": thermo_target_n,
                 "thermo_style": thermo_style_str,
                 "eng_strains": eng_strains,
                 "cauchy_stresses": cauchy_stresses,
                 "averaged_quantities": avg_items,
                 "avg_nevery": self.avg_nevery_spinbox.value(),
                 "avg_nrepeat": self.avg_nrepeat_spinbox.value(),
+                "avg_nrepeat_unit": "percent" if self.avg_nrepeat_unit_combo.currentText().startswith("percent") else "steps",
+                "avg_nrepeat_percent": self.avg_nrepeat_spinbox.value() if self.avg_nrepeat_unit_combo.currentText().startswith("percent") else 50,
+                "avg_memory": {
+                    f"{m}_{u}": {"nevery": int(n), "nrepeat": int(r)}
+                    for (m, u), (n, r) in self._avg_memory.items()
+                },
+                "thermo_freq_memory": {
+                    m: int(f) for m, f in self._thermo_freq_memory.items()
+                },
                 "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
 
                 "custom_dumps": self.custom_dumps_text.toPlainText(),
@@ -3470,7 +4855,6 @@ class LAMMPSdeformerGui(QMainWindow):
                 "cluster_lammps_cmd": self.cluster_lammps_cmd.text() or "lmp",
                 "srun_cmd": "srun",
                 "sbatch_cmd": "sbatch",
-                "module_load": self.module_load_cmd.text() or "lammps",
                 "slurm_header": self.slurm_header_text.toPlainText() or '''#!/bin/bash
 #SBATCH --job-name=lammps_simulation
 #SBATCH --partition=singlenode
@@ -3579,44 +4963,103 @@ class LAMMPSdeformerGui(QMainWindow):
             self.boundary_z_combo.setCurrentText(self.settings.value("system/boundary_z", "p"))
             self.enable_velocity.setChecked(self.settings.value("system/enable_velocity", True, type=bool))
             self.initial_velocity_seed.setValue(self.settings.value("system/initial_velocity_seed", 12345, type=int))
+            self.enable_thermostating.setChecked(self.settings.value("system/enable_thermostating", True, type=bool))
             self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
 
             # Output settings
             self.output_path_edit.setText(self.settings.value("output/output_path", ""))
             self.enable_trajectory.setChecked(self.settings.value("output/enable_trajectory", True, type=bool))
-            self.traj_freq_spinbox.setValue(self.settings.value("output/traj_freq", 100, type=int))
+            traj_freq_saved = self.settings.value("output/traj_freq", 100, type=int)
+            self.traj_freq_spinbox.setValue(traj_freq_saved)
             self.traj_format.setCurrentText(self.settings.value("output/traj_format", "lammpstrj"))
             self.avoid_coefficients_checkbox.setChecked(self.settings.value("output/avoid_coefficients", True, type=bool))
             self.export_bonds_checkbox.setChecked(self.settings.value("output/export_bonds", False, type=bool))
-            
+
             # Trajectory Items
             trj_items_str = self.settings.value("output/trj_output_items", "id type x y z vx vy vz")
             self.traj_selector.set_items(trj_items_str.split())
 
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
-            
+
+            # Thermo/Trajectory mode + target_n (Count mode) — backward compatible defaults
+            traj_mode_saved = self.settings.value("output/traj_mode", "frequency", type=str)
+            self.traj_mode_combo.setCurrentText("Count" if str(traj_mode_saved).lower() == "count" else "Frequency")
+            traj_target_n = self.settings.value("output/traj_target_n", traj_freq_saved, type=int)
+            if traj_target_n < 1:
+                traj_target_n = 1
+            self._restore_traj_memory_from_settings()
+            current_traj_mode = "count" if self.traj_mode_combo.currentText() == "Count" else "frequency"
+            self._traj_freq_memory["frequency"] = max(1, int(traj_freq_saved))
+            self._traj_freq_memory["count"] = max(1, int(traj_target_n))
+            self._load_traj_freq_for_mode(current_traj_mode)
+
+            thermo_mode_saved = self.settings.value("output/thermo_mode", "frequency", type=str)
+            self.thermo_mode_combo.setCurrentText("Count" if str(thermo_mode_saved).lower() == "count" else "Frequency")
+            thermo_target_n = self.settings.value("output/thermo_target_n", self.thermo_freq_spinbox.value(), type=int)
+            if thermo_target_n < 1:
+                thermo_target_n = 1
+            if self.thermo_mode_combo.currentText() == "Count":
+                self.thermo_freq_spinbox.setValue(thermo_target_n)
+
             # Thermo Items (Merge standard + strains + stresses)
             thermo_std = self.settings.value("output/thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density").split()
-            
+
             def get_list(key):
                 val = self.settings.value(key, [])
                 if isinstance(val, str): return [x.strip() for x in val.split(',') if x.strip()]
                 return val
-            
+
             strains = get_list("output/eng_strains")
             stresses = get_list("output/cauchy_stresses")
             self.thermo_selector.set_items(thermo_std + strains + stresses)
-            
+
             # Averaged Items
             avg_items = get_list("output/averaged_quantities")
             self.avg_selector.set_items(avg_items)
-            
+
             self._update_averaging_spinboxes_state()
 
-            self.avg_nevery_spinbox.setValue(self.settings.value('output/avg_nevery', 10, type=int))
-            self.avg_nrepeat_spinbox.setValue(self.settings.value('output/avg_nrepeat', 100, type=int))
+            # Per-mode memory: read all 4 (nevery, nrepeat) pairs from QSettings
+            self._restore_all_avg_memory_from_settings()
+            current_thermo_mode = "count" if self._is_thermo_count_mode() else "frequency"
+            self._thermo_freq_memory["frequency"] = max(
+                1, int(self.settings.value("output/thermo_freq", 100, type=int))
+            )
+            self._thermo_freq_memory["count"] = max(1, int(thermo_target_n))
+
+            # Determine the unit to use (steps default). We set the unit combo
+            # first (this may trigger valueChanged but we suppress).
+            nrepeat_unit_saved = self.settings.value("output/avg_nrepeat_unit", "steps", type=str)
+            self._suppress_avg_memory_save = True
+            try:
+                if str(nrepeat_unit_saved).lower() == "percent":
+                    self.avg_nrepeat_unit_combo.setCurrentText("percent of range between each thermo output")
+                    self.avg_nrepeat_spinbox.setRange(1, 100)
+                else:
+                    self.avg_nrepeat_unit_combo.setCurrentText("values before each thermo output")
+                    self.avg_nrepeat_spinbox.setRange(1, 10000000)
+                self._current_nrepeat_unit = "percent" if str(nrepeat_unit_saved).lower() == "percent" else "steps"
+                # Now load the (nevery, nrepeat) for the current (mode, unit)
+                current_mode = "count" if self._is_thermo_count_mode() else "frequency"
+                self._load_avg_from_memory_for_mode(current_mode, self._current_nrepeat_unit)
+                # Apply the per-mode Thermo Output value from
+                # _thermo_freq_memory (populated above by
+                # _restore_all_avg_memory_from_settings). This ensures the
+                # spinbox shows the user's previously-saved value for the
+                # current mode, not the legacy output/thermo_freq or
+                # output/thermo_target_n value.
+                self._load_thermo_freq_for_mode(current_mode)
+                # Override the nrepeat value in percent mode with the legacy key
+                if str(nrepeat_unit_saved).lower() == "percent":
+                    nrepeat_pct = self.settings.value("output/avg_nrepeat_percent", 50, type=int)
+                    if nrepeat_pct < 1: nrepeat_pct = 1
+                    if nrepeat_pct > 100: nrepeat_pct = 100
+                    self.avg_nrepeat_spinbox.setValue(nrepeat_pct)
+            finally:
+                self._suppress_avg_memory_save = False
+            self._avg_memory_loaded = True
             self.add_target_to_thermo_check.setChecked(self.settings.value("output/add_target_to_thermo", False, type=bool))
 
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
@@ -3636,7 +5079,6 @@ class LAMMPSdeformerGui(QMainWindow):
             self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
             self.log_file_name.setText(self.settings.value("job_submission/log_file_name", "job.log"))
             self.cluster_lammps_cmd.setText(self.settings.value("job_submission/cluster_lammps_cmd", ""))
-            self.module_load_cmd.setText(self.settings.value("job_submission/module_load", ""))
             self.slurm_header_text.setPlainText(self.settings.value("job_submission/slurm_header", ""))
 
             enable_restart = self.settings.value("job_submission/enable_restart", False, type=bool)
@@ -3693,10 +5135,29 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.deformation_tab_widget._batch_loading = False
                 self.deformation_tab_widget.update_all_graphs(self.timestep.value(), self.units_combo.currentText())
                 self.deformation_tab_widget._update_tab_colors()
-            
+
             # Ensure visibility of averaging settings is updated after loading
             self.update_avg_settings_visibility()
-            
+
+            # Wire per-study maxStepsChanged signals and trigger a silent refresh
+            # of the Count-mode display so the resolved values are shown right away.
+            self._wire_study_max_steps_signals()
+            self._refresh_output_freq_displays()
+            # Apply mode-dependent minimum widths
+            if hasattr(self, 'thermo_mode_combo'):
+                if self.thermo_mode_combo.currentText() == "Count":
+                    self.thermo_freq_spinbox.setMinimumWidth(280)
+                else:
+                    self.thermo_freq_spinbox.setMinimumWidth(150)
+            if hasattr(self, 'traj_mode_combo'):
+                if self.traj_mode_combo.currentText() == "Count":
+                    self.traj_freq_spinbox.setMinimumWidth(280)
+                else:
+                    self.traj_freq_spinbox.setMinimumWidth(150)
+                self._current_traj_mode_text = self.traj_mode_combo.currentText()
+            if hasattr(self, 'thermo_mode_combo'):
+                self._current_thermo_mode_text = self.thermo_mode_combo.currentText()
+
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -3753,6 +5214,7 @@ class LAMMPSdeformerGui(QMainWindow):
             self.settings.setValue("system/boundary_z", config["system"]["boundary_z"])
             self.settings.setValue("system/enable_velocity", config["system"]["enable_velocity"])
             self.settings.setValue("system/initial_velocity_seed", config["system"]["initial_velocity_seed"])
+            self.settings.setValue("system/enable_thermostating", config["system"].get("enable_thermostating", True))
             self.settings.setValue("system/damping_factor", config["system"]["damping_factor"])
             
             self.settings.setValue("system/timestep", config["system"]["timestep"])
@@ -3760,6 +5222,19 @@ class LAMMPSdeformerGui(QMainWindow):
             # Save output settings
             for key, value in config["output"].items():
                 self.settings.setValue(f"output/{key}", value)
+            for key, values in config["output"].get("avg_memory", {}).items():
+                try:
+                    mode, unit = key.split("_", 1)
+                    nevery = values["nevery"]
+                    nrepeat = values["nrepeat"]
+                    self.settings.setValue(f"output/avg_nevery_{mode}_{unit}", nevery)
+                    self.settings.setValue(f"output/avg_nrepeat_{mode}_{unit}", nrepeat)
+                except (TypeError, KeyError, ValueError):
+                    pass
+            for mode, value in config["output"].get("thermo_freq_memory", {}).items():
+                self.settings.setValue(f"output/avg_thermo_freq_{mode}", value)
+            for mode, value in config["output"].get("traj_freq_memory", {}).items():
+                self.settings.setValue(f"output/traj_freq_memory_{mode}", value)
 
             # Save job_submission settings
             for key, value in config["job_submission"].items():
@@ -3777,6 +5252,69 @@ class LAMMPSdeformerGui(QMainWindow):
 
         except Exception as e:
             print(f"Error saving settings: {e}")
+
+    def _confirm_periodic_trajectory_image_info(self, config):
+        """Warn when periodic trajectory output lacks image/unwrapped data.
+
+        For periodic bonded systems, OVITO needs either image flags (ix/iy/iz)
+        or unwrapped coordinates (xu/yu/zu, xsu/ysu/zsu) to reconstruct bonds
+        across periodic boundaries without long visual artifacts.
+        """
+        output = config.get("output", {})
+        if not output.get("enable_trajectory", True):
+            return True
+
+        traj_format = str(output.get("traj_format", "lammpstrj")).lower()
+        if traj_format == "data":
+            return True
+
+        boundary = config.get("system", {})
+        periodic_axes = [
+            axis for axis in ("x", "y", "z")
+            if str(boundary.get(f"boundary_{axis}", "")).lower() == "p"
+        ]
+        if not periodic_axes:
+            return True
+
+        items = set(str(output.get("trj_output_items", "")).split())
+        missing_axes = []
+        for axis in periodic_axes:
+            has_image_flag = f"i{axis}" in items
+            has_unwrapped = f"{axis}u" in items or f"{axis}su" in items
+            if not has_image_flag and not has_unwrapped:
+                missing_axes.append(axis)
+
+        if not missing_axes:
+            return True
+
+        image_flags = " ".join(f"i{axis}" for axis in missing_axes)
+        unwrapped = " ".join(f"{axis}u" for axis in missing_axes)
+        scaled_unwrapped = " ".join(f"{axis}su" for axis in missing_axes)
+        axes = ", ".join(axis.upper() for axis in missing_axes)
+
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Trajectory Periodic Image Information Missing")
+        msg_box.setText(
+            "The trajectory output is missing periodic image information "
+            f"for periodic direction(s): {axes}."
+        )
+        msg_box.setInformativeText(
+            "OVITO may draw bonds across the wrong periodic images, producing "
+            "long spurious bond lines or a visually broken trajectory. The "
+            "trajectory file also will not contain enough information to track "
+            "atoms moving through image boxes in those directions.\n\n"
+            f"Recommended fix: add image flags to the trajectory output items: {image_flags}\n\n"
+            "Alternative: output unwrapped coordinates instead of wrapped "
+            f"coordinates for those directions: {unwrapped}\n\n"
+            f"Scaled unwrapped coordinates are also acceptable: {scaled_unwrapped}"
+        )
+        abort_button = msg_box.addButton("Abort", QMessageBox.ButtonRole.RejectRole)
+        generate_button = msg_box.addButton("Generate Anyway", QMessageBox.ButtonRole.AcceptRole)
+        msg_box.setDefaultButton(abort_button)
+        msg_box.exec()
+
+        return msg_box.clickedButton() == generate_button
     
     def generate_scripts(self):
         """Generate LAMMPS scripts based on current configuration"""
@@ -3876,6 +5414,9 @@ class LAMMPSdeformerGui(QMainWindow):
                 if not val_result["success"]:
                     QMessageBox.critical(self, "Validation Error", val_result["message"])
                     return
+
+            if not self._confirm_periodic_trajectory_image_info(config):
+                return
 
             # Check if output path is not empty and ask user for action
             output_path = config["output"]["output_path"]
@@ -4072,6 +5613,7 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.boundary_z_combo.setCurrentText(system.get("boundary_z", "p"))
                 self.enable_velocity.setChecked(system.get("enable_velocity", True))
                 self.initial_velocity_seed.setValue(system.get("initial_velocity_seed", 12345))
+                self.enable_thermostating.setChecked(system.get("enable_thermostating", True))
                 self.damping_factor.setValue(system.get("damping_factor", 100.0))
                 
                 self.timestep.setValue(system.get("timestep", 0.001))
@@ -4081,34 +5623,118 @@ class LAMMPSdeformerGui(QMainWindow):
                 output = config["output"]
                 self.output_path_edit.setText(output.get("output_path", ""))
                 self.enable_trajectory.setChecked(output.get("enable_trajectory", True))
-                self.traj_freq_spinbox.setValue(output.get("traj_freq", 100))
+                traj_freq_saved = int(output.get("traj_freq", 100))
+                self.traj_freq_spinbox.setValue(traj_freq_saved)
                 self.traj_format.setCurrentText(output.get("traj_format", "lammpstrj"))
                 self.avoid_coefficients_checkbox.setChecked(output.get("avoid_coefficients", True))
                 self.export_bonds_checkbox.setChecked(output.get("export_bonds", False))
-                
+
                 # Trajectory Items
                 trj_items_str = output.get("trj_output_items", "id type x y z vx vy vz")
                 self.traj_selector.set_items(trj_items_str.split())
 
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_freq_spinbox.setValue(output.get("thermo_freq", 100))
-                
+
+                # Thermo / Trajectory mode + target_n (Count mode), backward compatible
+                traj_mode_saved = output.get("traj_mode", "frequency")
+                self.traj_mode_combo.setCurrentText("Count" if str(traj_mode_saved).lower() == "count" else "Frequency")
+                traj_target_n = int(output.get("traj_target_n", traj_freq_saved))
+                if traj_target_n < 1: traj_target_n = 1
+                trm = output.get("traj_freq_memory")
+                if isinstance(trm, dict):
+                    for m, f in trm.items():
+                        if m in ("frequency", "count"):
+                            try:
+                                self._traj_freq_memory[m] = max(1, int(f))
+                            except (TypeError, ValueError):
+                                pass
+                current_traj_mode = "count" if self._is_traj_count_mode() else "frequency"
+                self._traj_freq_memory["frequency"] = max(1, int(traj_freq_saved))
+                self._traj_freq_memory["count"] = max(1, int(traj_target_n))
+                self._load_traj_freq_for_mode(current_traj_mode)
+
+                thermo_mode_saved = output.get("thermo_mode", "frequency")
+                self.thermo_mode_combo.setCurrentText("Count" if str(thermo_mode_saved).lower() == "count" else "Frequency")
+                thermo_target_n = int(output.get("thermo_target_n", self.thermo_freq_spinbox.value()))
+                if thermo_target_n < 1: thermo_target_n = 1
+                if self.thermo_mode_combo.currentText() == "Count":
+                    self.thermo_freq_spinbox.setValue(thermo_target_n)
+
                 # Thermo Items (Merge standard + strains + stresses)
                 thermo_std = output.get("thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density").split()
                 strains = output.get("eng_strains", [])
                 stresses = output.get("cauchy_stresses", [])
                 self.thermo_selector.set_items(thermo_std + strains + stresses)
-                
+
                 # Averaged Items
                 avg_items = output.get("averaged_quantities", [])
                 self.avg_selector.set_items(avg_items)
-                
+
                 # Explicitly update visibility and labels after setting items
                 self.update_avg_settings_visibility()
                 self.update_avg_params_label()
 
-                self.avg_nevery_spinbox.setValue(output.get('avg_nevery', 10))
-                self.avg_nrepeat_spinbox.setValue(output.get('avg_nrepeat', 100))
+                # Per-mode memory: populate from session config if present,
+                # otherwise start from defaults.
+                mem = output.get("avg_memory")
+                if isinstance(mem, dict):
+                    for k, v in mem.items():
+                        if "_" in k and isinstance(v, dict) and "nevery" in v and "nrepeat" in v:
+                            try:
+                                mode_part, unit_part = k.split("_", 1)
+                                if mode_part in ("frequency", "count") and unit_part in ("steps", "percent"):
+                                    self._avg_memory[(mode_part, unit_part)] = (
+                                        max(1, int(v["nevery"])),
+                                        max(1, int(v["nrepeat"])),
+                                    )
+                            except (ValueError, TypeError):
+                                pass
+                # Per-mode Thermo Output value (the user's previous entry
+                # for the Frequency/Count dropdown). Older sessions without
+                # this key fall back to the legacy thermo_freq/thermo_target_n.
+                tfm = output.get("thermo_freq_memory")
+                if isinstance(tfm, dict):
+                    for m, f in tfm.items():
+                        if m in ("frequency", "count"):
+                            try:
+                                self._thermo_freq_memory[m] = max(1, int(f))
+                            except (TypeError, ValueError):
+                                pass
+                self._thermo_freq_memory["frequency"] = max(1, int(output.get("thermo_freq", 100)))
+                self._thermo_freq_memory["count"] = max(1, int(thermo_target_n))
+
+                # Avg nrepeat unit (steps / percent) — set the unit combo
+                # first (suppress saves) then load the per-mode values.
+                nrepeat_unit_saved = output.get("avg_nrepeat_unit", "steps")
+                self._suppress_avg_memory_save = True
+                try:
+                    if str(nrepeat_unit_saved).lower() == "percent":
+                        self.avg_nrepeat_unit_combo.setCurrentText("percent of range between each thermo output")
+                        self.avg_nrepeat_spinbox.setRange(1, 100)
+                    else:
+                        self.avg_nrepeat_unit_combo.setCurrentText("values before each thermo output")
+                        self.avg_nrepeat_spinbox.setRange(1, 10000000)
+                    self._current_nrepeat_unit = "percent" if str(nrepeat_unit_saved).lower() == "percent" else "steps"
+                    current_mode = "count" if self._is_thermo_count_mode() else "frequency"
+                    self._load_avg_from_memory_for_mode(current_mode, self._current_nrepeat_unit)
+                    # Apply the per-mode Thermo Output value from
+                    # _thermo_freq_memory (populated above from
+                    # output.get("thermo_freq_memory")). This ensures the
+                    # spinbox shows the user's previously-saved value for
+                    # the current mode, not the legacy output/thermo_freq or
+                    # output/thermo_target_n value.
+                    self._load_thermo_freq_for_mode(current_mode)
+                    # In percent unit, apply the legacy avg_nrepeat_percent value
+                    if str(nrepeat_unit_saved).lower() == "percent":
+                        nrepeat_pct = int(output.get("avg_nrepeat_percent", 50))
+                        if nrepeat_pct < 1: nrepeat_pct = 1
+                        if nrepeat_pct > 100: nrepeat_pct = 100
+                        self.avg_nrepeat_spinbox.setValue(nrepeat_pct)
+                finally:
+                    self._suppress_avg_memory_save = False
+                self._avg_memory_loaded = True
+
                 self.add_target_to_thermo_check.setChecked(output.get("add_target_to_thermo", False))
 
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
@@ -4130,7 +5756,6 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.log_file_name.setText(job_submission.get("log_file_name", "job.log"))
                 self.os_selection_combo.setCurrentText(job_submission.get("os_type", "Auto-detect"))
                 self.cluster_lammps_cmd.setText(job_submission.get("cluster_lammps_cmd", "lmp"))
-                self.module_load_cmd.setText(job_submission.get("module_load", "lammps"))
                 self.slurm_header_text.setPlainText(job_submission.get("slurm_header", ""))
                 enable_restart = job_submission.get("enable_restart", False)
                 self.enable_restart_checkbox.setChecked(enable_restart)
@@ -4172,9 +5797,28 @@ class LAMMPSdeformerGui(QMainWindow):
 
         except Exception as e:
             print(f"Error applying configuration: {e}")
-        
+
         self._update_output_tab_visibility()
         self.update_avg_settings_visibility()
+
+        # Wire per-study maxStepsChanged signals and trigger a silent refresh
+        # of the Count-mode display so the resolved values are shown right away.
+        self._wire_study_max_steps_signals()
+        self._refresh_output_freq_displays()
+        # Apply mode-dependent minimum widths
+        if hasattr(self, 'thermo_mode_combo'):
+            if self.thermo_mode_combo.currentText() == "Count":
+                self.thermo_freq_spinbox.setMinimumWidth(280)
+            else:
+                self.thermo_freq_spinbox.setMinimumWidth(150)
+        if hasattr(self, 'traj_mode_combo'):
+            if self.traj_mode_combo.currentText() == "Count":
+                self.traj_freq_spinbox.setMinimumWidth(280)
+            else:
+                self.traj_freq_spinbox.setMinimumWidth(150)
+            self._current_traj_mode_text = self.traj_mode_combo.currentText()
+        if hasattr(self, 'thermo_mode_combo'):
+            self._current_thermo_mode_text = self.thermo_mode_combo.currentText()
 
     def apply_chips_from_config(self, config_section, key, chips_layout, all_items_list, combo_box, remove_slot):
         """Helper to load chip selections from a config dictionary."""
@@ -4202,7 +5846,7 @@ class LAMMPSdeformerGui(QMainWindow):
         try:
             import json
             import os
-            settings_file = os.path.join(root_simulation_dir, "lammps_settings.json")
+            settings_file = os.path.join(root_simulation_dir, "LAMMPSdeformer_settings.json")
             with open(settings_file, 'w') as f:
                 json.dump(full_config, f, indent=2)
             return {"success": True, "message": f"Settings saved to: {settings_file}"}

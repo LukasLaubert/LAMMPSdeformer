@@ -2974,6 +2974,7 @@ class GraphWidget(QWidget):
 
 class StudyWidget(QWidget):
     dataChanged = pyqtSignal()
+    maxStepsChanged = pyqtSignal()
     def __init__(self, initial_state=None, parent=None):
         super().__init__(parent)
         self.is_enabled = True
@@ -3261,6 +3262,7 @@ class StudyWidget(QWidget):
                 self.max_strain_spinbox.setValue(min_val + 1.0)
 
     def _update_graph_controls(self):
+        old_max_steps = getattr(self.graph_widget, "_max_steps", None)
         max_steps = self.max_steps_spinbox.value()
         min_val = self.min_strain_spinbox.value()
         max_val = self.max_strain_spinbox.value()
@@ -3310,6 +3312,9 @@ class StudyWidget(QWidget):
         self.max_strain_spinbox.setSingleStep(max(0.001, abs(self.max_strain_spinbox.value()) * 0.02) if self.max_strain_spinbox.value() != 0 else 0.001)
 
         self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), self.max_strain_spinbox.value())
+
+        if old_max_steps is not None and old_max_steps != max_steps:
+            self.maxStepsChanged.emit()
 
     def _show_preset_dialog(self):
         max_steps = self.max_steps_spinbox.value()

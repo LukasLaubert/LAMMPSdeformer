@@ -310,7 +310,7 @@ class LAMMPSdeformerGenerator:
     def save_settings_to_json(self, root_simulation_dir):
         """Save all settings to a JSON file in the root folder"""
         try:
-            settings_file = os.path.join(root_simulation_dir, "lammps_settings.json")
+            settings_file = os.path.join(root_simulation_dir, "LAMMPSdeformer_settings.json")
             with open(settings_file, 'w') as f:
                 json.dump(self.config, f, indent=2)
             self.generated_files.append(settings_file)
@@ -341,6 +341,126 @@ class LAMMPSdeformerGenerator:
             "message": f"Units mismatch detected in source files: {defined_units}. The generator will proceed using the units defined in the System Configuration tab ('{self.config.get('system', {}).get('units', 'unknown')}'). Please check your input data files before running the simulations!"
         }
         
+    def _largest_divisor_le(self, n, bound):
+        """Return the largest divisor of n that is <= bound (n >= 1, bound >= 1)."""
+        if n <= 0:
+            return 1
+        if bound >= n:
+            return n
+        if bound <= 0:
+            return 1
+        for d in range(int(bound), 0, -1):
+            if n % d == 0:
+                return d
+        return 1
+
+    def _round_nfreq_to_multiple_of_nevery(self, raw_nfreq, nevery):
+        """Snap the thermo thermo_freq to the nearest multiple of nevery (>= nevery).
+
+        In the LAMMPS averaging scheme this corresponds to enforcing the
+        constraint `fix ave/time ... Nfreq % Nevery == 0`. We name the local
+        variable `thermo_freq` in the caller to avoid confusing it with the
+        averaging-scheme Nfreq; this helper is internal and the parameter
+        stays `raw_nfreq` to make the rounding semantics explicit.
+        """
+        nevery = max(1, int(nevery))
+        if raw_nfreq <= 0:
+            return nevery
+        k = max(1, round(raw_nfreq / nevery))
+        return max(nevery, k * nevery)
+
+    def _resolve_per_study_output_freqs(self, deform_study, output_config, job_submission_config):
+        """Resolve thermo/trajectory/avg output frequencies for one study.
+
+        Honors the per-option mode ('frequency' vs 'count') and the nrepeat
+        unit ('steps' vs 'percent').
+
+        Semantics:
+        - Nevery: always the user-entered value (single across studies).
+          This is the first argument of `fix ave/time Nevery Nrepeat Nfreq`
+          in LAMMPS.
+        - thermo_freq (Frequency mode): the user value, snapped to a multiple
+          of Nevery. In LAMMPS this is what gets passed as the Nfreq
+          argument of `fix ave/time`; we call it thermo_freq here to avoid
+          confusion with the averaging-scheme Nfreq.
+        - thermo_freq (Count mode): nearest multiple of Nevery to
+          max_steps/target_n.
+        - Nrepeat (steps unit): user value, capped at floor(thermo_freq/Nevery).
+        - Nrepeat (percent unit): round((pct/100) * (thermo_freq/Nevery)),
+          capped at floor(thermo_freq/Nevery).
+        - Trajectory freq: in Count mode use the largest divisor of
+          max_steps that is <= target_n; in Frequency mode use the user value.
+        - The LAMMPS averaging-scheme constraint on `fix ave/time` is:
+          thermo_freq % Nevery == 0  and  Nrepeat*Nevery <= thermo_freq.
+          We enforce both (snap thermo_freq; cap Nrepeat).
+
+        Backward compatibility: when *_mode keys are absent (or set to
+        'frequency'), this function returns the user-entered values
+        equivalent to the legacy code path.
+        """
+        ms = int(deform_study.get("max_steps", 0)) or 0
+        thermo_freq_default = int(output_config.get("thermo_freq", 100))
+        traj_freq_default = int(output_config.get("traj_freq", 100))
+        nevery_user = max(1, int(output_config.get("avg_nevery", 10)))
+        nrepeat_user = int(output_config.get("avg_nrepeat", 10))
+        nrepeat_unit = str(output_config.get("avg_nrepeat_unit", "steps")).lower()
+
+        # ---- Thermo thermo_freq (what LAMMPS calls the Nfreq argument of fix ave/time) ----
+        # In the GUI this value is `thermo_freq`; in the averaging context (the
+        # `fix ave/time Nevery Nrepeat Nfreq` command) it is `Nfreq`. They are
+        # the same number — the third positional arg of fix ave/time equals
+        # the value passed to `thermo N`.
+        if str(output_config.get("thermo_mode", "frequency")).lower() == "count":
+            target_n = int(output_config.get("thermo_target_n", thermo_freq_default))
+            if ms > 0 and target_n > 0:
+                raw_thermo_freq = ms / float(target_n)
+                thermo_freq = self._round_nfreq_to_multiple_of_nevery(raw_thermo_freq, nevery_user)
+            else:
+                thermo_freq = self._round_nfreq_to_multiple_of_nevery(thermo_freq_default, nevery_user)
+        else:
+            thermo_freq = self._round_nfreq_to_multiple_of_nevery(thermo_freq_default, nevery_user)
+
+        # ---- Trajectory freq (independent of thermo) ----
+        if str(output_config.get("traj_mode", "frequency")).lower() == "count":
+            target_n = int(output_config.get("traj_target_n", traj_freq_default))
+            if ms > 0 and target_n > 0:
+                count = self._largest_divisor_le(ms, min(target_n, ms))
+                if count <= 0:
+                    count = 1
+                traj_freq = max(1, ms // count)
+            else:
+                traj_freq = max(1, traj_freq_default)
+        else:
+            traj_freq = max(1, traj_freq_default)
+
+        # ---- Nevery: user value, single across studies ----
+        nevery = nevery_user
+
+        # ---- Nrepeat ----
+        if nrepeat_unit == "percent":
+            pct = int(output_config.get("avg_nrepeat_percent", 50))
+            # Percent of the range between each thermo output:
+            #   nevery * nrepeat / thermo_freq = pct / 100
+            #   -> nrepeat = (pct/100) * (thermo_freq / nevery)
+            if thermo_freq > 0 and nevery > 0:
+                nrepeat = max(1, round((pct / 100.0) * (float(thermo_freq) / nevery)))
+            else:
+                nrepeat = max(1, pct)
+        else:
+            nrepeat = max(1, int(nrepeat_user))
+
+        # ---- Enforce LAMMPS constraint: nrepeat * nevery <= thermo_freq ----
+        max_allowed = max(1, thermo_freq // nevery) if thermo_freq > 0 else 1
+        if nrepeat > max_allowed:
+            nrepeat = max_allowed
+
+        return {
+            "thermo_freq": int(thermo_freq),
+            "traj_freq": int(traj_freq),
+            "avg_nevery": int(nevery),
+            "avg_nrepeat": int(nrepeat),
+        }
+
     def generate_single_script(self, data_file, model_name, deform_study, output_dir, data_file_dest, potential_before_ref=None, potential_after_ref=None, set_config=None):
         """Generate a single LAMMPS input script"""
         try:
@@ -359,7 +479,7 @@ class LAMMPSdeformerGenerator:
             system_config = self.config.get("system", {})
             if set_config is None:
                 set_config = system_config
-                
+
             fixes_config = self.config.get("fixes", {})
             output_config = self.config.get("output", {}).copy()
             job_submission_config = self.config.get("job_submission", {})
@@ -367,9 +487,21 @@ class LAMMPSdeformerGenerator:
             restart_freq = job_submission_config.get("restart_freq", 100000) if enable_restart else float('inf')
             max_steps = deform_study.get("max_steps", 0)
 
+            # Per-study resolution of thermo/trajectory/avg output frequencies.
+            # In 'frequency' mode (default), this is a no-op that leaves the
+            # legacy user-entered values intact. In 'count' mode, it computes
+            # per-study divisors of max_steps.
+            _resolved = self._resolve_per_study_output_freqs(
+                deform_study, output_config, job_submission_config
+            )
+            output_config["thermo_freq"] = _resolved["thermo_freq"]
+            output_config["traj_freq"]   = _resolved["traj_freq"]
+            output_config["avg_nevery"]  = _resolved["avg_nevery"]
+            output_config["avg_nrepeat"] = _resolved["avg_nrepeat"]
+
             script_lines = [
                 f"# {model_name}.in",
-                f"# Generated by LAMMPSdeformer on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "",
+                f"# Generated via LAMMPSdeformer on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "",
                 "#------------------------", "# Base settings", "#------------------------", "include ../../base_input.in", ""
             ]
 
@@ -776,6 +908,8 @@ class LAMMPSdeformerGenerator:
         for ax, override_val in segment_lateral_overrides.items():
             effective_lateral_settings[ax] = override_val
 
+        enable_thermostating = system_config.get("enable_thermostating", True)
+
         if mode == "Deformation":
             if is_strain_recovery:
                 npt_parts = []
@@ -788,37 +922,53 @@ class LAMMPSdeformerGenerator:
                     for ax in ['x', 'y', 'z']:
                         if ax != deform_axis and effective_lateral_settings.get(ax) == "free (NPT)":
                             npt_parts.append(f"{ax} {pressure} {pressure} $({1000}*dt)")
-                
+
                 npt_aniso_effective = "tri" if is_shear else ensemble_config.get("npt_aniso", "aniso")
 
                 if npt_aniso_effective == "tri":
-                    for tilt in['xy', 'xz', 'yz']:
+                    for tilt in ['xy', 'xz', 'yz']:
                         if tilt != deform_axis:
                             npt_parts.append(f"{tilt} 0.0 0.0 $({1000}*dt)")
-                
-                lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_parts)} flip no")
+
+                if enable_thermostating:
+                    lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_parts)} flip no")
+                else:
+                    lines.append(f"fix ensemble all nph {' '.join(npt_parts)} flip no")
             else:
                 free_axes = [ax for ax, setting in effective_lateral_settings.items() if setting == "free (NPT)"]
                 if not free_axes:
-                    lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) flip no")
+                    if enable_thermostating:
+                        lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) flip no")
+                    else:
+                        lines.append(f"fix ensemble all nve")
                 else:
                     npt_parts = []
                     for ax in free_axes:
                         npt_parts.append(f"{ax} {pressure} {pressure} $({1000}*dt)")
-                    
+
                     npt_aniso_effective = "tri" if is_shear else ensemble_config.get("npt_aniso", "aniso")
                     if npt_aniso_effective == "tri":
-                        for tilt in['xy', 'xz', 'yz']:
+                        for tilt in ['xy', 'xz', 'yz']:
                             if tilt != deform_axis:
                                 npt_parts.append(f"{tilt} 0.0 0.0 $({1000}*dt)")
 
-                    lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_parts)} flip no")
+                    if enable_thermostating:
+                        lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_parts)} flip no")
+                    else:
+                        lines.append(f"fix ensemble all nph {' '.join(npt_parts)} flip no")
         elif mode == "Temperature":
-            if ensemble_config.get("ensemble", "NVT") == "NVT":
-                lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) flip no")
+            if enable_thermostating:
+                if ensemble_config.get("ensemble", "NVT") == "NVT":
+                    lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) flip no")
+                else:
+                    npt_aniso = ensemble_config.get("npt_aniso", "iso")
+                    lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt) flip no")
             else:
-                npt_aniso = ensemble_config.get("npt_aniso", "iso")
-                lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt) flip no")
+                if ensemble_config.get("ensemble", "NVT") == "NVT":
+                    lines.append(f"fix ensemble all nve")
+                else:
+                    npt_aniso = ensemble_config.get("npt_aniso", "iso")
+                    lines.append(f"fix ensemble all nph {npt_aniso} {pressure} {pressure} $(1000*dt) flip no")
 
         lines.append(f"jump SELF ${{resume_label}}")
         return lines
@@ -911,7 +1061,10 @@ class LAMMPSdeformerGenerator:
         if averaged_quantities:
             nevery = output_config.get("avg_nevery", 10)
             nrepeat = output_config.get("avg_nrepeat", 100)
-            # Nfreq must always match thermo_freq to ensure output aligns with thermo logging
+            # The third argument of `fix ave/time` is Nfreq (the averaging-scheme
+            # output frequency). We pass the GUI's `thermo_freq` here, which is
+            # the same as our `thermo_freq`. The local variable is named `nfreq` to
+            # match the LAMMPS `fix ave/time Nevery Nrepeat Nfreq` signature.
             nfreq = output_config.get("thermo_freq", 100)
             lines.append("# --- Time Averaging ---")
             
@@ -1158,7 +1311,6 @@ class LAMMPSdeformerGenerator:
                     "    curstep=$(basename \"$latest_restart\" | sed 's/.*\\.//')",
                     "  fi",
                     "fi",
-                    f"module load {job_config.get('module_load', 'lammps')}",
                     f"{job_config.get('srun_cmd', 'srun')} {job_config.get('cluster_lammps_cmd', 'lmp')} -in \"$input_file\" -log none -var curstep $curstep -var maxtime {maxtime}",
                     "if [ \"${SLURM_PROCID:-0}\" -eq 0 ]; then",
                     "    if [ -f resubmit.flag ]; then",
@@ -1174,7 +1326,6 @@ class LAMMPSdeformerGenerator:
                 job_lines.extend([
                     "input_file=$1",
                     "SIM_DIR=$(dirname \"$input_file\")",
-                    f"module load {job_config.get('module_load', 'lammps')}",
                     f"cd \"$SIM_DIR\"",
                     f"{job_config.get('srun_cmd', 'srun')} {job_config.get('cluster_lammps_cmd', 'lmp')} -in \"$input_file\" -var curstep 0",
                 ])
