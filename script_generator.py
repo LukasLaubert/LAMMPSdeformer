@@ -499,6 +499,18 @@ class LAMMPSdeformerGenerator:
             output_config["avg_nevery"]  = _resolved["avg_nevery"]
             output_config["avg_nrepeat"] = _resolved["avg_nrepeat"]
 
+            # When time-averaging is active, snap restart_freq to the nearest
+            # lower multiple of thermo_freq so that every chunk boundary lands
+            # on a step where fix ave/time has been evaluated.  Without this,
+            # LAMMPS forces a thermo output on the last step of each `run`
+            # chunk; if that step is not an Nfreq multiple the averaged
+            # variables are undefined and LAMMPS aborts with:
+            #   "Fix in variable not computed at a compatible time"
+            if enable_restart and output_config.get("averaged_quantities"):
+                tf = _resolved["thermo_freq"]
+                if tf > 0 and restart_freq != float('inf'):
+                    restart_freq = max(tf, (restart_freq // tf) * tf)
+
             script_lines = [
                 f"# {model_name}.in",
                 f"# Generated via LAMMPSdeformer on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "",
@@ -584,6 +596,32 @@ class LAMMPSdeformerGenerator:
                 points = deform_study.get("data_points", [])
                 initial_temp = points[0][1] if points else 300.0
                 script_lines.extend([f"variable set_temp equal {initial_temp}", ""])
+
+            # Energy Minimization (before velocity)
+            if system_config.get("enable_minimization", False):
+                min_style = system_config.get("min_style", "cg")
+                etol = f"{float(system_config.get('min_etol', 1e-4)):.3e}"
+                ftol = f"{float(system_config.get('min_ftol', 1e-6)):.3e}"
+                maxiter = int(system_config.get("min_maxiter", 100))
+                maxeval = int(system_config.get("min_maxeval", 1000))
+
+                if enable_restart:
+                    script_lines.extend([
+                        "#------------------------", "# Energy Minimization", "#------------------------",
+                        "if \"${curstep} == 0\" then &",
+                        f"  \"min_style {min_style}\" &",
+                        f"  \"minimize {etol} {ftol} {maxiter} {maxeval}\" &",
+                        "  \"reset_timestep 0\"",
+                        ""
+                    ])
+                else:
+                    script_lines.extend([
+                        "#------------------------", "# Energy Minimization", "#------------------------",
+                        f"min_style {min_style}",
+                        f"minimize {etol} {ftol} {maxiter} {maxeval}",
+                        "reset_timestep 0",
+                        ""
+                    ])
 
             if system_config.get("enable_velocity", True):
                 points = deform_study.get("data_points", [])

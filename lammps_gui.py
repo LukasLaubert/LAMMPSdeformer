@@ -14,6 +14,7 @@ import threading
 import time
 import shutil
 import re
+import math
 from pathlib import Path
 
 # Import PyQt6 components
@@ -29,7 +30,7 @@ try:
     from PyQt6.QtCore import (Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF, 
                              QRect, QPoint, QMimeData, QObject, QEvent)
     from PyQt6.QtGui import (QIcon, QDesktopServices, QCursor, QPalette, QColor, QPixmap, 
-                            QPainter, QFont, QDrag, QAction, QStandardItemModel, QStandardItem)
+                            QPainter, QFont, QDrag, QAction, QStandardItemModel, QStandardItem, QValidator)
     
     # Handle QRegularExpression vs QRegExp compatibility
     try:
@@ -124,7 +125,42 @@ class ClickableLabel(QLabel):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             QDesktopServices.openUrl(self.url)
-        super().mousePressEvent(event)
+            super().mousePressEvent(event)
+
+class SciDoubleSpinBox(QDoubleSpinBox):
+    """QDoubleSpinBox that displays values in scientific notation (e.g. 1.000e-08)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDecimals(12)
+
+    def textFromValue(self, value):
+        return f"{value:.6e}"
+
+    def valueFromText(self, text):
+        return float(text)
+
+    def validate(self, text, pos):
+        try:
+            float(text)
+            return (QValidator.State.Acceptable, text, pos)
+        except ValueError:
+            return (QValidator.State.Invalid, text, pos)
+
+    def fixup(self, text):
+        try:
+            return f"{float(text):.6e}"
+        except ValueError:
+            return "0.0"
+
+    def stepBy(self, steps):
+        value = self.value()
+        if value == 0.0:
+            base_step = self.singleStep() if self.singleStep() > 0.0 else 1e-6
+            exponent = int(math.floor(math.log10(abs(base_step))))
+        else:
+            exponent = int(math.floor(math.log10(abs(value))))
+        step = 10.0 ** (exponent - 1)
+        self.setValue(min(self.maximum(), max(self.minimum(), value + steps * step)))
 
 def create_info_icon_label(url, tooltip, color_name):
     pixmap = QPixmap(16, 16)
@@ -1658,6 +1694,78 @@ class LAMMPSdeformerGui(QMainWindow):
         boundary_group.setLayout(main_boundary_layout)
         scroll_layout.addWidget(boundary_group)
 
+        # Energy Minimization
+        minimization_group = InfoGroupBox("Energy Minimization", "min_style", additional_docs=[("minimize", False)])
+        minimization_layout = QHBoxLayout()
+        minimization_layout.setSpacing(0)
+
+        def add_minimization_pair(label_text, widget, stretch_widget=False):
+            pair_widget = QWidget()
+            pair_layout = QHBoxLayout(pair_widget)
+            pair_layout.setContentsMargins(0, 0, 0, 0)
+            pair_layout.setSpacing(3)
+            pair_layout.addWidget(QLabel(label_text))
+            if stretch_widget:
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            pair_layout.addWidget(widget, 1 if stretch_widget else 0)
+            pair_widget.setSizePolicy(QSizePolicy.Policy.Expanding if stretch_widget else QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+            minimization_layout.addWidget(pair_widget)
+
+        self.enable_minimization = QCheckBox("Minimize")
+        self.enable_minimization.setChecked(False)
+        self.enable_minimization.setToolTip("Enable energy minimization before dynamics. The energy of the system is minimized by iteratively adjusting atom coordinates. The minimization algorithm is set by min_style.")
+        self.enable_minimization.stateChanged.connect(self.toggle_minimization_settings)
+        minimization_layout.addWidget(self.enable_minimization)
+        minimization_layout.addSpacing(20)
+
+        self.min_style_combo = QComboBox()
+        self.min_style_combo.addItems(["cg", "sd", "hftn", "quickmin", "fire"])
+        self.min_style_combo.setCurrentText("cg")
+        self.min_style_combo.setToolTip("cg: Polak-Ribiere conjugate gradient (default)\nsd: Steepest descent\nhftn: Hessian-free truncated Newton\nquickmin: Damped dynamics (Sheppard et al.)\nfire: FIRE fast inertial relaxation engine (Bitzek et al.)")
+        self.min_style_combo.setMinimumWidth(110)
+        add_minimization_pair("Style:", self.min_style_combo, stretch_widget=True)
+        minimization_layout.addSpacing(60)
+
+        self.min_etol = SciDoubleSpinBox()
+        self.min_etol.setRange(0.0, 1.0)
+        self.min_etol.setValue(1e-4)
+        self.min_etol.setSingleStep(1e-4)
+        self.min_etol.setToolTip("Stopping tolerance for energy change between iterations (unitless). Minimization stops when |energy_change| / |energy| < etol. Set to 0.0 to skip energy convergence check.")
+        self.min_etol.setMinimumWidth(110)
+        add_minimization_pair("Etol:", self.min_etol, stretch_widget=True)
+        minimization_layout.addSpacing(20)
+
+        self.min_ftol = SciDoubleSpinBox()
+        self.min_ftol.setRange(0.0, 1.0)
+        self.min_ftol.setValue(1e-6)
+        self.min_ftol.setSingleStep(1e-6)
+        self.min_ftol.setToolTip("Stopping tolerance for the 2-norm (length) of the global force vector (force units). Minimization stops when |F_global| < ftol. Set to 0.0 to skip force convergence check.")
+        self.min_ftol.setMinimumWidth(110)
+        add_minimization_pair("Ftol:", self.min_ftol, stretch_widget=True)
+        minimization_layout.addSpacing(20)
+
+        self.min_maxiter = QSpinBox()
+        self.min_maxiter.setRange(1, 10000000)
+        self.min_maxiter.setValue(100)
+        self.min_maxiter.setSingleStep(100)
+        self.min_maxiter.setToolTip("Maximum number of outer iterations or timesteps for the minimizer. Stopping criterion - if exceeded, minimization terminates.")
+        self.min_maxiter.setMinimumWidth(110)
+        add_minimization_pair("Maxiter:", self.min_maxiter, stretch_widget=True)
+        minimization_layout.addSpacing(20)
+
+        self.min_maxeval = QSpinBox()
+        self.min_maxeval.setRange(1, 10000000)
+        self.min_maxeval.setValue(1000)
+        self.min_maxeval.setSingleStep(1000)
+        self.min_maxeval.setToolTip("Maximum number of total force/energy evaluations (including line search trials). Stopping criterion - if exceeded, minimization terminates.")
+        self.min_maxeval.setMinimumWidth(110)
+        add_minimization_pair("Maxeval:", self.min_maxeval, stretch_widget=True)
+        minimization_group.setLayout(minimization_layout)
+        scroll_layout.addWidget(minimization_group)
+
+        # Initialize child widget states to match unchecked checkbox
+        self.toggle_minimization_settings(0)
+
         # --- Velocity and Thermostating (Below everything else) ---
         init_settings_layout = QHBoxLayout()
         
@@ -2523,8 +2631,11 @@ class LAMMPSdeformerGui(QMainWindow):
         return 1
 
     def _iter_studies(self):
-        """Yield (study_widget, study_name, max_steps) for every study
-        in the Processing tab, including the placeholder '+' tab is skipped."""
+        """Yield (study_widget, study_name, max_steps) for every *active*
+        study in the Processing tab.  The placeholder '+' tab and
+        deactivated studies (is_enabled == False) are skipped so they
+        do not contribute to thermo-frequency / averaging calculations
+        or the grey italic 'Frequencies:' label."""
         if not hasattr(self, 'deformation_tab_widget'):
             return
         tw = self.deformation_tab_widget.tab_widget
@@ -2534,6 +2645,9 @@ class LAMMPSdeformerGui(QMainWindow):
                 continue
             sw = tw.widget(i)
             if sw is None:
+                continue
+            # Skip deactivated studies
+            if not getattr(sw, 'is_enabled', True):
                 continue
             try:
                 ms = int(sw.max_steps_spinbox.value())
@@ -3358,6 +3472,15 @@ class LAMMPSdeformerGui(QMainWindow):
         enabled = state == Qt.CheckState.Checked.value
         self.damping_factor.setEnabled(enabled)
         
+    def toggle_minimization_settings(self, state):
+        """Toggle energy minimization parameter fields based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.min_style_combo.setEnabled(enabled)
+        self.min_etol.setEnabled(enabled)
+        self.min_ftol.setEnabled(enabled)
+        self.min_maxiter.setEnabled(enabled)
+        self.min_maxeval.setEnabled(enabled)
+
     def toggle_bond_breakage_settings(self, state):
         """Toggle bond breakage parameter fields based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
@@ -4797,6 +4920,12 @@ class LAMMPSdeformerGui(QMainWindow):
                 "initial_velocity_seed": self.initial_velocity_seed.value(),
                 "enable_thermostating": self.enable_thermostating.isChecked(),
                 "damping_factor": self.damping_factor.value(),
+                "enable_minimization": self.enable_minimization.isChecked(),
+                "min_style": self.min_style_combo.currentText(),
+                "min_etol": self.min_etol.value(),
+                "min_ftol": self.min_ftol.value(),
+                "min_maxiter": self.min_maxiter.value(),
+                "min_maxeval": self.min_maxeval.value(),
                 
                 "timestep": self.timestep.value(),
                 
@@ -4965,6 +5094,12 @@ class LAMMPSdeformerGui(QMainWindow):
             self.initial_velocity_seed.setValue(self.settings.value("system/initial_velocity_seed", 12345, type=int))
             self.enable_thermostating.setChecked(self.settings.value("system/enable_thermostating", True, type=bool))
             self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
+            self.enable_minimization.setChecked(self.settings.value("system/enable_minimization", False, type=bool))
+            self.min_style_combo.setCurrentText(self.settings.value("system/min_style", "cg"))
+            self.min_etol.setValue(float(self.settings.value("system/min_etol", 1e-4)))
+            self.min_ftol.setValue(float(self.settings.value("system/min_ftol", 1e-6)))
+            self.min_maxiter.setValue(int(self.settings.value("system/min_maxiter", 100)))
+            self.min_maxeval.setValue(int(self.settings.value("system/min_maxeval", 1000)))
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
 
             # Output settings
@@ -5216,6 +5351,12 @@ class LAMMPSdeformerGui(QMainWindow):
             self.settings.setValue("system/initial_velocity_seed", config["system"]["initial_velocity_seed"])
             self.settings.setValue("system/enable_thermostating", config["system"].get("enable_thermostating", True))
             self.settings.setValue("system/damping_factor", config["system"]["damping_factor"])
+            self.settings.setValue("system/enable_minimization", config["system"]["enable_minimization"])
+            self.settings.setValue("system/min_style", config["system"]["min_style"])
+            self.settings.setValue("system/min_etol", config["system"]["min_etol"])
+            self.settings.setValue("system/min_ftol", config["system"]["min_ftol"])
+            self.settings.setValue("system/min_maxiter", config["system"]["min_maxiter"])
+            self.settings.setValue("system/min_maxeval", config["system"]["min_maxeval"])
             
             self.settings.setValue("system/timestep", config["system"]["timestep"])
             
@@ -5615,6 +5756,12 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.initial_velocity_seed.setValue(system.get("initial_velocity_seed", 12345))
                 self.enable_thermostating.setChecked(system.get("enable_thermostating", True))
                 self.damping_factor.setValue(system.get("damping_factor", 100.0))
+                self.enable_minimization.setChecked(system.get("enable_minimization", False))
+                self.min_style_combo.setCurrentText(system.get("min_style", "cg"))
+                self.min_etol.setValue(float(system.get("min_etol", 1e-4)))
+                self.min_ftol.setValue(float(system.get("min_ftol", 1e-6)))
+                self.min_maxiter.setValue(int(system.get("min_maxiter", 100)))
+                self.min_maxeval.setValue(int(system.get("min_maxeval", 1000)))
                 
                 self.timestep.setValue(system.get("timestep", 0.001))
 
