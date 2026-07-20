@@ -1733,57 +1733,79 @@ class LammpsGui(QMainWindow):
         
     def browse_system_path(self):
         """Browse for system path (file or directory)"""
+        # Determine starting directory based on current text field content
+        current_path = self.system_path_edit.text().strip()
+        if current_path and os.path.exists(current_path):
+            # If it's a file, use its directory; if it's a directory, use it directly
+            if os.path.isfile(current_path):
+                start_dir = os.path.dirname(current_path)
+            else:
+                start_dir = current_path
+        else:
+            start_dir = ""
+
         # Let user choose between file and directory
         dialog = QDialog(self)
         dialog.setWindowTitle("Select System")
         dialog.setMinimumSize(300, 120)
         dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)  # Remove help button
-        
+
         layout = QVBoxLayout()
-        
+
         label = QLabel("Select data file or directory containing data files:")
         layout.addWidget(label)
-        
+
         button_layout = QHBoxLayout()
-        
+
         file_button = QPushButton("Select File")
         dir_button = QPushButton("Select Directory")
-        
+
         button_layout.addWidget(file_button)
         button_layout.addWidget(dir_button)
-        
+
         layout.addLayout(button_layout)
         dialog.setLayout(layout)
-        
+
         selected_path = None
         select_file = False
-        
+
         def select_file_path():
             nonlocal selected_path, select_file
             extensions = " ".join([f"*{ext}" for ext in self.data_file_extensions])
-            file_path, _ = QFileDialog.getOpenFileName(dialog, "Select Data File", "", f"Data Files ({extensions});;All Files (*)")
+            file_path, _ = QFileDialog.getOpenFileName(dialog, "Select Data File", start_dir, f"Data Files ({extensions});;All Files (*)")
             if file_path:
                 selected_path = file_path
                 select_file = True
                 dialog.accept()
-                
+
         def select_dir_path():
             nonlocal selected_path, select_file
-            dir_path = QFileDialog.getExistingDirectory(dialog, "Select Directory")
+            dir_path = QFileDialog.getExistingDirectory(dialog, "Select Directory", start_dir)
             if dir_path:
                 selected_path = dir_path
                 select_file = False
                 dialog.accept()
-                
+
         file_button.clicked.connect(select_file_path)
         dir_button.clicked.connect(select_dir_path)
-        
+
         if dialog.exec() == QDialog.DialogCode.Accepted and selected_path:
             self.system_path_edit.setText(selected_path)
     
     def browse_potential_file(self):
         """Browse for potential file"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "All Files (*)")
+        # Determine starting directory based on current text field content
+        current_path = self.potential_path_edit.text().strip()
+        if current_path and os.path.exists(current_path):
+            # If it's a file, use its directory; if it's a directory, use it directly
+            if os.path.isfile(current_path):
+                start_dir = os.path.dirname(current_path)
+            else:
+                start_dir = current_path
+        else:
+            start_dir = ""
+
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", start_dir, "All Files (*)")
         if file_path:
             self.potential_path_edit.setText(file_path)
             # Automatically check the "Use separate potential file" checkbox
@@ -1798,7 +1820,18 @@ class LammpsGui(QMainWindow):
     
     def browse_output_path(self):
         """Browse for output path"""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        # Determine starting directory based on current text field content
+        current_path = self.output_path_edit.text().strip()
+        if current_path and os.path.exists(current_path):
+            # If it's a file, use its directory; if it's a directory, use it directly
+            if os.path.isfile(current_path):
+                start_dir = os.path.dirname(current_path)
+            else:
+                start_dir = current_path
+        else:
+            start_dir = ""
+
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", start_dir)
         if dir_path:
             self.output_path_edit.setText(dir_path)
     
@@ -2490,13 +2523,16 @@ class LammpsGui(QMainWindow):
                 while self.deformation_tab_widget.tab_widget.count() > 0:
                     self.deformation_tab_widget.tab_widget.removeTab(0)
 
+                # Enable batch loading mode to optimize performance
+                self.deformation_tab_widget._batch_loading = True
+
                 if studies:
                     for i, study in enumerate(studies):
                         self.deformation_tab_widget._add_study(is_first=(i==0))
                         study_widget = self.deformation_tab_widget.tab_widget.widget(i)
                         original_name = study.get("name", f"Study_{i+1}")
                         sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '_', original_name)
-                        
+
                         # Ensure uniqueness
                         final_name = sanitized_name
                         suffix = 1
@@ -2513,11 +2549,19 @@ class LammpsGui(QMainWindow):
                 else:
                     # No studies in settings, or settings were corrupted. Create a default one.
                     self.deformation_tab_widget._add_study(is_first=True)
-                
-                # After loading all tabs, trigger a single manual update
+
+                # Disable batch loading mode and perform a single update
+                self.deformation_tab_widget._batch_loading = False
                 self.deformation_tab_widget.update_summaries()
                 self.deformation_tab_widget._update_tab_colors()
-                
+
+                # After loading all tabs, ensure the mode dropdown reflects the current tab's mode
+                current_widget = self.deformation_tab_widget.tab_widget.currentWidget()
+                if current_widget:
+                    self.deformation_tab_widget.mode_combo.blockSignals(True)
+                    self.deformation_tab_widget.mode_combo.setCurrentText(current_widget.mode)
+                    self.deformation_tab_widget.mode_combo.blockSignals(False)
+
                 # Plus tab is handled by the corner widget button, no need to add it here
                 pass
 
@@ -2760,7 +2804,18 @@ class LammpsGui(QMainWindow):
     def save_configuration(self):
         """Save current configuration to file"""
         try:
-            file_path, _ = QFileDialog.getSaveFileName(self, "Save Configuration", "", "JSON Files (*.json);;All Files (*)")
+            # Determine starting directory based on Output Path field content
+            output_path = self.output_path_edit.text().strip()
+            if output_path and os.path.exists(output_path):
+                # If output path is a file, use its directory; if it's a directory, use it directly
+                if os.path.isfile(output_path):
+                    start_dir = os.path.dirname(output_path)
+                else:
+                    start_dir = output_path
+            else:
+                start_dir = ""
+
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save Configuration", start_dir, "JSON Files (*.json);;All Files (*)")
             if file_path:
                 config = self.collect_config(for_saving=True)
                 with open(file_path, 'w') as f:
@@ -2772,11 +2827,22 @@ class LammpsGui(QMainWindow):
     def load_configuration(self):
         """Load configuration from file"""
         try:
-            file_path, _ = QFileDialog.getOpenFileName(self, "Load Configuration", "", "JSON Files (*.json);;All Files (*)")
+            # Determine starting directory based on Output Path field content
+            output_path = self.output_path_edit.text().strip()
+            if output_path and os.path.exists(output_path):
+                # If output path is a file, use its directory; if it's a directory, use it directly
+                if os.path.isfile(output_path):
+                    start_dir = os.path.dirname(output_path)
+                else:
+                    start_dir = output_path
+            else:
+                start_dir = ""
+
+            file_path, _ = QFileDialog.getOpenFileName(self, "Load Configuration", start_dir, "JSON Files (*.json);;All Files (*)")
             if file_path:
                 with open(file_path, 'r') as f:
                     config = json.load(f)
-                
+
                 # Apply configuration to GUI
                 self.apply_config(config)
                 QMessageBox.information(self, "Success", f"Configuration loaded from {file_path}")
@@ -2908,12 +2974,15 @@ class LammpsGui(QMainWindow):
                 while self.deformation_tab_widget.tab_widget.count() > 0:
                     self.deformation_tab_widget.tab_widget.removeTab(0)
 
+                # Enable batch loading mode to optimize performance
+                self.deformation_tab_widget._batch_loading = True
+
                 if studies:
                     for i, study_data in enumerate(studies):
                         self.deformation_tab_widget._add_study(is_first=(i==0))
                         study_widget = self.deformation_tab_widget.tab_widget.widget(i)
                         self.deformation_tab_widget.tab_widget.setTabText(i, study_data.get("name", f"Study {i+1}"))
-                        
+
                         # Restore the state of the study widget, blocking signals
                         study_widget.blockSignals(True)
                         study_widget.set_state(study_data)
@@ -2922,10 +2991,17 @@ class LammpsGui(QMainWindow):
                     # if no studies, create a default one
                     self.deformation_tab_widget._add_study(is_first=True)
 
-                # After loading all tabs, trigger a single manual update
+                # Disable batch loading mode and perform a single update
+                self.deformation_tab_widget._batch_loading = False
                 self.deformation_tab_widget.update_summaries()
                 self.deformation_tab_widget._update_tab_colors()
 
+                # After loading all tabs, ensure the mode dropdown reflects the current tab's mode
+                current_widget = self.deformation_tab_widget.tab_widget.currentWidget()
+                if current_widget:
+                    self.deformation_tab_widget.mode_combo.blockSignals(True)
+                    self.deformation_tab_widget.mode_combo.setCurrentText(current_widget.mode)
+                    self.deformation_tab_widget.mode_combo.blockSignals(False)
         except Exception as e:
             print(f"Error applying configuration: {e}")
     

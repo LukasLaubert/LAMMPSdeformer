@@ -1096,8 +1096,6 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.addItems(["x", "y", "z", "xy", "xz", "yz"])
         self.deform_axis_combo.setMinimumWidth(40)
         self.deform_axis_combo.setMaximumWidth(50)
-        self.deform_axis_label.setVisible(True)
-        self.deform_axis_combo.setVisible(True)
         self.deform_axis_combo.setStyleSheet(""" 
             QComboBox {
                 combobox-popup: 0;
@@ -1112,8 +1110,6 @@ class StudyWidget(QWidget):
         self.deform_scenario_label = QLabel("<b>Deform Scenario:</b>")
         self.deform_scenario_combo = QComboBox()
         self.deform_scenario_combo.addItems(["symmetric", "shift hi, fix lo", "shift lo, fix hi"])
-        self.deform_scenario_label.setVisible(True)
-        self.deform_scenario_combo.setVisible(True)
         self.deform_scenario_combo.setStyleSheet(""" 
             QComboBox {
                 combobox-popup: 0;
@@ -1131,13 +1127,7 @@ class StudyWidget(QWidget):
         controls_layout.addSpacing(5)
         controls_layout.addWidget(self.deform_scenario_label)
         controls_layout.addWidget(self.deform_scenario_combo)
-        
-        # Connect the axis combo to the scenario visibility function
-        self.deform_axis_combo.currentTextChanged.connect(self._update_scenario_visibility)
-        
-        # Initialize scenario visibility based on the current axis value
-        self._update_scenario_visibility(self.deform_axis_combo.currentText())
-        
+
         controls_layout.addStretch()  # Push buttons to the right
         # Add buttons with right alignment
         controls_layout.addWidget(self.undo_button)
@@ -1601,9 +1591,6 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
         self.deform_scenario_combo.setCurrentText(state.get('deform_scenario', 'symmetric'))
 
-        # Update scenario visibility based on loaded axis
-        self._update_scenario_visibility(state.get('deform_axis', 'x'))
-
         self.set_mode(state.get('mode', 'Deformation'), adjust_values=False)
 
         ensemble_state = state.get('ensemble', {})
@@ -1708,22 +1695,6 @@ class StudyWidget(QWidget):
         self.npt_aniso_label.setVisible(is_npt)
         self.npt_aniso_combo.setVisible(is_npt)
 
-    def _update_scenario_visibility(self, axis):
-        """Hide/unhide the Deform Scenario option based on direction type and mode"""
-        # Hide the scenario options for shear directions (xy, xz, yz) or when in temperature mode
-        is_shear = axis in ["xy", "xz", "yz"]
-        is_temp_mode = self.mode == 'Temperature'
-        should_show_scenario = not is_shear and not is_temp_mode
-        self.deform_scenario_label.setVisible(should_show_scenario)
-        self.deform_scenario_combo.setVisible(should_show_scenario)
-        
-        # Update the tab to ensure proper layout
-        if self.parent() and self.parent().parent():
-            # Repaint the tab widget to update layout
-            self.parent().parent().repaint()
-
-
-
     def _on_bond_breakage_setting_changed(self):
         # Update UI state first
         self._update_bond_breakage_ui_state()
@@ -1797,9 +1768,8 @@ class StudyWidget(QWidget):
         self.temp_spinbox.setVisible(not is_temp_mode)
         self.deform_axis_label.setVisible(not is_temp_mode)
         self.deform_axis_combo.setVisible(not is_temp_mode)
-        
-        # Update scenario visibility based on current axis and new mode
-        self._update_scenario_visibility(self.deform_axis_combo.currentText())
+        self.deform_scenario_label.setVisible(not is_temp_mode)
+        self.deform_scenario_combo.setVisible(not is_temp_mode)
 
         self.graph_widget.set_mode(mode)
         self._update_graph_controls()
@@ -1822,6 +1792,7 @@ class DeformationTab(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent); self.setWindowTitle("Interactive Strain-Time Profile Editor")
         self.main_window = main_window
+        self._batch_loading = False  # Flag to optimize loading by batching summary updates
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.tabBar().setMovable(True)
@@ -1969,8 +1940,11 @@ class DeformationTab(QWidget):
         new_study.graph_widget.mouseReleaseEvent = lambda event: self._wrapped_mouse_release_event(original_mouse_release, event, new_study.graph_widget)
         tab_name = f"Study{self._get_next_default_study_number():02d}"
         tab_index = self.tab_widget.addTab(new_study, tab_name); self.tab_widget.setCurrentIndex(tab_index)
-        self.update_summaries()
-        self._update_tab_colors()
+        # Only update summaries and tab colors if not in batch loading mode
+        # (During batch loading, a single update will be called at the end)
+        if not self._batch_loading:
+            self.update_summaries()
+            self._update_tab_colors()
 
     def _wrapped_mouse_move_event(self, original_mouse_move_event, event, graph_widget):
         # Call the original mouse move event
@@ -2153,6 +2127,10 @@ class DeformationTab(QWidget):
         self.update_summaries()
 
     def update_summaries(self):
+        # Skip updating during batch loading to improve performance
+        if self._batch_loading:
+            return
+
         self._update_tab_colors()
         timestep = 0
         unit_key = "s"
