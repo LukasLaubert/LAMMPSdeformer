@@ -607,7 +607,7 @@ class DeformationTab(QWidget):
             summary_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             summary_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             points = study_widget.graph_widget.get_data_points()
-            header = f"{'Segment':<10} | {'Time Step':<18} | {'Time':<18} | {'Strain':<18} | {'Slope (ε/step)':<20} | {'Strain Rate (ε/t)'}"
+            header = "{:<10} | {:<18} | {:<18} | {:<18} | {:<20} | {}".format("Segment", "Time Step", "Time", "Strain", "Slope (ε/step)", "Strain Rate (ε/t)")
             lines = [header, "-" * (len(header)+2)]
             for j in range(len(points) - 1):
                 p1, p2 = points[j], points[j+1]

@@ -72,6 +72,26 @@ try:
 except ImportError as e:
     DeformationTab = None
 
+class InfoGroupBox(QGroupBox):
+    def __init__(self, title, doc_link, parent=None):
+        super().__init__(title, parent)
+        self.doc_link = doc_link
+
+        self.info_label = QLabel("ℹ️", self)
+        self.info_label.setStyleSheet("color: blue; font-size: 14px;")
+        self.info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.info_label.setToolTip(f"Click to open LAMMPS {doc_link} documentation")
+        self.info_label.mousePressEvent = self.open_doc_link
+
+    def open_doc_link(self, event):
+        url = QUrl(f"https://docs.lammps.org/{self.doc_link}.html")
+        QDesktopServices.openUrl(url)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Position the icon in the top-right corner
+        self.info_label.move(self.width() - 20, 0)
+
 class NumericTableWidgetItem(QTableWidgetItem):
     """Custom table widget item that validates numeric input"""
     
@@ -321,60 +341,6 @@ class LammpsScriptGenerator(QMainWindow):
         units_group.setLayout(units_layout)
         scroll_layout.addWidget(units_group)
 
-        # Ensemble settings
-        ensemble_group = QGroupBox("Ensemble Settings")
-        ensemble_layout = QFormLayout()
-
-        self.ensemble_combo = QComboBox()
-        self.ensemble_combo.addItems(["NVT", "NPT"])
-        self.ensemble_combo.setCurrentText("NVT")
-        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
-
-        self.temp_init = QDoubleSpinBox()
-        self.temp_init.setRange(0, 10000)
-        self.temp_init.setValue(300.0)
-        self.temp_init.setSingleStep(10.0)
-        self.temp_init.setToolTip("Initial temperature for the simulation")
-
-        self.temp_end = QDoubleSpinBox()
-        self.temp_end.setRange(0, 10000)
-        self.temp_end.setValue(300.0)
-        self.temp_end.setSingleStep(10.0)
-        self.temp_end.setToolTip("Final temperature for the simulation")
-
-        self.pressure = QDoubleSpinBox()
-        self.pressure.setRange(-100000, 100000)
-        self.pressure.setValue(1.0)
-        self.pressure.setDecimals(4)
-        self.pressure.setEnabled(False)  # Only enabled for NPT
-        self.pressure.setToolTip("Target pressure for NPT ensemble")
-        self.pressure.setMinimumWidth(120)
-
-        self.pressure_unit_label = QLabel("atm")
-
-        pressure_layout = QHBoxLayout()
-        pressure_layout.addWidget(self.pressure)
-        pressure_layout.addWidget(self.pressure_unit_label)
-
-        ensemble_label = QLabel("Ensemble:")
-        ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            ensemble_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
-        ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
-
-        ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
-        ensemble_layout.addRow("Initial Temperature:", self.temp_init)
-        ensemble_layout.addRow("Final Temperature:", self.temp_end)
-        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
-        ensemble_group.setLayout(ensemble_layout)
-        scroll_layout.addWidget(ensemble_group)
-
-        # Connect ensemble combo box signal
-        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
-        
         # Timestep settings
         timestep_group = QGroupBox("Timestep Settings")
         timestep_layout = QHBoxLayout()
@@ -447,24 +413,64 @@ class LammpsScriptGenerator(QMainWindow):
         main_boundary_layout.addLayout(boundary_layout)
         boundary_group.setLayout(main_boundary_layout)
         scroll_layout.addWidget(boundary_group)
+
+        # Ensemble settings
+        ensemble_group = QGroupBox("Ensemble Settings")
+        ensemble_layout = QFormLayout()
+
+        self.ensemble_combo = QComboBox()
+        self.ensemble_combo.addItems(["NVT", "NPT"])
+        self.ensemble_combo.setCurrentText("NVT")
+        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
+
+        self.temp_init = QDoubleSpinBox()
+        self.temp_init.setRange(0, 10000)
+        self.temp_init.setValue(300.0)
+        self.temp_init.setSingleStep(10.0)
+        self.temp_init.setToolTip("Initial temperature for the simulation")
+
+        self.temp_end = QDoubleSpinBox()
+        self.temp_end.setRange(0, 10000)
+        self.temp_end.setValue(300.0)
+        self.temp_end.setSingleStep(10.0)
+        self.temp_end.setToolTip("Final temperature for the simulation")
+
+        self.pressure = QDoubleSpinBox()
+        self.pressure.setRange(-100000, 100000)
+        self.pressure.setValue(1.0)
+        self.pressure.setDecimals(4)
+        self.pressure.setEnabled(False)  # Only enabled for NPT
+        self.pressure.setToolTip("Target pressure for NPT ensemble")
+        self.pressure.setMinimumWidth(120)
+
+        self.pressure_unit_label = QLabel("atm")
+
+        pressure_layout = QHBoxLayout()
+        pressure_layout.addWidget(self.pressure)
+        pressure_layout.addWidget(self.pressure_unit_label)
+
+        ensemble_label = QLabel("Ensemble:")
+        ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
+        try:
+            ensemble_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        except AttributeError:
+            pass
+        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
+        ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
+
+        ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
+        ensemble_layout.addRow("Initial Temperature:", self.temp_init)
+        ensemble_layout.addRow("Final Temperature:", self.temp_end)
+        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
+        ensemble_group.setLayout(ensemble_layout)
+        scroll_layout.addWidget(ensemble_group)
+
+        # Connect ensemble combo box signal
+        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
         
         # Velocity initialization settings
-        velocity_group = QGroupBox("Velocity Initialization")
+        velocity_group = InfoGroupBox("Velocity Initialization", "velocity")
         velocity_layout = QVBoxLayout()
-
-        # Create a layout for the title and info icon
-        title_layout = QHBoxLayout()
-        title_label = QLabel("Velocity Initialization")
-        info_label = QLabel("ℹ️")
-        info_label.setToolTip("Click to open LAMMPS velocity documentation")
-        info_label.setStyleSheet("color: blue; font-size: 14px;")
-        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        info_label.mousePressEvent = lambda e: self.open_lammps_doc("velocity")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(info_label)
-        velocity_group.setLayout(velocity_layout)
-        velocity_layout.addLayout(title_layout)
         
         self.enable_velocity = QCheckBox("Enable Velocity Initialization")
         self.enable_velocity.setChecked(True)
@@ -623,21 +629,8 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(bond_breakage_group)
 
         # Custom fixes
-        custom_fixes_group = QGroupBox("Custom Fixes")
+        custom_fixes_group = InfoGroupBox("Custom Fixes", "fix")
         custom_fixes_layout = QVBoxLayout()
-
-        title_layout = QHBoxLayout()
-        title_label = QLabel("Custom Fixes")
-        info_label = QLabel("ℹ️")
-        info_label.setToolTip("Click to open LAMMPS fix documentation")
-        info_label.setStyleSheet("color: blue; font-size: 14px;")
-        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        info_label.mousePressEvent = lambda e: self.open_lammps_doc("fix")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(info_label)
-        custom_fixes_group.setLayout(custom_fixes_layout)
-        custom_fixes_layout.addLayout(title_layout)
 
         self.enable_custom_fixes = QCheckBox("Enable Custom Fixes")
         self.enable_custom_fixes.setChecked(False)
@@ -836,8 +829,15 @@ class LammpsScriptGenerator(QMainWindow):
             self.timestep.setValue(0.00045)
 
     def update_timestep_step(self, value):
-        """Update the single step of the timestep spinbox"""
-        self.timestep.setSingleStep(max(1e-6, round(value * 0.02, 6)) if value > 0 else 1e-6)
+        """Update the single step of the timestep spinbox to increment the last non-zero digit."""
+        s = f"{value:.10f}"
+        if '.' in s:
+            s = s.rstrip('0')
+            last_digit_pos = len(s) - s.rfind('.') - 1
+            if last_digit_pos > 0:
+                self.timestep.setSingleStep(10**(-last_digit_pos))
+                return
+        self.timestep.setSingleStep(1.0)
         
     def create_deformation_tab(self):
         """Create the deformation processing tab with the graphical UI"""
@@ -1112,21 +1112,8 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(path_group)
         
         # Trajectory output settings
-        traj_group = QGroupBox("Trajectory Output Settings")
+        traj_group = InfoGroupBox("Trajectory Output Settings", "dump")
         traj_layout = QVBoxLayout()
-
-        title_layout = QHBoxLayout()
-        title_label = QLabel("Trajectory Output Settings")
-        info_label = QLabel("ℹ️")
-        info_label.setToolTip("Click to open LAMMPS dump documentation")
-        info_label.setStyleSheet("color: blue; font-size: 14px;")
-        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        info_label.mousePressEvent = lambda e: self.open_lammps_doc("dump")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(info_label)
-        traj_group.setLayout(traj_layout)
-        traj_layout.addLayout(title_layout)
         
         self.enable_trajectory = QCheckBox("Enable Trajectory Output")
         self.enable_trajectory.setChecked(True)
@@ -1153,21 +1140,8 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(traj_group)
         
         # Thermo output settings
-        thermo_group = QGroupBox("Thermo Output Settings")
+        thermo_group = InfoGroupBox("Thermo Output Settings", "thermo_style")
         thermo_layout = QVBoxLayout()
-
-        title_layout = QHBoxLayout()
-        title_label = QLabel("Thermo Output Settings")
-        info_label = QLabel("ℹ️")
-        info_label.setToolTip("Click to open LAMMPS thermo_style documentation")
-        info_label.setStyleSheet("color: blue; font-size: 14px;")
-        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        info_label.mousePressEvent = lambda e: self.open_lammps_doc("thermo_style")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(info_label)
-        thermo_group.setLayout(thermo_layout)
-        thermo_layout.addLayout(title_layout)
         
         self.enable_thermo = QCheckBox("Enable Thermo Output")
         self.enable_thermo.setChecked(True)
@@ -1189,21 +1163,8 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(thermo_group)
         
         # Stress calculations
-        stress_group = QGroupBox("Stress Calculations")
+        stress_group = InfoGroupBox("Stress Calculations", "compute_stress_atom")
         stress_layout = QVBoxLayout()
-
-        title_layout = QHBoxLayout()
-        title_label = QLabel("Stress Calculations")
-        info_label = QLabel("ℹ️")
-        info_label.setToolTip("Click to open LAMMPS compute stress/atom documentation")
-        info_label.setStyleSheet("color: blue; font-size: 14px;")
-        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        info_label.mousePressEvent = lambda e: self.open_lammps_doc("compute_stress_atom")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(info_label)
-        stress_group.setLayout(stress_layout)
-        stress_layout.addLayout(title_layout)
         
         self.enable_stress = QCheckBox("Enable Stress Calculations")
         self.enable_stress.setChecked(True)
@@ -1215,21 +1176,8 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(stress_group)
         
         # Custom computes
-        custom_computes_group = QGroupBox("Custom Computes")
+        custom_computes_group = InfoGroupBox("Custom Computes", "compute")
         custom_computes_layout = QVBoxLayout()
-
-        title_layout = QHBoxLayout()
-        title_label = QLabel("Custom Computes")
-        info_label = QLabel("ℹ️")
-        info_label.setToolTip("Click to open LAMMPS compute documentation")
-        info_label.setStyleSheet("color: blue; font-size: 14px;")
-        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        info_label.mousePressEvent = lambda e: self.open_lammps_doc("compute")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(info_label)
-        custom_computes_group.setLayout(custom_computes_layout)
-        custom_computes_layout.addLayout(title_layout)
         
         self.enable_custom_computes = QCheckBox("Enable Custom Computes")
         self.enable_custom_computes.setChecked(False)
@@ -1248,21 +1196,8 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(custom_computes_group)
         
         # Custom dumps
-        custom_dumps_group = QGroupBox("Custom Dumps")
+        custom_dumps_group = InfoGroupBox("Custom Dumps", "dump")
         custom_dumps_layout = QVBoxLayout()
-
-        title_layout = QHBoxLayout()
-        title_label = QLabel("Custom Dumps")
-        info_label = QLabel("ℹ️")
-        info_label.setToolTip("Click to open LAMMPS dump documentation")
-        info_label.setStyleSheet("color: blue; font-size: 14px;")
-        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        info_label.mousePressEvent = lambda e: self.open_lammps_doc("dump")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(info_label)
-        custom_dumps_group.setLayout(custom_dumps_layout)
-        custom_dumps_layout.addLayout(title_layout)
         
         self.enable_custom_dumps = QCheckBox("Enable Custom Dumps")
         self.enable_custom_dumps.setChecked(False)
@@ -1806,6 +1741,9 @@ class LammpsScriptGenerator(QMainWindow):
             for i in range(self.deformation_tab_widget.tab_widget.count()):
                 study_widget = self.deformation_tab_widget.tab_widget.widget(i)
                 study_name = self.deformation_tab_widget.tab_widget.tabText(i)
+
+                if study_name == "+":
+                    continue
                 
                 # Get the points from the graph
                 study = {
@@ -1876,57 +1814,52 @@ class LammpsScriptGenerator(QMainWindow):
             self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
             
-            # Cluster settings (removed - no longer needed, widgets don't exist)
-            # self.execution_mode_combo.setCurrentText(self.settings.value("cluster/execution_mode", "local"))
-            # self.lammps_command_edit.setText(self.settings.value("cluster/lammps_command", "lmp"))
-            # self.threads_spin.setValue(self.settings.value("cluster/threads", 4, type=int))
-            # self.cluster_partition.setText(self.settings.value("cluster/cluster_partition", "singlenode"))
-            # self.cluster_nodes.setValue(self.settings.value("cluster/cluster_nodes", 1, type=int))
-            # self.cluster_ntasks.setValue(self.settings.value("cluster/cluster_ntasks", 72, type=int))
-            # self.cluster_time.setText(self.settings.value("cluster/cluster_time", "24:00:00"))
-            # self.cluster_mail.setText(self.settings.value("cluster/cluster_mail", ""))
-            # self.cluster_mail_type.setCurrentText(self.settings.value("cluster/cluster_mail_type", "ALL"))
-            # self.auto_submit.setChecked(self.settings.value("cluster/auto_submit", False, type=bool))
-            # self.show_command.setChecked(self.settings.value("cluster/show_command", True, type=bool))
-            # self.save_scripts_only.setChecked(self.settings.value("cluster/save_scripts_only", False, type=bool))
-            
             # Multi-study settings
             if hasattr(self, 'deformation_tab_widget'):
                 studies_data = self.settings.value("multistudy/deform_studies")
+                studies = []
                 if studies_data:
                     try:
                         studies = json.loads(studies_data)
-                        # Clear existing tabs
-                        while self.deformation_tab_widget.tab_widget.count() > 0:
-                            self.deformation_tab_widget.tab_widget.removeTab(0)
+                    except (json.JSONDecodeError, TypeError):
+                        studies = [] # If data is corrupted, start fresh
 
-                        for i, study in enumerate(studies):
-                            self.deformation_tab_widget._add_study(is_first=(i==0))
-                            study_widget = self.deformation_tab_widget.tab_widget.widget(i)
-                            original_name = study.get("name", f"Study_{i+1}")
-                            sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '_', original_name)
-                            
-                            # Ensure uniqueness
-                            final_name = sanitized_name
-                            suffix = 1
-                            while any(final_name == self.deformation_tab_widget.tab_widget.tabText(j) for j in range(self.deformation_tab_widget.tab_widget.count()) if j != i):
-                                final_name = f"{sanitized_name}_{suffix}"
-                                suffix += 1
+                # Clear existing tabs (created in DeformationTab constructor)
+                while self.deformation_tab_widget.tab_widget.count() > 0:
+                    self.deformation_tab_widget.tab_widget.removeTab(0)
 
-                            self.deformation_tab_widget.tab_widget.setTabText(i, final_name)
+                if studies:
+                    for i, study in enumerate(studies):
+                        self.deformation_tab_widget._add_study(is_first=(i==0))
+                        study_widget = self.deformation_tab_widget.tab_widget.widget(i)
+                        original_name = study.get("name", f"Study_{i+1}")
+                        sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '_', original_name)
+                        
+                        # Ensure uniqueness
+                        final_name = sanitized_name
+                        suffix = 1
+                        while any(final_name == self.deformation_tab_widget.tab_widget.tabText(j) for j in range(self.deformation_tab_widget.tab_widget.count()) if j != i):
+                            final_name = f"{sanitized_name}_{suffix}"
+                            suffix += 1
 
-                            # Restore the state of the study widget
-                            state = {
-                                'data_points': study.get("data_points", study.get("points", [])), # backward compatibility
-                                'max_steps': study.get("max_steps", 100),
-                                'min_strain': study.get("min_strain", 0.0),
-                                'max_strain': study.get("max_strain", 1.0),
-                                'thermo_freq': study.get("thermo_freq", 100),
-                                'deform_axis': study.get("deform_axis", "x")
-                            }
-                            study_widget.set_state(state)
-                    except Exception as e:
-                        print(f"Error loading deformation studies: {e}")
+                        self.deformation_tab_widget.tab_widget.setTabText(i, final_name)
+
+                        # Restore the state of the study widget
+                        state = {
+                            'data_points': study.get("data_points", study.get("points", [])), # backward compatibility
+                            'max_steps': study.get("max_steps", 100),
+                            'min_strain': study.get("min_strain", 0.0),
+                            'max_strain': study.get("max_strain", 1.0),
+                            'thermo_freq': study.get("thermo_freq", 100),
+                            'deform_axis': study.get("deform_axis", "x")
+                        }
+                        study_widget.set_state(state)
+                else:
+                    # No studies in settings, or settings were corrupted. Create a default one.
+                    self.deformation_tab_widget._add_study(is_first=True)
+                
+                # Always add the plus tab back
+                self.deformation_tab_widget.add_plus_tab()
 
         except Exception as e:
             print(f"Error loading settings: {e}")
