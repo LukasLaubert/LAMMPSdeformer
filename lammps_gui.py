@@ -2881,6 +2881,16 @@ class LammpsGui(QMainWindow):
                     QMessageBox.critical(self, "Validation Error", error_message)
                     return
 
+            # Instantiate Generator temporarily to check specific files (Potential, Data files integrity)
+            # This must happen BEFORE asking to delete files.
+            if ScriptGen:
+                temp_generator = ScriptGen(config)
+                val_result = temp_generator.validate_configuration()
+                
+                if not val_result["success"]:
+                    QMessageBox.critical(self, "Validation Error", val_result["message"])
+                    return
+
             # Check if output path is not empty and ask user for action
             output_path = config["output"]["output_path"]
             if os.path.exists(output_path) and os.listdir(output_path):

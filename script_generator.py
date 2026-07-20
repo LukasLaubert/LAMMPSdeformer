@@ -29,78 +29,118 @@ class LammpsScriptGenerator:
         self.config = config
         self.generated_files = []
         
+    def validate_configuration(self):
+        """
+        Performs strict read-only validation of paths and settings.
+        Returns a dictionary containing success status, messages, derived data, and warnings.
+        """
+        warnings = []
+        
+        # 1. Validate General Config
+        if not isinstance(self.config, dict):
+            return {"success": False, "message": "Invalid configuration: not a dictionary"}
+        
+        system_config = self.config.get("system", {})
+        if not isinstance(system_config, dict):
+            return {"success": False, "message": "Invalid system configuration"}
+            
+        # 2. Validate System Path
+        system_path = system_config.get("system_path", "")
+        if not system_path:
+            return {"success": False, "message": "System path not specified"}
+        
+        if not os.path.exists(system_path):
+            return {"success": False, "message": f"System path does not exist: {system_path}\nPlease check your selection in the System Configuration tab."}
+        
+        # 3. Validate Potential File (if enabled)
+        if system_config.get("use_potential_file", False):
+            potential_file = system_config.get("potential_file", "")
+            if not potential_file:
+                return {"success": False, "message": "Potential file usage is enabled, but no file path is specified."}
+            
+            if not os.path.exists(potential_file):
+                return {"success": False, "message": f"Potential file does not exist: {potential_file}\nPlease check your selection in the System Configuration tab."}
+
+        # 4. Resolve and Validate System Files
+        if os.path.isfile(system_path):
+            system_files = [system_path]
+            is_multi_system = False
+        elif os.path.isdir(system_path):
+            data_extensions = self.config.get("system", {}).get("data_file_extensions", [".data"])
+            system_files = []
+            for ext in data_extensions:
+                system_files.extend(glob.glob(os.path.join(system_path, f"*{ext}")))
+            
+            is_multi_system = len(system_files) > 1
+            if not system_files:
+                return {"success": False, "message": f"No data files with extensions {data_extensions} found in the specified directory: {system_path}"}
+        else:
+            return {"success": False, "message": "Invalid system path type (not a file or directory)."}
+        
+        # 5. Check Units Consistency (Warning only)
+        if is_multi_system:
+            units_check = self.check_units_consistency(system_files)
+            if not units_check["consistent"]:
+                warnings.append(f"WARNING: {units_check['message']}")
+        
+        # 6. Validate Deformation Studies
+        deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
+        if not deform_studies:
+            return {"success": False, "message": "No deformation studies defined."}
+        
+        for i, study in enumerate(deform_studies):
+            if not isinstance(study, dict):
+                return {"success": False, "message": f"Invalid deformation study at index {i}"}
+            
+            required_fields = ["name", "data_points", "max_steps", "min_strain", "max_strain"]
+            for field in required_fields:
+                if field not in study:
+                    return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
+        
+        # 7. Validate Output Configuration
+        output_config = self.config.get("output", {})
+        if not isinstance(output_config, dict):
+            return {"success": False, "message": "Invalid output configuration"}
+            
+        return {
+            "success": True, 
+            "message": "Validation successful", 
+            "warnings": warnings, 
+            "system_files": system_files, 
+            "is_multi_system": is_multi_system
+        }
+
     def generate_all_scripts(self):
         """Generate all necessary scripts based on configuration"""
         try:
             self.generated_files = []
             
-            # Validate configuration structure
-            if not isinstance(self.config, dict):
-                return {"success": False, "message": "Invalid configuration: not a dictionary"}
+            # --- PHASE 1: VALIDATION ---
+            # Call the separate validation method first
+            val_result = self.validate_configuration()
+            if not val_result["success"]:
+                return val_result
             
-            # Get system path and determine if it's single file or directory
+            # Extract data derived during validation
+            warnings = val_result["warnings"]
+            system_files = val_result["system_files"]
+            is_multi_system = val_result["is_multi_system"]
+            
+            # Retrieve configs
             system_config = self.config.get("system", {})
-            if not isinstance(system_config, dict):
-                return {"success": False, "message": "Invalid system configuration"}
-                
-            system_path = system_config.get("system_path", "")
-            if not system_path:
-                return {"success": False, "message": "System path not specified"}
-            
-            if not os.path.exists(system_path):
-                return {"success": False, "message": f"System path does not exist: {system_path}"}
-            
-            # Determine system files
-            if os.path.isfile(system_path):
-                system_files = [system_path]
-                is_multi_system = False
-            elif os.path.isdir(system_path):
-                data_extensions = self.config.get("system", {}).get("data_file_extensions", [".data"])
-                system_files = []
-                for ext in data_extensions:
-                    system_files.extend(glob.glob(os.path.join(system_path, f"*{ext}")))
-                
-                is_multi_system = len(system_files) > 1
-                if not system_files:
-                    return {"success": False, "message": f"No data files with extensions {data_extensions} found in the specified directory."}
-            else:
-                return {"success": False, "message": "Invalid system path."}
-            
-            # Check units consistency if multi-system
-            if is_multi_system:
-                units_check = self.check_units_consistency(system_files)
-                if not units_check["consistent"]:
-                    return {"success": False, "message": units_check["message"]}
-            
-            # Get deformation studies
-            deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
-            if not deform_studies:
-                return {"success": False, "message": "No deformation studies defined."}
-            
-            # Validate each deformation study
-            for i, study in enumerate(deform_studies):
-                if not isinstance(study, dict):
-                    return {"success": False, "message": f"Invalid deformation study at index {i}"}
-                
-                required_fields = ["name", "data_points", "max_steps", "min_strain", "max_strain"]
-                for field in required_fields:
-                    if field not in study:
-                        return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
-            
-            # Create output directory structure
             output_config = self.config.get("output", {})
-            if not isinstance(output_config, dict):
-                return {"success": False, "message": "Invalid output configuration"}
-                
+            deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
+
+            # --- PHASE 2: GENERATION (Write Operations) ---
+            
             output_path = output_config.get("output_path", "")
             if not output_path:
                 output_path = os.path.dirname(system_files[0])
             
-            # Root simulation folder
             root_simulation_dir = output_path
             os.makedirs(root_simulation_dir, exist_ok=True)
             
-            # Create _input_files folder and copy all data files there
+            # Create _input_files folder
             data_files_folder = os.path.join(root_simulation_dir, "_input_files")
             os.makedirs(data_files_folder, exist_ok=True)
             
@@ -119,19 +159,14 @@ class LammpsScriptGenerator:
                 self.process_and_copy_data_file(system_file, data_file_dest)
                 
                 data_file_dest_paths[system_file] = (Path("_input_files") / f"{system_name}.data").as_posix()
-                
-                # Copy potential file if used (potential files are not processed)
-                system_config = self.config.get("system", {})
-                if system_config.get("use_potential_file", False):
-                    potential_file = system_config.get("potential_file", "")
-                    if os.path.exists(potential_file):
-                        potential_dest = os.path.join(data_files_folder, Path(potential_file).name)
-                        shutil.copy2(potential_file, potential_dest)
             
-            # Get deformation studies
-            deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
-            if not deform_studies:
-                return {"success": False, "message": "No deformation studies defined."}
+            # Copy potential file
+            if system_config.get("use_potential_file", False):
+                potential_file = system_config.get("potential_file", "")
+                # We validated existence in validate_configuration, so this is safe
+                if os.path.exists(potential_file):
+                    potential_dest = os.path.join(data_files_folder, Path(potential_file).name)
+                    shutil.copy2(potential_file, potential_dest)
             
             # Generate scripts for each deformation study and system combination
             for study in deform_studies:
@@ -144,11 +179,11 @@ class LammpsScriptGenerator:
                 for system_file in system_files:
                     system_name = Path(system_file).stem
                     
-                    # Always create system-specific folder within study folder for consistent structure
+                    # Always create system-specific folder
                     system_folder = os.path.join(study_folder, system_name)
                     os.makedirs(system_folder, exist_ok=True)
                     
-                    # Generate script for this study-system combination
+                    # Generate script
                     model_name = f"{study_name}_{system_name}"
                     data_file_relative_path = data_file_dest_paths[system_file]
                     
@@ -160,7 +195,7 @@ class LammpsScriptGenerator:
                     if not result["success"]:
                         return result
             
-            # Always generate both local and cluster execution scripts
+            # Generate execution scripts
             exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
             if not exec_script_result["success"]:
                 return exec_script_result
@@ -174,7 +209,12 @@ class LammpsScriptGenerator:
             if not settings_result["success"]:
                 return settings_result
             
-            return {"success": True, "message": "All scripts generated successfully.", "files": self.generated_files}
+            # Final message
+            final_msg = "All scripts generated successfully."
+            if warnings:
+                final_msg += "\n\n" + "\n".join(warnings)
+
+            return {"success": True, "message": final_msg, "files": self.generated_files}
             
         except Exception as e:
             return {"success": False, "message": f"Error generating scripts: {str(e)}"}
@@ -237,15 +277,29 @@ class LammpsScriptGenerator:
             return {"success": False, "message": f"Error saving settings: {str(e)}"}
         
     def check_units_consistency(self, system_files):
-        """Check if all data files have the same units"""
+        """Check if all data files have the same units, ignoring unknown ones."""
         if not system_files:
-            return {"consistent": True, "units": None}
-        first_units = self.read_units_from_data_file(system_files[0])
-        for file_path in system_files[1:]:
+            return {"consistent": True, "units": None, "message": ""}
+            
+        defined_units = set()
+        first_file_with_units = None
+        
+        for file_path in system_files:
             units = self.read_units_from_data_file(file_path)
-            if units != first_units:
-                return {"consistent": False, "message": f"Units mismatch: {file_path} has '{units}', but first file has '{first_units}'"}
-        return {"consistent": True, "units": first_units}
+            if units:
+                defined_units.add(units)
+                if not first_file_with_units:
+                    first_file_with_units = (file_path, units)
+                    
+        # If we found no units, or only one type of unit, we are consistent
+        if len(defined_units) <= 1:
+            return {"consistent": True, "units": list(defined_units)[0] if defined_units else None}
+            
+        # If we reached here, we have conflicting definitions (e.g. metal AND real)
+        return {
+            "consistent": False, 
+            "message": f"Units mismatch detected in source files: {defined_units}. The generator will proceed using the units defined in the System Configuration tab ('{self.config.get('system', {}).get('units', 'unknown')}'). Please check your input data files before running the simulations!"
+        }
         
     def generate_single_script(self, data_file, model_name, deform_study, output_dir, data_file_dest):
         """Generate a single LAMMPS input script"""
@@ -1100,4 +1154,4 @@ class LammpsScriptGenerator:
                     return first_line.split("units")[-1].strip().split()[0]
         except Exception:
             pass
-        return "metal" # Default
+        return None # Default None (unknown) if not found

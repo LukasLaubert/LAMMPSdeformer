@@ -3050,7 +3050,7 @@ class DeformationTab(QWidget):
 
         add_tab_button = QPushButton("+")
         add_tab_button.setToolTip("Add a new study")
-        add_tab_button.clicked.connect(self._add_study)
+        add_tab_button.clicked.connect(lambda: self._add_study(is_first=False, auto_rename=True))
         add_tab_button.setFixedSize(20, 18)
         add_tab_button.setStyleSheet("QPushButton { margin: -3px 5px 0px 0px; padding: 0px; }")
         corner_layout.addWidget(add_tab_button)
@@ -3126,7 +3126,6 @@ class DeformationTab(QWidget):
         # Update the stylesheet for selected tab indicator
         self._update_tab_stylesheet()
 
-
     def _create_summary_area(self, layout):
         # Use a single scrollable text area for all summaries
         scroll_area = QScrollArea()
@@ -3145,10 +3144,27 @@ class DeformationTab(QWidget):
             new_name = f"{base_name}_copy{copy_num}"
         return new_name
 
-    def _add_study(self, is_first=False):
+    def _add_study(self, is_first=False, source_index=None, auto_rename=False):
+        # Capture the currently active widget to restore selection if cancelled
+        previous_active_widget = self.tab_widget.currentWidget()
+        
         initial_state = None
         tab_name = ""
-        insert_index = self.tab_widget.currentIndex() + 1 if self.tab_widget.count() > 0 else 0
+        
+        # Determine insertion index and source widget
+        if source_index is not None:
+            # Context Menu Copy: Insert RIGHT of the source tab
+            insert_index = source_index + 1
+            source_widget = self.tab_widget.widget(source_index)
+            base_name = self.tab_widget.tabText(source_index)
+        else:
+            # Button Click (+): Insert RIGHT of the currently selected tab
+            insert_index = self.tab_widget.currentIndex() + 1 if self.tab_widget.count() > 0 else 0
+            source_widget = self.tab_widget.currentWidget()
+            if source_widget:
+                base_name = self.tab_widget.tabText(self.tab_widget.currentIndex())
+            else:
+                base_name = f"Study{self._get_next_default_study_number():02d}"
 
         if is_first:
             # This is for the initial tab or when the last tab is closed
@@ -3156,23 +3172,23 @@ class DeformationTab(QWidget):
             tab_name = f"Study{self._get_next_default_study_number():02d}"
         else:
             # Copying an existing tab
-            current_widget = self.tab_widget.currentWidget()
-            if current_widget:
-                initial_state = current_widget.get_state()
-                base_name = self.tab_widget.tabText(self.tab_widget.currentIndex())
-                tab_name = self._get_unique_copy_name(base_name)
+            if source_widget:
+                initial_state = source_widget.get_state()
+                # Use base name directly for copies
+                tab_name = base_name
             else:
-                # Fallback if no current widget (shouldn't happen if count > 0)
+                # Fallback if no widget found (shouldn't happen if count > 0)
                 initial_state = None
                 tab_name = f"Study{self._get_next_default_study_number():02d}"
 
         new_study = StudyWidget(initial_state)
 
         # Apply current timestep and units from main window
-        timestep = self.main_window.timestep.value()
-        units = self.main_window.units_combo.currentText()
-        new_study.graph_widget.set_timestep(timestep)
-        new_study.graph_widget.set_time_unit(LAMMPS_UNITS[units])
+        if hasattr(self.main_window, 'timestep'):
+            timestep = self.main_window.timestep.value()
+            units = self.main_window.units_combo.currentText()
+            new_study.graph_widget.set_timestep(timestep)
+            new_study.graph_widget.set_time_unit(LAMMPS_UNITS[units])
 
         new_study.dataChanged.connect(self.update_summaries)
         new_study.graph_widget.dataChanged.connect(self.update_summaries)
@@ -3182,13 +3198,22 @@ class DeformationTab(QWidget):
         original_mouse_release = new_study.graph_widget.mouseReleaseEvent
         new_study.graph_widget.mouseReleaseEvent = lambda event: self._wrapped_mouse_release_event(original_mouse_release, event, new_study.graph_widget)
         
-        tab_index = self.tab_widget.insertTab(insert_index, new_study, tab_name) # Use insertTab
+        tab_index = self.tab_widget.insertTab(insert_index, new_study, tab_name)
         self.tab_widget.setCurrentIndex(tab_index)
 
         if not self._batch_loading:
             self.update_summaries()
             self._update_tab_colors()
         self.studiesChanged.emit()
+
+        # Handle auto-rename for copies
+        if auto_rename:
+            # Prepare callback to restore selection to the previous active widget if canceled
+            cancel_callback = None
+            if previous_active_widget:
+                cancel_callback = lambda: self.tab_widget.setCurrentWidget(previous_active_widget)
+            
+            self._rename_tab(tab_index, dialog_title="Create Copy", delete_on_cancel=True, cancel_callback=cancel_callback)
 
     def _wrapped_mouse_move_event(self, original_mouse_move_event, event, graph_widget):
         # Call the original mouse move event
@@ -3227,14 +3252,25 @@ class DeformationTab(QWidget):
             self._update_tab_colors()
         self.studiesChanged.emit()
 
-    def _rename_tab(self, index):
+    def _rename_tab(self, index, dialog_title="Rename Study", delete_on_cancel=False, cancel_callback=None):
         current_name = self.tab_widget.tabText(index)
 
         while True:
-            new_name, ok = QInputDialog.getText(self, "Rename Study", "New study name:", text=current_name)
+            new_name, ok = QInputDialog.getText(self, dialog_title, "New study name:", text=current_name)
 
             if not ok:
-                return # User cancelled
+                if delete_on_cancel:
+                    # Remove the newly added tab if user cancels
+                    self.tab_widget.widget(index).deleteLater()
+                    self.tab_widget.removeTab(index)
+                    self.update_summaries()
+                    self._update_tab_colors()
+                    self.studiesChanged.emit()
+                    
+                    # Restore selection to where it was before
+                    if cancel_callback:
+                        cancel_callback()
+                return
 
             if not new_name:
                 QMessageBox.warning(self, "Invalid Name", "Study name cannot be empty.")
@@ -3242,7 +3278,7 @@ class DeformationTab(QWidget):
 
             # Validate the new name
             if re.match(r"^[a-zA-Z0-9_-]+$", new_name):
-                # Check if name already exists
+                # Check if name already exists (excluding the current tab itself)
                 if any(new_name == self.tab_widget.tabText(i) for i in range(self.tab_widget.count()) if i != index):
                     QMessageBox.warning(self, "Invalid Name", "A study with this name already exists.")
                     continue
@@ -3340,10 +3376,23 @@ class DeformationTab(QWidget):
             return
 
         menu = QMenu(self)
+
+        # Enabled toggle
         enabled_action = QAction("Enabled", self, checkable=True)
         enabled_action.setChecked(widget.is_enabled)
         enabled_action.toggled.connect(lambda checked: self._toggle_study_enabled(index, checked))
         menu.addAction(enabled_action)
+
+        # Create copy option
+        copy_action = QAction("Create copy", self)
+        # Call _add_study with specific source_index and enable auto_rename
+        copy_action.triggered.connect(lambda: self._add_study(is_first=False, source_index=index, auto_rename=True))
+        menu.addAction(copy_action)
+        
+        # Rename option
+        rename_action = QAction("Rename", self)
+        rename_action.triggered.connect(lambda: self._rename_tab(index))
+        menu.addAction(rename_action)
 
         menu.exec(tab_bar.mapToGlobal(pos))
 
