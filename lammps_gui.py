@@ -1752,7 +1752,7 @@ class LammpsGui(QMainWindow):
         restart_options_layout.setContentsMargins(0, 0, 0, 0)
 
         self.restart_freq_spinbox = QSpinBox()
-        self.restart_freq_spinbox.setRange(100, 100000)
+        self.restart_freq_spinbox.setRange(10, 1000000000000000)
         self.restart_freq_spinbox.setValue(100000)
         self.restart_freq_spinbox.setSingleStep(100)
         self.restart_freq_spinbox.setToolTip("Frequency (in MD steps) to write a restart file. For example, a value of 1000 will save the simulation state every 1000 steps.")

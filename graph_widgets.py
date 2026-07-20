@@ -830,12 +830,12 @@ class GraphWidget(QWidget):
                     rate_text = f"{rate:.4e} {self.get_y_unit()}/t"
                     slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 20))
                     rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 6))
-                    if i in self._fixed_segments:
+                    if segment_info.get('fixed_slope', False):
                         painter.setPen(QColor("red"))
                     else:
                         painter.setPen(STYLE_SLOPE_TEXT)
                     painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
-                    if i in self._fixed_segments:
+                    if segment_info.get('fixed_slope', False):
                         painter.setPen(QColor("red"))
                     else:
                         painter.setPen(STYLE_TEXT_SECONDARY)
@@ -1105,10 +1105,21 @@ class GraphWidget(QWidget):
                 slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter(text_pos - QPointF(0, 12))
                 rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter(text_pos + QPointF(0, 2))
                 
-                painter.setPen(STYLE_SLOPE_TEXT)
+                if segment_info.get('fixed_slope', False):
+                    painter.setPen(QColor("red"))
+                else:
+                    painter.setPen(STYLE_SLOPE_TEXT)
                 painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
-                painter.setPen(STYLE_TEXT_SECONDARY)
+                
+                # Use red for rate_text too if slope is fixed
+                if segment_info.get('fixed_slope', False):
+                    painter.setPen(QColor("red"))
+                else:
+                    painter.setPen(STYLE_TEXT_SECONDARY)
                 painter.drawText(rate_rect, rate_text)
+                
+                # Register clickable region for context menu
+                self._clickable_regions.append((slope_rect.united(rate_rect), "slope", segment_index))
 
         # 3. Draw amplitude handle - Position at first peak/trough after the midpoint slope
         # According to the requirements: the handle should always be one quarter period length after the midpoint slope
@@ -1581,224 +1592,228 @@ class GraphWidget(QWidget):
 
             i = self._dragged_handle_index
             
-            # --- Determine Moving Handles ---
-            # Identify which handles move together (Locked vs Generic)
-            moving_indices = [i]
+            # Calculate new position early for rigid group offset logic
+            constrained_pos = event.position()
+            target_p_norm = self._widget_to_norm(constrained_pos)
             
-            # Check for Locked Constraints (Even Alternating or Integer Pulsating)
-            # This logic determines if another handle is "ganged" to this one.
-            should_lock_y = False
+            # Respect X-locking constraints immediately so rigid group logic sees correct X
+            if i in self._locked_x_ticks:
+                target_p_norm.setX(self.points_norm[i].x())
+            if i in self._locked_y_labels:
+                target_p_norm.setY(self.points_norm[i].y())
             
-            # Check Left Segment
-            # Check Left Segment
-            if i > 0 and self.segments[i-1]['type'] == 'sine':
-                seg = self.segments[i-1]
-                is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
-                # Pulsating is LOCKED only if start_y == end_y, which implies INTEGER cycles (1.0, 2.0).
-                # 0.5 cycles starts at y0, ends at peak. Not locked.
-                is_p_locked = abs(seg['num_cycles'] - round(seg['num_cycles'])) < 1e-9 and "Pulsating" in seg['scheme']
-                if is_even_alt or is_p_locked:
-                    moving_indices = [i-1, i]
-                    should_lock_y = True
+            # Also respect Drag constraints (e.g. if Shift is held, or specific axis locks)
+            # (Assuming simplified logic for now, standard dragging)
             
-            # Check Right Segment (only if not already locked by left)
-            if not should_lock_y and i < len(self.points_norm) - 1 and self.segments[i]['type'] == 'sine':
-                seg = self.segments[i]
-                is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
-                is_p_locked = abs(seg['num_cycles'] - round(seg['num_cycles'])) < 1e-9 and "Pulsating" in seg['scheme']
-                if is_even_alt or is_p_locked:
-                    moving_indices = [i, i+1]
-                    should_lock_y = True
+            # --- Determine Moving Handles (Rigid Group / Constraints) ---
+            rigid_offsets = {i: 0.0}
+            left_anchor = None # (anchor_idx, seg_idx_connecting_to_group)
+            right_anchor = None
             
-            # Additional check: Linked vertical drag for Odd Alternating (Peak/Trough)
-            # The original code supported moving both handles if they meet at a peak/trough?
-            # User requirement check: "Fixing Sine Wave Dragging... Left Handle Bounce"
-            # The previous behavior for Odd Alternating was sometimes to move connected handles.
-            # But the user wants "Bounce Back" fixed and "clean logic".
-            # Let's stick to the core requirement: If handles are logically connected in a way that
-            # requires simultaneous movement (Locked), we move them.
-            # Note: Odd Alternating (e.g. 0.5 cycle) ends at Peak. y1 != y2.
-            # Usually dragging one does NOT drag the other.
+            # Temporary X coordinates for offset calculation
+            current_xs = {}
+            for idx in range(len(self.points_norm)):
+                if idx == i:
+                    raw_x = self._norm_to_data(target_p_norm).x()
+                    # Snap to integer to ensure Slope/Y calculations match the final Rendered X
+                    current_xs[idx] = round(raw_x)
+                else:
+                    current_xs[idx] = self._norm_to_data(self.points_norm[idx]).x()
             
+            # Helper to check rigidity
+            def is_rigid(idx):
+                return self._is_segment_rigid_vertical(idx)
+
+            # Helper to calculate dy based on dx and segment properties
+            # For segments with fixed_slope: calculate dy from slope equation
+            # For implicitly rigid segments (full cycles): dy = 0 (endpoints at same Y)
+            def calculate_dy(seg_idx, dx):
+                seg = self.segments[seg_idx]
+                
+                # Only calculate dy from slope if segment has explicit fixed_slope
+                if not seg.get('fixed_slope', False):
+                    # Implicitly rigid segment (e.g., full cycle sine) - dy is always 0
+                    # Do NOT modify amplitude for these segments!
+                    return 0
+                
+                m = seg.get('fixed_slope_value', 0)
+                
+                if seg['type'] == 'line':
+                    return m * dx
+                    
+                elif seg['type'] == 'sine':
+                    # Sine Slope Logic - only for explicitly fixed slope
+                    phi_start = 0
+                    if "Alternating" in seg['scheme']:
+                        phi_start = math.pi if "compressive" in seg['scheme'] else 0
+                    elif "Pulsating" in seg['scheme']:
+                        phi_start = -math.pi/2 if "tensile" in seg['scheme'] else math.pi/2
+                    
+                    k = seg['num_cycles'] * 2 * math.pi / dx if dx != 0 else 0
+                    
+                    n = 0
+                    first_zero_x_offset = -1
+                    while True:
+                        x_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+                        if x_offset >= -1e-9 and x_offset <= dx + 1e-9:
+                            first_zero_x_offset = x_offset
+                            break
+                        n += 1
+                        if n > 1000: break
+                    
+                    if first_zero_x_offset != -1 and k != 0:
+                        phase_at_zero = k * first_zero_x_offset + phi_start
+                        cos_val = math.cos(phase_at_zero)
+                        if abs(cos_val) > 1e-9:
+                            A = m / (k * cos_val)
+                            # Update amplitude to maintain fixed slope
+                            seg['amplitude'] = A
+                            
+                            end_angle = seg['num_cycles'] * 2 * math.pi + phi_start
+                            ds = math.sin(end_angle) - math.sin(phi_start)
+                            return A * ds
+                return 0
+
+            # Propagate Left
+            curr = i
+            while curr > 0:
+                seg_idx = curr - 1
+                neighbor_idx = curr - 1
+                
+                # Check for Locks (Anchors)
+                neighbor_locked = (neighbor_idx in self._locked_y_labels) or \
+                                  (neighbor_idx == 0 and self.mode == 'Deformation')
+                
+                if is_rigid(seg_idx):
+                    if neighbor_locked:
+                        left_anchor = (neighbor_idx, seg_idx)
+                        break
+                    
+                    dx = current_xs[curr] - current_xs[curr-1]
+                    dy = calculate_dy(seg_idx, dx)
+                    
+                    # Relation: Y_curr = Y_prev + dy => Y_prev = Y_curr - dy
+                    rigid_offsets[curr-1] = rigid_offsets[curr] - dy
+                    curr -= 1
+                else:
+                    break
+            
+            # Propagate Right
+            curr = i
+            while curr < len(self.points_norm) - 1:
+                seg_idx = curr
+                neighbor_idx = curr + 1
+                
+                # Check for Locks (Anchors)
+                neighbor_locked = (neighbor_idx in self._locked_y_labels)
+                
+                if is_rigid(seg_idx):
+                    if neighbor_locked:
+                        right_anchor = (neighbor_idx, seg_idx)
+                        break
+                        
+                    dx = current_xs[curr+1] - current_xs[curr]
+                    dy = calculate_dy(seg_idx, dx)
+                    
+                    # Relation: Y_next = Y_curr + dy
+                    rigid_offsets[curr+1] = rigid_offsets[curr] + dy
+                    curr += 1
+                else:
+                    break
+
             # --- Calculate Safe Y Range using Helper ---
-            min_y, max_y = self._get_safe_y_range_for_moving_handles(moving_indices)
+            min_y, max_y = self._get_safe_y_range_for_moving_handles(rigid_offsets)
+            
+            # --- Apply Anchor Constraints ---
+            # If constrained by anchors via rigid segments, the valid Y range likely collapses to a single value.
+            
+            if left_anchor:
+                a_idx, seg_idx = left_anchor
+                # Calculate required Y for the handle NEXT to the anchor (which is a_idx + 1)
+                # Relation: y_{a+1} = y_a + dy
+                # But 'a' is locked, so y_a is fixed.
+                y_anchor = self._norm_to_data(self.points_norm[a_idx]).y()
+                dx = current_xs[a_idx+1] - current_xs[a_idx]
+                dy = calculate_dy(seg_idx, dx)
+                
+                target_y_next = y_anchor + dy
+                
+                # We know 'a_idx + 1' is in rigid_offsets.
+                # rigid_offsets maps idx -> offset_from_i.  y_idx = y_i + offset_idx
+                # So y_{a+1} = y_i + offset_{a+1} = target_y_next
+                # y_i = target_y_next - offset_{a+1}
+                
+                required_y_i = target_y_next - rigid_offsets[a_idx+1]
+                
+                # Use exact value, clamped to global bounds
+                min_y = max(min_y, required_y_i)
+                max_y = min(max_y, required_y_i)
+            
+            if right_anchor:
+                a_idx, seg_idx = right_anchor
+                # Relation: y_a = y_{a-1} + dy
+                # y_{a-1} = y_a - dy
+                y_anchor = self._norm_to_data(self.points_norm[a_idx]).y()
+                dx = current_xs[a_idx] - current_xs[a_idx-1]
+                dy = calculate_dy(seg_idx, dx)
+                
+                target_y_prev = y_anchor - dy
+                
+                # y_{a-1} = y_i + offset_{a-1}
+                # y_i = target_y_prev - offset_{a-1}
+                
+                required_y_i = target_y_prev - rigid_offsets[a_idx-1]
+                
+                # Use exact value, clamped to global bounds
+                min_y = max(min_y, required_y_i)
+                max_y = min(max_y, required_y_i)
             
             # --- Apply Clamping ---
-            new_p_norm = self._widget_to_norm(constrained_pos)
-            p_current_data = self._norm_to_data(new_p_norm)
-            clamped_y = max(min_y, min(max_y, p_current_data.y()))
+            p_current_data = self._norm_to_data(target_p_norm)
             
-            p_current_data.setY(clamped_y)
-            new_p_norm = self._data_to_norm(p_current_data)
-            constrained_pos = self._norm_to_widget(new_p_norm)
+            # If dragged handle has Y locked, use the locked Y value directly
+            # (bypass clamping which might conflict with sine geometry constraints)
+            if i in self._locked_y_labels:
+                clamped_y = self._norm_to_data(self.points_norm[i]).y()
+            # If anchors constrained us to a single Y value, use it exactly
+            elif abs(max_y - min_y) < 1e-9:
+                clamped_y = (min_y + max_y) / 2  # Use midpoint (they're nearly equal)
+            else:
+                clamped_y = max(min_y, min(max_y, p_current_data.y()))
             
             # --- Update All Moving Handles ---
-            for idx in moving_indices:
-                self.points_norm[idx].setY(new_p_norm.y())
-
-            # Check if this handle's x or y positions are locked
-            x_locked = self._dragged_handle_index in self._locked_x_ticks
-            y_locked = self._dragged_handle_index in self._locked_y_labels
-            
-            # Check if adjacent segments are fixed, which would constrain movement
-            prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
-            next_segment_fixed = self._dragged_handle_index in self._fixed_segments if self._dragged_handle_index < len(self.points_norm) - 1 else False
-            
-            # If both x and y are locked, or if y is locked and both adjacent segments are fixed, cannot move this handle at all
-            if (x_locked and y_locked) or (y_locked and prev_segment_fixed and next_segment_fixed):
-                return
+            for idx, offset in rigid_offsets.items():
+                p_idx_data = self._norm_to_data(self.points_norm[idx])
+                p_idx_data.setY(clamped_y + offset)
                 
-            # Cannot move handle if it's at the first or last position and has a fixed segment
-            if (self._dragged_handle_index == 0 and next_segment_fixed) or (self._dragged_handle_index == len(self.points_norm) - 1 and prev_segment_fixed):
-                return
-                
-            if self._dragged_handle_index == 0:
-                if self.mode == 'Deformation':
-                    # First point x is always locked in deformation mode
-                    if not y_locked:  # Only allow y movement if not locked
-                        constrained_pos.setX(self._drag_start_pos_widget.x())
-                        # Ensure the first point stays at x=0
-                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                        p_data.setX(0)  # Force x to be 0 for the first point
-                        # Clamp y to min/max strain values
-                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
-                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
-                        final_p_norm.setX(0)  # Ensure normalized x is also 0
-                    else:
-                        # Y is locked, don't move at all
-                        return
-                else: # Temperature mode, only allow y-drag and ensure x stays at 0
-                    if not y_locked:  # Only allow y movement if not locked
-                        constrained_pos.setX(self._drag_start_pos_widget.x())
-                        # Ensure the first point stays at x=0
-                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                        p_data.setX(0)  # Force x to be 0 for the first point
-                        # Clamp y to min/max strain values
-                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
-                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
-                        final_p_norm.setX(0)  # Ensure normalized x is also 0
-                    else:
-                        # Y is locked, don't move at all
-                        return
-            else:
-                p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                
-                # During dragging, enforce INTEGER time step values for x-coordinate
-                p_data.setX(round(p_data.x()))
-                
-                # Apply locking constraints
-                if x_locked:
-                    # X position is locked, keep the original x value
-                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    p_data.setX(orig_data.x())
-                if y_locked:
-                    # Y position is locked, keep the original y value
-                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    p_data.setY(orig_data.y())
-                
-                # If adjacent segments are fixed, constrain movement along the fixed slope
-                movement_allowed = True
-                if prev_segment_fixed and not next_segment_fixed:
-                    # Only previous segment is fixed, constrain movement along its slope
-                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
-                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    # Calculate slope of fixed segment
-                    if current_point.x() != prev_point.x():
-                        slope = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x())
-                        # Constrain y position based on x position and slope (unless y is locked)
-                        if not y_locked:
-                            calculated_y = prev_point.y() + slope * (p_data.x() - prev_point.x())
-                            # Check if we've hit min or max y
-                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
-                                movement_allowed = False
-                            # Clamp to min/max strain values
-                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
-                elif not prev_segment_fixed and next_segment_fixed:
-                    # Only next segment is fixed, constrain movement along its slope
-                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
-                    # Calculate slope of fixed segment
-                    if next_point.x() != current_point.x():
-                        slope = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x())
-                        # Constrain y position based on x position and slope (unless y is locked)
-                        if not y_locked:
-                            calculated_y = current_point.y() + slope * (p_data.x() - current_point.x())
-                            # Check if we've hit min or max y
-                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
-                                movement_allowed = False
-                            # Clamp to min/max strain values
-                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
-                elif prev_segment_fixed and next_segment_fixed:
-                    # Both segments are fixed, constrain to the average slope
-                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
-                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
-                    # Calculate slopes of both fixed segments
-                    slope1 = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x()) if current_point.x() != prev_point.x() else 0
-                    slope2 = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x()) if next_point.x() != current_point.x() else 0
-                    # Use average slope for constraint
-                    avg_slope = (slope1 + slope2) / 2
-                    # Constrain y position based on x position and average slope (unless y is locked)
-                    if not y_locked:
-                        # We'll use the position relative to the previous point
-                        calculated_y = prev_point.y() + avg_slope * (p_data.x() - prev_point.x())
-                        # Check if we've hit min or max y
-                        if calculated_y < self._min_strain or calculated_y > self._max_strain:
-                            movement_allowed = False
-                        # Clamp to min/max strain values
-                        p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
+                if idx == i:
+                    new_x = p_current_data.x()
+                    # Clamp X to neighbors
+                    if i > 0:
+                         prev_x = self._norm_to_data(self.points_norm[i-1]).x()
+                         new_x = max(prev_x + self._timestep, new_x)
+                    if i < len(self.points_norm) - 1:
+                         next_x = self._norm_to_data(self.points_norm[i+1]).x()
+                         new_x = min(next_x - self._timestep, new_x)
                     
-                final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                    # Snap to integer steps
+                    new_x = round(new_x)
+                    p_idx_data.setX(new_x)
                 
-                # If we've hit min or max y while following a fixed slope, stop all movement
-                if not movement_allowed:
-                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    orig_p_norm = self._data_to_norm(orig_data)
-                    final_p_norm = orig_p_norm
-                
-                # If y is locked or if a slope is fixed, prevent moving past neighboring points
-                neighbor_hit = False
-                if (y_locked or prev_segment_fixed or next_segment_fixed) and self._dragged_handle_index > 0 and self._dragged_handle_index < len(self.points_norm) - 1:
-                    # Get neighboring points in normalized coordinates
-                    prev_point_norm = self.points_norm[self._dragged_handle_index - 1]
-                    next_point_norm = self.points_norm[self._dragged_handle_index + 1]
-                    
-                    # Check if we're trying to move past neighbors
-                    if final_p_norm.x() <= prev_point_norm.x() or final_p_norm.x() >= next_point_norm.x():
-                        neighbor_hit = True
-                        # Stop all movement when hitting a neighbor
-                        orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                        orig_p_norm = self._data_to_norm(orig_data)
-                        final_p_norm = orig_p_norm
-                    else:
-                        # Constrain x position to stay between neighbors
-                        final_p_norm.setX(max(prev_point_norm.x(), min(next_point_norm.x(), final_p_norm.x())))
-                
-            if self._dragged_handle_index == len(self.points_norm) - 1:
-                # Last point x is always locked to max_steps
-                final_p_norm.setX(1.0)
-                # Also clamp y to min/max strain values
-                p_data = self._norm_to_data(final_p_norm)
-                p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
-                final_p_norm = self._data_to_norm(p_data)
-                final_p_norm.setX(1.0)  # Ensure x stays locked
-                
-            self.points_norm[self._dragged_handle_index] = final_p_norm
+                self.points_norm[idx] = self._data_to_norm(p_idx_data)
+            
+            # Ensure sorting/consistency
             self._sort_points()
-            self._dragged_handle_index = self.points_norm.index(final_p_norm)
             
-            # --- Update Sine Amplitudes for Connected Segments ---
-            # If we moved a handle that is defined by endpoints (not an 'Even Alternating/Pulsating' where Amp is forced),
-            # we must update the stored amplitude to match the new physical reality of the endpoints.
-            # Otherwise, the wave will 'snap' back to old amplitude or look detached.
-            
-            # Helper to update segment amplitude and handle mirroring
+            # Update Sine Amplitudes for Connected Segments (if handles moved)
             def update_segment_amplitude(idx):
                 seg = self.segments[idx]
-                is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
-                is_full_puls = (seg['num_cycles'] * 4) % 4 == 0 and "Pulsating" in seg['scheme']
+                if seg['type'] != 'sine': return
+                
+                is_even_alt = abs((seg['num_cycles'] * 4) % 2) < 1e-9 and "Alternating" in seg['scheme']
+                is_full_puls = abs((seg['num_cycles'] * 4) % 4) < 1e-9 and "Pulsating" in seg['scheme']
+                
                 if not (is_even_alt or is_full_puls):
-                    # Re-calculate amplitude from new endpoints
                     p1 = self._norm_to_data(self.points_norm[idx])
                     p2 = self._norm_to_data(self.points_norm[idx+1])
                     
@@ -1807,8 +1822,6 @@ class GraphWidget(QWidget):
                     
                     if new_amp is not None:
                         # 2. Check for Mode Switching (Mirroring)
-                        # If amplitude is negative, it means the user dragged 'inverted' to the current scheme.
-                        # We should switch the scheme to match the visual intent.
                         if new_amp < 0:
                             current_scheme = seg['scheme']
                             new_scheme = current_scheme
@@ -1829,16 +1842,18 @@ class GraphWidget(QWidget):
                                 # Recalculate with new scheme to get positive amplitude
                                 new_amp, _, _ = self._get_sine_parameters(p1, p2, seg)
                         
-                        # 3. Store positive amplitude
-                        seg['amplitude'] = abs(new_amp)
+                        # 3. Clamp to safe limits
+                        try:
+                             # Ensure stored amplitude is valid for bounds
+                            max_safe = self._calculate_max_safe_amplitude(seg['scheme'], seg['num_cycles'], p1.y())
+                            seg['amplitude'] = min(abs(new_amp), max_safe)
+                        except:
+                            seg['amplitude'] = abs(new_amp)
 
-            # Check segment to the left
-            if self._dragged_handle_index > 0 and self.segments[self._dragged_handle_index-1]['type'] == 'sine':
-                update_segment_amplitude(self._dragged_handle_index - 1)
+            if i > 0: update_segment_amplitude(i-1)
+            if i < len(self.segments): update_segment_amplitude(i)
 
-            # Check segment to the right
-            if self._dragged_handle_index < len(self.points_norm) - 1 and self.segments[self._dragged_handle_index]['type'] == 'sine':
-                update_segment_amplitude(self._dragged_handle_index)
+            self.dataChanged.emit()
         elif self._dragged_segment_index is not None:
             i = self._dragged_segment_index
             
@@ -2154,13 +2169,47 @@ class GraphWidget(QWidget):
             
             self.update(); self.dataChanged.emit()
     def contextMenuEvent(self, event):
-        idx = self._get_handle_at(QPointF(event.pos()))
+        pos_f = QPointF(event.pos())
+        
+        # 1. Check clickable regions first (Slope Labels, Axis Labels)
+        for region, type, index in self._clickable_regions:
+            if region.contains(pos_f):
+                if type == "slope":
+                    # Immediately toggle fixed slope state (no context menu)
+                    self._toggle_fixed_slope(index)
+                    return
+                # Optional: Add context menu for X/Y labels if desired (currently double-click edits)
+
+        # 2. Check Handle
+        idx = self._get_handle_at(pos_f)
         if idx is not None:
-            menu = QMenu(self); menu.addAction("Set Coordinates...", lambda: self._show_set_coords_dialog(idx))
+            menu = QMenu(self)
+            menu.addAction("Set Coordinates...", lambda: self._show_set_coords_dialog(idx))
+            
+            # Fix Strain (Y)
+            fix_y_action = menu.addAction("Fix Strain (Y)")
+            fix_y_action.setCheckable(True)
+            fix_y_action.setChecked(idx in self._locked_y_labels)
+            def toggle_y_lock():
+                if idx in self._locked_y_labels: self._locked_y_labels.remove(idx)
+                else: self._locked_y_labels.add(idx)
+                self.update()
+            fix_y_action.triggered.connect(toggle_y_lock)
+            
+            # Fix Time Step (X)
+            fix_x_action = menu.addAction("Fix Time Step (X)")
+            fix_x_action.setCheckable(True)
+            fix_x_action.setChecked(idx in self._locked_x_ticks)
+            def toggle_x_lock():
+                if idx in self._locked_x_ticks: self._locked_x_ticks.remove(idx)
+                else: self._locked_x_ticks.add(idx)
+                self.update()
+            fix_x_action.triggered.connect(toggle_x_lock)
+
             if 0 < idx < len(self.points_norm) - 1: menu.addAction("Delete Handle", lambda: self._delete_handle(idx))
             menu.exec(event.globalPos())
-        else: # Check for segment
-            seg_idx = self._get_segment_at(QPointF(event.pos()))
+        else: # Check for segment (hit test on line/curve)
+            seg_idx = self._get_segment_at(pos_f)
             if seg_idx is not None:
                 menu = QMenu(self)
                 if self.segments[seg_idx]['type'] == 'line':
@@ -2169,6 +2218,12 @@ class GraphWidget(QWidget):
                 elif self.segments[seg_idx]['type'] == 'sine':
                     menu.addAction("Edit Sine Properties...", lambda: self._show_sine_properties_dialog(seg_idx))
                     menu.addAction("Change to Line", lambda: self._change_segment_type(seg_idx, 'line'))
+                
+                # Fixed Slope Option
+                fix_slope_action = menu.addAction("Fix Slope/Rate")
+                fix_slope_action.setCheckable(True)
+                fix_slope_action.setChecked(self.segments[seg_idx].get('fixed_slope', False))
+                fix_slope_action.triggered.connect(lambda: self._toggle_fixed_slope(seg_idx))
                 
                 if self.mode == 'Deformation':
                     menu.addAction("Modify lateral contract.", lambda: self._show_lateral_contract_dialog(seg_idx))
@@ -2218,7 +2273,153 @@ class GraphWidget(QWidget):
         self.dataChanged.emit()
 
     def _change_segment_type(self, seg_idx, new_type):
+        seg = self.segments[seg_idx]
+        is_fixed = seg.get('fixed_slope', False)
+        target_slope = seg.get('fixed_slope_value', 0) if is_fixed else 0
+        
+        # If explicitly fixed, or if we want to preserve visual slope even if not fixed?
+        # User said: "make sure that when a line slope is red and we change to sine, try to keep this slope as midpoint slope"
+        # And "Of course, graphically, the red highlighting... should then be translatable"
+        
         self.segments[seg_idx]['type'] = new_type
+        
+        if is_fixed:
+             # Calculate parameters to match the target slope
+             # Need geometry
+             p1 = self._norm_to_data(self.points_norm[seg_idx])
+             p2 = self._norm_to_data(self.points_norm[seg_idx+1])
+             dx = p2.x() - p1.x()
+             if abs(dx) < 1e-9: return # Vertical segment...
+             
+             if new_type == 'line':
+                 # Target: dy/dx = m  => dy = m*dx
+                 # We must move p2 to match slope. (Or p1?)
+                 # Standard: Move P2 Y.
+                 new_y2 = p1.y() + target_slope * dx
+                 
+                 # Check bounds?
+                 new_y2 = max(self._min_strain, min(self._max_strain, new_y2))
+                 # Update Slope if clamped? No, keep it fixed but clamp geometry?
+                 # If we assume 'Fixed Slope' takes precedence, we strictly set it.
+                 # If it exceeds bounds, maybe we can't switch? 
+                 # Let's clamp and update stored slope value if we must?
+                 # Or just set coordinate.
+                 
+                 p2_data = self._norm_to_data(self.points_norm[seg_idx+1])
+                 p2_data.setY(new_y2)
+                 self.points_norm[seg_idx+1] = self._data_to_norm(p2_data)
+                 
+             elif new_type == 'sine':
+                 # Target: Midpoint Slope = m
+                 # m = A * k * cos(phase).
+                 # We need to find A.
+                 # A = m / (k * cos(phase))
+                 
+                 # Default Scheme/Cycles
+                 num_cycles = seg.get('num_cycles', 1.0)
+                 scheme = seg.get('scheme', "Alternating (tensile start)")
+                 
+                 k = num_cycles * 2 * math.pi / dx
+                 
+                 # Determine phase
+                 phi_start = 0
+                 if "Alternating" in scheme:
+                    phi_start = math.pi if "compressive" in scheme else 0
+                 elif "Pulsating" in scheme:
+                    phi_start = -math.pi/2 if "tensile" in scheme else math.pi/2
+                 
+                 # Find phase at zero crossing
+                 n = 0
+                 first_zero_x_offset = -1
+                 while True:
+                    x_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+                    if x_offset >= -1e-9 and x_offset <= dx + 1e-9:
+                        first_zero_x_offset = x_offset
+                        break
+                    n += 1
+                    if n > 1000: break
+                 
+                 if first_zero_x_offset != -1:
+                     phase = k * first_zero_x_offset + phi_start
+                     cos_val = math.cos(phase)
+                     if abs(cos_val) > 1e-9:
+                         new_amp = target_slope / (k * cos_val)
+                         seg['amplitude'] = new_amp
+                         
+                         # Also need to update P2 based on new amplitude?
+                         # For Alternating: y2 = y1 + Amp * sin(end). (If end != 0).
+                         # For Pulsating: y2 = y1 + Amp * (sin(end) - sin(start))
+                         
+                         end_angle = num_cycles * 2 * math.pi + phi_start
+                         sin_end = math.sin(end_angle)
+                         sin_start = math.sin(phi_start)
+                         
+                         # Check if y2 is free or fixed?
+                         # Usually we adjust y2 to fit the sine shape if Amp is defined.
+                         # y2 = y1 + Amp * (sin_end - sin_start)
+                         new_y2 = p1.y() + new_amp * (sin_end - sin_start)
+                         
+                         # Clamp
+                         new_y2 = max(self._min_strain, min(self._max_strain, new_y2))
+                         
+                         p2_data = self._norm_to_data(self.points_norm[seg_idx+1])
+                         p2_data.setY(new_y2)
+                         self.points_norm[seg_idx+1] = self._data_to_norm(p2_data)
+
+        self.update()
+        self.dataChanged.emit()
+
+    def _calculate_segment_slope(self, seg_idx):
+        """Calculates current slope (Line) or midpoint slope (Sine)."""
+        if seg_idx < 0 or seg_idx >= len(self.segments): return 0
+        seg = self.segments[seg_idx]
+        p1 = self._norm_to_data(self.points_norm[seg_idx])
+        p2 = self._norm_to_data(self.points_norm[seg_idx+1])
+        
+        if seg['type'] == 'line':
+            dx = p2.x() - p1.x()
+            dy = p2.y() - p1.y()
+            return dy / dx if dx != 0 else 0
+            
+        elif seg['type'] == 'sine':
+            amplitude, y_center, phi_start = self._get_sine_parameters_with_stored_amp(p1, p2, seg, seg_idx)
+            if amplitude is None: return 0
+            
+            x_range = p2.x() - p1.x()
+            k = seg['num_cycles'] * 2 * math.pi / x_range if x_range != 0 else 0
+            
+            # Find first zero crossing (same logic as in _draw_sine_segment)
+            n = 0
+            first_zero_x_offset = -1
+            while True:
+                x_d_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+                if x_d_offset >= -1e-9 and x_d_offset <= x_range + 1e-9:
+                    first_zero_x_offset = x_d_offset
+                    break
+                n += 1
+                if n > 1000: break
+            
+            if first_zero_x_offset != -1:
+                phase = k * first_zero_x_offset + phi_start
+                return amplitude * k * math.cos(phase)
+            return 0 
+
+    def _toggle_fixed_slope(self, seg_idx):
+        currently_fixed = self.segments[seg_idx].get('fixed_slope', False)
+        
+        if not currently_fixed:
+            # Locking the slope
+            current_slope = self._calculate_segment_slope(seg_idx)
+            self.segments[seg_idx]['fixed_slope'] = True
+            self.segments[seg_idx]['fixed_slope_value'] = current_slope
+            # Remove legacy if present
+            if hasattr(self, '_fixed_segments') and seg_idx in self._fixed_segments:
+                self._fixed_segments.remove(seg_idx)
+        else:
+            # Unlocking
+            self.segments[seg_idx]['fixed_slope'] = False
+            # We can keep the value stored or clear it, doesn't matter much.
+            
         self.update()
         self.dataChanged.emit()
 
@@ -2369,6 +2570,36 @@ class GraphWidget(QWidget):
             p1_d = self._norm_to_data(self.points_norm[seg_idx])
             p2_d = self._norm_to_data(self.points_norm[seg_idx + 1])
             
+            # --- Fixed Slope Logic ---
+            if self.segments[seg_idx].get('fixed_slope', False):
+                 m_target = self.segments[seg_idx].get('fixed_slope_value', 0)
+                 dx = p2_d.x() - p1_d.x()
+                 if abs(dx) > 1e-9:
+                     k = new_params['num_cycles'] * 2 * math.pi / dx
+                     
+                     phi_start = 0
+                     if "Alternating" in new_params['scheme']:
+                        phi_start = math.pi if "compressive" in new_params['scheme'] else 0
+                     elif "Pulsating" in new_params['scheme']:
+                        phi_start = -math.pi/2 if "tensile" in new_params['scheme'] else math.pi/2
+                     
+                     n = 0
+                     first_zero_x_offset = -1
+                     while True:
+                        x_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+                        if x_offset >= -1e-9 and x_offset <= dx + 1e-9:
+                            first_zero_x_offset = x_offset
+                            break
+                        n += 1
+                        if n > 1000: break
+                     
+                     if first_zero_x_offset != -1:
+                         phase = k * first_zero_x_offset + phi_start
+                         cos_val = math.cos(phase)
+                         if abs(cos_val) > 1e-9:
+                             new_amp = m_target / (k * cos_val)
+                             self.segments[seg_idx]['amplitude'] = new_amp
+
             # Use the stored amplitude if available, otherwise calculate from endpoints
             amplitude_to_use, y_center, phi_start = self._get_sine_parameters_with_stored_amp(p1_d, p2_d, self.segments[seg_idx], seg_idx)
             
@@ -2569,10 +2800,31 @@ class GraphWidget(QWidget):
             self.update()
             self.dataChanged.emit()
 
-    def _get_safe_y_range_for_moving_handles(self, moving_indices):
+    def _is_segment_rigid_vertical(self, seg_idx):
         """
-        Calculates the safe [min_y, max_y] range for the handles in 'moving_indices' (assumed to move to same Y),
-        checking all connected sine segments to ensure no part of the wave exceeds global Min/Max strain.
+        Determines if a segment should be treated as a rigid vertical linkage
+        (dragging one endpoint moves the other by the same amount, or fixed relation).
+        """
+        if seg_idx < 0 or seg_idx >= len(self.segments): return False
+        seg = self.segments[seg_idx]
+        
+        # Explicit User Lock
+        if seg.get('fixed_slope', False): return True
+        
+        # Implicit Algorithmic Lock
+        if seg['type'] == 'sine':
+             is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
+             is_p_locked = abs(seg['num_cycles'] - round(seg['num_cycles'])) < 1e-9 and "Pulsating" in seg['scheme']
+             return (is_even_alt or is_p_locked)
+        return False
+
+    def _get_safe_y_range_for_moving_handles(self, rigid_offsets):
+        """
+        Calculates the safe [min_y, max_y] range for the dragged handle (at offset 0),
+        given a dict of {handle_idx: y_offset} representing the rigid group.
+        
+        rigid_offsets: {idx: offset_from_dragged_handle}
+        The handle at 'idx' will be at y_dragged + offset.
         """
         global_min = self._min_strain
         global_max = self._max_strain
@@ -2580,8 +2832,9 @@ class GraphWidget(QWidget):
         limit_min = global_min
         limit_max = global_max
         
+        moving_indices = rigid_offsets.keys()
+        
         # Identify all segments connected to the moving handles
-        # We need to check any segment where at least one endpoint is moving.
         segments_to_check = set()
         for idx in moving_indices:
             if idx > 0: segments_to_check.add(idx - 1)
@@ -2589,53 +2842,67 @@ class GraphWidget(QWidget):
             
         for s_idx in segments_to_check:
             if self.segments[s_idx]['type'] != 'sine':
+                # Check Line constraints (endpoints)
+                # If s_idx in moving, check P1
+                if s_idx in rigid_offsets:
+                    off = rigid_offsets[s_idx]
+                    # y_drag + off <= GlobalMax -> y_drag <= GlobalMax - off
+                    limit_max = min(limit_max, global_max - off)
+                    limit_min = max(limit_min, global_min - off)
+                # If s_idx+1 in moving, check P2
+                if (s_idx+1) in rigid_offsets:
+                    off = rigid_offsets[s_idx+1]
+                    limit_max = min(limit_max, global_max - off)
+                    limit_min = max(limit_min, global_min - off)
                 continue
                 
             seg = self.segments[s_idx]
             
-            # Determine if this segment is "Locked" (Both endpoints moving) or "variable" (One moving)
-            p1_moving = s_idx in moving_indices
-            p2_moving = (s_idx + 1) in moving_indices
+            p1_moving = s_idx in rigid_offsets
+            p2_moving = (s_idx + 1) in rigid_offsets
             
             if not p1_moving and not p2_moving:
-                continue # Should not happen given logic above
+                continue 
                 
-            # --- Case 1: Fixed Amplitude (Both Endpoints Moving) ---
-            # This happens for Even Alternating or Integer Pulsating in Locked Mode.
+            # --- Case 1: Fixed Amplitude (Both Endpoints Moving Rigidly) ---
             if p1_moving and p2_moving:
                 stored_amp = seg.get('amplitude', 0)
                 min_unit, max_unit = self._get_unit_wave_excursions(seg['scheme'], seg['num_cycles'])
                 
-                # For Alternating: Center moves with Y. Peak = Y + Amp*Unit.
-                # For Pulsating: Base moves with Y. Peak = Y + Amp*Unit.
-                # In both cases, the logic `Y + Amp*Unit` holds if `Unit` is relative to the moving reference (Center/Base).
+                # _get_unit_wave_excursions returns min/max excursions for unit amplitude
+                # relative to P1's Y position. For actual amplitude, scale by stored_amp.
+                # Peak_Y = Y_P1 + stored_amp * max_unit
+                # Trough_Y = Y_P1 + stored_amp * min_unit
                 
-                # Constraints:
-                # Y + Amp * MaxUnit <= GlobalMax  ->  Y <= GlobalMax - Amp * MaxUnit
-                # Y + Amp * MinUnit >= GlobalMin  ->  Y >= GlobalMin - Amp * MinUnit
+                offset_p1 = rigid_offsets[s_idx]
                 
-                limit_max = min(limit_max, global_max - stored_amp * max_unit)
-                limit_min = max(limit_min, global_min - stored_amp * min_unit)
+                # Y_P1 = Y_Drag + offset_p1
+                # Constraint: Y_P1 + stored_amp * max_unit <= global_max
+                #            Y_Drag + offset_p1 + stored_amp * max_unit <= global_max
+                #            Y_Drag <= global_max - (offset_p1 + stored_amp * max_unit)
+                
+                limit_max = min(limit_max, global_max - (offset_p1 + stored_amp * max_unit))
+                limit_min = max(limit_min, global_min - (offset_p1 + stored_amp * min_unit))
 
             # --- Case 2: Variable Amplitude (One Endpoint Moving) ---
             else:
-                # We need to solve the linear relation: Y_Excursion = A * Y_Handle + B
-                # 1. Get Sine Parameters
+                # Y_Moving = Y_Drag + Offset_Moving
+                # Y_Fixed is constant.
+                offset_moving = rigid_offsets[s_idx] if p1_moving else rigid_offsets[s_idx+1]
+                
+                # ... Linear Solver Logic ...
+                # Y_Peak = A * Y_Moving + B
+                #        = A * (Y_Drag + Off) + B
+                #        = A * Y_Drag + (A*Off + B)
+                
+                # Copy-paste previous solver logic but apply offset
                 phi_start = 0
                 if "Alternating" in seg['scheme']:
-                    if "compressive" in seg['scheme']:
-                        phi_start = math.pi
-                    else:
-                        phi_start = 0
+                    if "compressive" in seg['scheme']: phi_start = math.pi
+                    else: phi_start = 0
                 elif "Pulsating" in seg['scheme']:
-                    if "tensile" in seg['scheme']:
-                        phi_start = -math.pi / 2
-                    elif "compressive" in seg['scheme']:
-                        phi_start = math.pi / 2
-                
-                # Check for "start" variants if scheme strings are surprisingly different (fallback)
-                # (The checks above cover "Alternating (compressive start)" via "compressive" keyword)
-
+                    if "tensile" in seg['scheme']: phi_start = -math.pi / 2
+                    elif "compressive" in seg['scheme']: phi_start = math.pi / 2
                 
                 phi_end = phi_start + seg['num_cycles'] * 2 * math.pi
                 S_start = math.sin(phi_start)
@@ -2643,22 +2910,13 @@ class GraphWidget(QWidget):
                 D = S_end - S_start
                 
                 is_alternating = "Alternating" in seg['scheme']
-                if not is_alternating and abs(D) < 1e-9:
-                    continue # Singularity, skip (should likely be locked)
-                if is_alternating and abs(S_end) < 1e-9:
-                    continue # Singularity
-                
+                if not is_alternating and abs(D) < 1e-9: continue 
+                if is_alternating and abs(S_end) < 1e-9: continue
                 denom = S_end if is_alternating else D
                 
-                # 2. Identify Fixed Point
-                if p1_moving: # Dragging p1 (Start)
-                    y_fixed = self._norm_to_data(self.points_norm[s_idx+1]).y()
-                    # We are solving for y1. y2 is fixed.
-                else: # Dragging p2 (End)
-                    y_fixed = self._norm_to_data(self.points_norm[s_idx]).y()
-                    # We are solving for y2. y1 is fixed.
+                if p1_moving: y_fixed = self._norm_to_data(self.points_norm[s_idx+1]).y()
+                else: y_fixed = self._norm_to_data(self.points_norm[s_idx]).y()
                 
-                # 3. Iterate Critical Points (Peaks/Troughs) on Unit Wave
                 critical_S = [S_start, S_end]
                 k_start = math.ceil((phi_start - math.pi/2) / math.pi)
                 k_end = math.floor((phi_end - math.pi/2) / math.pi)
@@ -2668,64 +2926,47 @@ class GraphWidget(QWidget):
                         critical_S.append(math.sin(theta))
                 
                 for S in critical_S:
-                    # Calculate Linear Coeffs for: Y_Peak = Coeff * Y_Handle + Constant
                     coeff = 0
-                    const = 0
+                    const_poly = 0 # 'B' term from Y_Peak = A*Y_Mov + B
                     
                     if is_alternating:
-                        # Amp = (y2 - y1) / S_end
-                        # Wave(t) = y1 + Amp * S(t) = y1 + (y2-y1)/S_end * S(t)
                         factor = S / denom
-                        if p1_moving: # Find coeffs for y1
-                             # y(t) = y1 * (1 - factor) + y2 * factor
+                        if p1_moving: # y1 moving
                              coeff = 1 - factor
-                             const = y_fixed * factor
-                        else: # Find coeffs for y2
-                             # y(t) = y1 * (1 - factor) + y2 * factor
+                             const_poly = y_fixed * factor
+                        else: # y2 moving
                              coeff = factor
-                             const = y_fixed * (1 - factor)
+                             const_poly = y_fixed * (1 - factor)
                     else: # Pulsating
-                        # Amp = (y2 - y1) / D
-                        # Wave(t) = y1 + Amp * (S(t) - S_start)
                         factor = (S - S_start) / denom
-                        if p1_moving: # Find coeffs for y1
-                             # y(t) = y1 + (y2 - y1) * factor 
-                             #      = y1(1 - factor) + y2 * factor
+                        if p1_moving: 
                              coeff = 1 - factor
-                             const = y_fixed * factor
-                        else: # Find coeffs for y2
-                             # y(t) = y1(1 - factor) + y2 * factor
+                             const_poly = y_fixed * factor
+                        else: 
                              coeff = factor
-                             const = y_fixed * (1 - factor)
+                             const_poly = y_fixed * (1 - factor)
+                             
+                    # Apply Offset to get final Coeff/Const for Y_Drag
+                    # Y_Peak = Coeff * (Y_Drag + Offset) + Const_Poly
+                    #        = Coeff * Y_Drag + (Coeff * Offset + Const_Poly)
                     
-                    # 4. Apply Constraints
-                    # Min <= Coeff * Y + Const <= Max
+                    real_const = coeff * offset_moving + const_poly
                     
-                    # Upper Limit
-                    # Coeff * Y <= Max - Const
-                    rhs = global_max - const
+                    rhs_max = global_max - real_const
+                    rhs_min = global_min - real_const
+                    
                     if coeff > 1e-9:
-                        limit_max = min(limit_max, rhs / coeff)
+                        limit_max = min(limit_max, rhs_max / coeff)
+                        limit_min = max(limit_min, rhs_min / coeff)
                     elif coeff < -1e-9:
-                        limit_min = max(limit_min, rhs / coeff)
-                    elif const > global_max + 1e-5:
-                        # Impossible static constraint. Clamping not possible via handle.
-                        pass 
-                        
-                    # Lower Limit
-                    # Coeff * Y >= Min - Const
-                    rhs = global_min - const
-                    if coeff > 1e-9:
-                        limit_min = max(limit_min, rhs / coeff)
-                    elif coeff < -1e-9:
-                        limit_max = min(limit_max, rhs / coeff)
-                    elif const < global_min - 1e-5:
+                        limit_min = max(limit_min, rhs_max / coeff)
+                        limit_max = min(limit_max, rhs_min / coeff)
+                    elif real_const > global_max + 1e-5:
+                        pass # Impossible
+                    elif real_const < global_min - 1e-5:
                         pass
 
-        # Robustness Check
         if limit_min > limit_max:
-            # Conflicts found (e.g. existing constraints violated).
-            # Clamp to global bounds as fallback.
             limit_min = global_min
             limit_max = global_max
             
