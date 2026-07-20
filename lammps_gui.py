@@ -2143,11 +2143,12 @@ class LammpsScriptGenerator(QMainWindow):
                     self.deformation_tab_widget.tab_widget.setTabText(i, study_data.get("name", f"Study {i+1}"))
 
                     state = {
-                        'points_norm': [QPointF(p[0], p[1]) for p in study_data.get("points", [])],
+                        'data_points': study_data.get("data_points", []),
                         'max_steps': study_data.get("max_steps", 100),
                         'min_strain': study_data.get("min_strain", 0.0),
                         'max_strain': study_data.get("max_strain", 1.0),
-                        'thermo_freq': study_data.get("thermo_freq", 100)
+                        'thermo_freq': study_data.get("thermo_freq", 100),
+                        'deform_axis': study_data.get("deform_axis", "x")
                     }
                     study_widget.set_state(state)
 

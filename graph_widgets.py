@@ -648,17 +648,27 @@ class StudyWidget(QWidget):
             'deform_axis': self.deform_axis_combo.currentText()
         }
     def set_state(self, state):
-        self.max_steps_spinbox.blockSignals(True); self.min_strain_spinbox.blockSignals(True); self.max_strain_spinbox.blockSignals(True); self.thermo_freq_spinbox.blockSignals(True)
+        # Set the spinbox values first
+        self.max_steps_spinbox.blockSignals(True)
+        self.min_strain_spinbox.blockSignals(True)
+        self.max_strain_spinbox.blockSignals(True)
+        self.thermo_freq_spinbox.blockSignals(True)
         self.max_steps_spinbox.setValue(state.get('max_steps', 100))
         self.min_strain_spinbox.setValue(state.get('min_strain', 0.0))
         self.max_strain_spinbox.setValue(state.get('max_strain', 1.0))
         self.thermo_freq_spinbox.setValue(state.get('thermo_freq', 100))
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
-        self.max_steps_spinbox.blockSignals(False); self.min_strain_spinbox.blockSignals(False); self.max_strain_spinbox.blockSignals(False); self.thermo_freq_spinbox.blockSignals(False)
-        self._update_graph_controls() # This now correctly sets the graph's axes
+        self.max_steps_spinbox.blockSignals(False)
+        self.min_strain_spinbox.blockSignals(False)
+        self.max_strain_spinbox.blockSignals(False)
+        self.thermo_freq_spinbox.blockSignals(False)
         
+        # Update graph controls to set the correct axis limits
+        self._update_graph_controls()
+        
+        # Now set the data points
         data_points_list = state.get('data_points', [])
-        if not data_points_list and 'points' in state: # For backward compatibility with old save format
+        if not data_points_list and 'points' in state:  # For backward compatibility with old save format
             data_points_list = state.get('points', [])
 
         # Handle old format where points_norm was saved
@@ -668,9 +678,11 @@ class StudyWidget(QWidget):
         else:
             data_points = [QPointF(p[0], p[1]) for p in data_points_list]
             if data_points:
+                # Convert data points to normalized coordinates using the current axis limits
                 self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in data_points]
         
         self.graph_widget.update()
+        self.dataChanged.emit()  # Emit the dataChanged signal to update summaries
 
 class DeformationTab(QWidget):
     def __init__(self, main_window, parent=None):
