@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QComboBox, QScrollArea, QMessageBox, QStackedWidget, QListWidget, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QUrl
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence, QPixmap, QDesktopServices, QCursor
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence, QPixmap, QDesktopServices, QCursor, QPolygonF
 
 # --- Sci-Notation SpinBox ---
 class SciNotationDoubleSpinBox(QDoubleSpinBox):
@@ -70,17 +70,18 @@ def create_info_icon_label(urls, tooltip, color_name):
 
 # --- Custom Dialogs ---
 class PresetDialog(QDialog):
-    def __init__(self, last_scheme, last_staircase_params, last_cyclic_params, max_steps, parent=None):
+    def __init__(self, last_scheme, last_staircase_params, last_cyclic_params, last_sinusoidal_params, max_steps, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Generate Scheme")
         self.max_steps = max_steps
         self.scheme_combo = QComboBox()
-        self.scheme_combo.addItems(["Staircase Loading", "Cyclic Loading"])
+        self.scheme_combo.addItems(["Staircase Loading", "Cyclic Loading", "Sinusoidal Loading"])
         self.scheme_combo.setCurrentText(last_scheme)
         self.scheme_combo.currentIndexChanged.connect(self._update_options)
         self.stacked_widget = QStackedWidget()
         self._create_staircase_options(last_staircase_params)
         self._create_cyclic_options(last_cyclic_params)
+        self._create_sinusoidal_options(last_sinusoidal_params)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -166,6 +167,38 @@ class PresetDialog(QDialog):
         layout.addRow("Start With:", self.cyclic_start)
         self.stacked_widget.addWidget(self.cyclic_widget)
 
+    def _create_sinusoidal_options(self, params):
+        self.sinusoidal_widget = QWidget()
+        layout = QFormLayout(self.sinusoidal_widget)
+
+        self.sinusoidal_equilibration_steps = QSpinBox()
+        self.sinusoidal_equilibration_steps.setRange(0, self.max_steps - 1 if self.max_steps > 0 else 0)
+        self.sinusoidal_equilibration_steps.setValue(params.get('equilibration_steps', 0))
+        layout.addRow("Equilibration timesteps:", self.sinusoidal_equilibration_steps)
+
+        self.sinusoidal_cycles = QDoubleSpinBox()
+        self.sinusoidal_cycles.setRange(0.25, 1000.0)
+        self.sinusoidal_cycles.setSingleStep(0.25)
+        self.sinusoidal_cycles.setValue(params.get('num_cycles', 1.0))
+        layout.addRow("Number of cycles:", self.sinusoidal_cycles)
+
+        self.sinusoidal_relax_factor = QDoubleSpinBox()
+        self.sinusoidal_relax_factor.setRange(0.0, 1000.0)
+        self.sinusoidal_relax_factor.setValue(params.get('relax_factor', 0.0))
+        layout.addRow("Final Relaxation Factor:", self.sinusoidal_relax_factor)
+
+        self.sinusoidal_scheme = QComboBox()
+        self.sinusoidal_scheme.addItems([
+            "Alternating (tensile start)",
+            "Alternating (compressive start)",
+            "Pulsating tensile load",
+            "Pulsating compressive load"
+        ])
+        self.sinusoidal_scheme.setCurrentText(params.get('scheme', 'Alternating (tensile start)'))
+        layout.addRow("Loading scheme:", self.sinusoidal_scheme)
+
+        self.stacked_widget.addWidget(self.sinusoidal_widget)
+
     def _update_options(self, index):
         self.stacked_widget.setCurrentIndex(index)
 
@@ -185,6 +218,13 @@ class PresetDialog(QDialog):
                 'cycles': self.cyclic_cycles.value(),
                 'relax_factor': self.cyclic_relax_factor.value(),
                 'start_with': self.cyclic_start.currentText()
+            }
+        elif scheme == "Sinusoidal Loading":
+            return scheme, {
+                'equilibration_steps': self.sinusoidal_equilibration_steps.value(),
+                'num_cycles': self.sinusoidal_cycles.value(),
+                'relax_factor': self.sinusoidal_relax_factor.value(),
+                'scheme': self.sinusoidal_scheme.currentText()
             }
         return None, None
 
@@ -249,6 +289,73 @@ class CoordinateDialog(QDialog):
             return 0, self.strain_box.value()
         return self.step_box.value(), self.strain_box.value()
 
+class InsertSineDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Insert Sine Segment")
+        
+        layout = QFormLayout(self)
+        
+        self.num_cycles = QDoubleSpinBox()
+        self.num_cycles.setRange(0.25, 1000.0)
+        self.num_cycles.setSingleStep(0.25)
+        self.num_cycles.setValue(1.0)
+        layout.addRow("Number of cycles:", self.num_cycles)
+
+        self.scheme = QComboBox()
+        self.scheme.addItems([
+            "Alternating (tensile start)",
+            "Alternating (compressive start)",
+            "Pulsating tensile load",
+            "Pulsating compressive load"
+        ])
+        layout.addRow("Loading scheme:", self.scheme)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_parameters(self):
+        return {
+            'num_cycles': self.num_cycles.value(),
+            'scheme': self.scheme.currentText()
+        }
+
+class SinePropertiesDialog(QDialog):
+    def __init__(self, current_params, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Sine Segment Properties")
+        
+        layout = QFormLayout(self)
+        
+        self.num_cycles = QDoubleSpinBox()
+        self.num_cycles.setRange(0.25, 1000.0)
+        self.num_cycles.setSingleStep(0.25)
+        self.num_cycles.setValue(current_params.get('num_cycles', 1.0))
+        layout.addRow("Number of cycles:", self.num_cycles)
+
+        self.scheme = QComboBox()
+        self.scheme.addItems([
+            "Alternating (tensile start)",
+            "Alternating (compressive start)",
+            "Pulsating tensile load",
+            "Pulsating compressive load"
+        ])
+        self.scheme.setCurrentText(current_params.get('scheme', 'Alternating (tensile start)'))
+        layout.addRow("Loading scheme:", self.scheme)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_parameters(self):
+        return {
+            'num_cycles': self.num_cycles.value(),
+            'scheme': self.scheme.currentText()
+        }
+
 # --- Main Graph Widget ---
 class GraphWidget(QWidget):
     dataChanged = pyqtSignal()
@@ -260,9 +367,10 @@ class GraphWidget(QWidget):
         self.padding = {'top': 10, 'bottom': 60, 'left': 60, 'right': 60}
         self._max_steps, self._min_strain, self._max_strain, self._timestep, self._time_unit = 100, 0.0, 1.0, 1.0, "s"
         self.points_norm = [self._data_to_norm(QPointF(0,0)), self._data_to_norm(QPointF(100, 1.0))]; self._sort_points()
-        self._dragged_handle_index, self._hovered_handle_index, self._dragged_segment_index, self._hovered_segment_index = None, None, None, None
+        self.segments = [{'type': 'line'}] # A segment for each pair of points
+        self._dragged_handle_index, self._hovered_handle_index, self._dragged_segment_index, self._hovered_segment_index, self._dragged_amplitude_handle_index, self._hovered_amplitude_handle_index = None, None, None, None, None, None
         self._drag_start_pos_widget, self._drag_axis_lock, self._segment_drag_offset_norm = None, None, QPointF(0,0)
-        self._drag_mouse_to_p1_offset = QPointF(0,0); self._clickable_regions = []
+        self._drag_mouse_to_p1_offset = QPointF(0,0); self._clickable_regions = []; self._sine_amplitude_handles = {}
         # Add data structures to track fixed segments, locked x-axis ticks, and locked y-value labels
         self._fixed_segments = set()
         self._locked_x_ticks = set()
@@ -301,6 +409,7 @@ class GraphWidget(QWidget):
     def reset_graph(self):
         y_start = self.get_y_start()
         self.points_norm = [self._data_to_norm(QPointF(0, y_start)), self._data_to_norm(QPointF(self._max_steps, self._max_strain))]
+        self.segments = [{'type': 'line'}]
         # Clear fixed segments when resetting the graph
         self._fixed_segments.clear()
         self.update()
@@ -346,6 +455,7 @@ class GraphWidget(QWidget):
             new_data_points.append(QPointF(self._max_steps, target_y))
 
         self.points_norm = [self._data_to_norm(self._snap_data_point(p)) for p in new_data_points]
+        self.segments = [{'type': 'line'} for _ in range(len(self.points_norm) - 1)]
         self._sort_points()
         self.update()
         self.dataChanged.emit()
@@ -394,9 +504,83 @@ class GraphWidget(QWidget):
             final_points.append(QPointF(self._max_steps, final_points[-1].y()))
 
         self.points_norm = [self._data_to_norm(self._snap_data_point(p)) for p in final_points]
+        self.segments = [{'type': 'line'} for _ in range(len(self.points_norm) - 1)]
         self._sort_points()
         self.update()
         self.dataChanged.emit()
+
+    def generate_sinusoidal_scheme(self, equilibration_steps, num_cycles, relax_factor, scheme):
+        if num_cycles <= 0: return
+
+        # 1. Determine Amplitude, Phase, and Offset from scheme
+        amplitude = min(abs(self._max_strain), abs(self._min_strain))
+        if amplitude == 0: amplitude = max(abs(self._max_strain), abs(self._min_strain))
+        if amplitude == 0: amplitude = 0.1  # Final fallback
+
+        phi_start = 0
+        y_center_offset = 0
+
+        if "Alternating" in scheme:
+            if "compressive start" in scheme:
+                amplitude *= -1 # Starts downwards
+        elif "Pulsating tensile" in scheme:
+            y_center_offset = amplitude
+            phi_start = -math.pi / 2  # Start at the bottom (y=0)
+        elif "Pulsating compressive" in scheme:
+            y_center_offset = -amplitude
+            phi_start = math.pi / 2   # Start at the top (y=0)
+
+        # 2. Calculate start and end points of the entire profile
+        y_start = self.get_y_start()
+        start_y_val = y_start + y_center_offset + amplitude * math.sin(phi_start)
+
+        end_angle = num_cycles * 2 * math.pi + phi_start
+        end_y_val = y_start + y_center_offset + amplitude * math.sin(end_angle)
+
+        # 3. Calculate step durations
+        effective_max_steps = self._max_steps - equilibration_steps
+        if effective_max_steps <= 0: return
+
+        total_cycle_equivalents = num_cycles + relax_factor * num_cycles
+        if total_cycle_equivalents <= 0: return
+        steps_per_cycle = effective_max_steps / total_cycle_equivalents
+
+        sine_duration_steps = steps_per_cycle * num_cycles
+        relax_duration_steps = steps_per_cycle * relax_factor * num_cycles
+
+        # 4. Build points and segments lists
+        new_data_points = [QPointF(0, start_y_val)]
+        new_segments = []
+
+        if equilibration_steps > 0:
+            new_data_points.append(QPointF(float(equilibration_steps), start_y_val))
+            new_segments.append({'type': 'line'})
+
+        sine_start_step = new_data_points[-1].x()
+        sine_end_step = sine_start_step + sine_duration_steps
+        new_data_points.append(QPointF(sine_end_step, end_y_val))
+        new_segments.append({'type': 'sine', 'num_cycles': num_cycles, 'scheme': scheme})
+
+        if relax_duration_steps > 0:
+            relax_end_step = sine_end_step + relax_duration_steps
+            if relax_end_step <= self._max_steps:
+                new_data_points.append(QPointF(relax_end_step, end_y_val))
+                new_segments.append({'type': 'line'})
+
+        # Fill remaining space
+        if new_data_points[-1].x() < self._max_steps:
+            new_data_points.append(QPointF(float(self._max_steps), new_data_points[-1].y()))
+            new_segments.append({'type': 'line'})
+        else:
+            new_data_points[-1].setX(float(self._max_steps))
+
+        # 5. Update graph state
+        self.points_norm = [self._data_to_norm(p) for p in new_data_points]
+        self.segments = new_segments
+        self._sort_points()
+        self.update()
+        self.dataChanged.emit()
+
     def get_data_points(self): return [self._norm_to_data(p) for p in self.points_norm]
     def _norm_to_data(self, p_norm):
         strain_range = self._max_strain - self._min_strain
@@ -431,6 +615,13 @@ class GraphWidget(QWidget):
         for i, p in enumerate(self.points_norm):
             if (pos - self._norm_to_widget(p)).manhattanLength() < HANDLE_RADIUS * 1.5: return i
         return None
+    def _get_amplitude_handle_at(self, pos):
+        if not hasattr(self, '_sine_amplitude_handles'):
+            return None
+        for seg_idx, handle_pos_w in self._sine_amplitude_handles.items():
+            if (pos - handle_pos_w).manhattanLength() < HANDLE_RADIUS * 1.5:
+                return seg_idx
+        return None
     def _get_segment_at(self, pos):
         for i in range(len(self.points_norm) - 1):
             if len(self.points_norm) <= 2: continue
@@ -447,6 +638,7 @@ class GraphWidget(QWidget):
         # --- Draw the normal graph content first ---
         painter.fillRect(self.rect(), STYLE_BACKGROUND)
         self._clickable_regions.clear()
+        if hasattr(self, '_sine_amplitude_handles'): self._sine_amplitude_handles.clear()
         self._draw_axes_and_frame(painter)
 
         if self.points_norm:
@@ -454,26 +646,29 @@ class GraphWidget(QWidget):
             # Draw the line segments and slope labels
             for i in range(len(self.points_norm) - 1):
                 p1_w, p2_w = self._norm_to_widget(self.points_norm[i]), self._norm_to_widget(self.points_norm[i+1])
-                painter.setPen(QPen(self.STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
-                p1_d, p2_d = self._norm_to_data(self.points_norm[i]), self._norm_to_data(self.points_norm[i+1])
-                dx_s, dy_e, dx_t = p2_d.x() - p1_d.x(), p2_d.y() - p1_d.y(), (p2_d.x() - p1_d.x()) * self._timestep
-                slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
-                slope_text = f"{slope:.4e} {self.get_y_unit()}/step"
-                rate_text = f"{rate:.4e} {self.get_y_unit()}/t"
-                slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 20))
-                rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 6))
-                if i in self._fixed_segments:
-                    painter.setPen(QColor("red"))
-                else:
-                    painter.setPen(STYLE_SLOPE_TEXT)
-                painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
-                if i in self._fixed_segments:
-                    painter.setPen(QColor("red"))
-                else:
-                    painter.setPen(STYLE_TEXT_SECONDARY)
-                painter.drawText(rate_rect, rate_text)
-                self._clickable_regions.append((slope_rect.united(rate_rect), "slope", i))
-            # Draw the handles and labels
+                segment_info = self.segments[i]
+                if segment_info['type'] == 'line':
+                    painter.setPen(QPen(self.STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
+                    p1_d, p2_d = self._norm_to_data(self.points_norm[i]), self._norm_to_data(self.points_norm[i+1])
+                    dx_s, dy_e, dx_t = p2_d.x() - p1_d.x(), p2_d.y() - p1_d.y(), (p2_d.x() - p1_d.x()) * self._timestep
+                    slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
+                    slope_text = f"{slope:.4e} {self.get_y_unit()}/step"
+                    rate_text = f"{rate:.4e} {self.get_y_unit()}/t"
+                    slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 20))
+                    rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 6))
+                    if i in self._fixed_segments:
+                        painter.setPen(QColor("red"))
+                    else:
+                        painter.setPen(STYLE_SLOPE_TEXT)
+                    painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
+                    if i in self._fixed_segments:
+                        painter.setPen(QColor("red"))
+                    else:
+                        painter.setPen(STYLE_TEXT_SECONDARY)
+                    painter.drawText(rate_rect, rate_text)
+                    self._clickable_regions.append((slope_rect.united(rate_rect), "slope", i))
+                elif segment_info['type'] == 'sine':
+                    self._draw_sine_segment(painter, i, p1_w, p2_w, segment_info)            # Draw the handles and labels
             for i, p_norm in enumerate(self.points_norm):
                 p_data, p_w = self._norm_to_data(p_norm), self._norm_to_widget(p_norm)
                 painter.setPen(QPen(STYLE_HANDLE_OUTLINE, 2)); painter.setBrush(self.STYLE_HANDLE); painter.drawEllipse(p_w, HANDLE_RADIUS, HANDLE_RADIUS)
@@ -515,60 +710,7 @@ class GraphWidget(QWidget):
             painter.setFont(font_normal)
             text_rect = self.rect().adjusted(0, 40, 0, 0)
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, "right-click the study tab to reactivate")
-        if not self.points_norm: return
-        fm = QFontMetrics(QFont("Arial", 10))
-        # Draw the line segments and slope labels
-        for i in range(len(self.points_norm) - 1):
-            p1_w, p2_w = self._norm_to_widget(self.points_norm[i]), self._norm_to_widget(self.points_norm[i+1])
-            painter.setPen(QPen(self.STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
-            p1_d, p2_d = self._norm_to_data(self.points_norm[i]), self._norm_to_data(self.points_norm[i+1])
-            dx_s, dy_e, dx_t = p2_d.x() - p1_d.x(), p2_d.y() - p1_d.y(), (p2_d.x() - p1_d.x()) * self._timestep
-            slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
-            slope_text = f"{slope:.4e} {self.get_y_unit()}/step"
-            rate_text = f"{rate:.4e} {self.get_y_unit()}/t"
-            slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 20))
-            rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 6))
-            # Check if this segment is fixed and draw in red if so
-            if i in self._fixed_segments:
-                painter.setPen(QColor("red"))
-            else:
-                painter.setPen(STYLE_SLOPE_TEXT)
-            painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
-            if i in self._fixed_segments:
-                painter.setPen(QColor("red"))
-            else:
-                painter.setPen(STYLE_TEXT_SECONDARY)
-            painter.drawText(rate_rect, rate_text)
-            self._clickable_regions.append((slope_rect.united(rate_rect), "slope", i))
-        # Draw the handles and labels
-        for i, p_norm in enumerate(self.points_norm):
-            p_data, p_w = self._norm_to_data(p_norm), self._norm_to_widget(p_norm)
-            painter.setPen(QPen(STYLE_HANDLE_OUTLINE, 2)); painter.setBrush(self.STYLE_HANDLE); painter.drawEllipse(p_w, HANDLE_RADIUS, HANDLE_RADIUS)
-            y_text = f"{p_data.y():.3f}"; y_rect = QRectF(fm.boundingRect(y_text)); y_rect.moveCenter(QPointF(p_w.x() + 35, p_w.y()))
-            # Check if this y-label is locked and draw in red if so
-            if i in self._locked_y_labels:
-                painter.setPen(QColor("red"))
-            elif self.mode == 'Temperature':
-                painter.setPen(QColor("darkorange"))
-            else:
-                painter.setPen(STYLE_TEXT_PRIMARY)
-            painter.setFont(QFont("Arial", 10, QFont.Weight.Bold)); painter.drawText(y_rect, y_text)
-            self._clickable_regions.append((y_rect, "y_val", i))
-            step_text, time_text = f"{p_data.x():.0f}", f"({p_data.x() * self._timestep:.2f}{self._time_unit})"
-            step_rect = QRectF(fm.boundingRect(step_text).adjusted(-4,0,4,0)); step_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 18))
-            time_rect = QRectF(fm.boundingRect(time_text)); time_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 34))
-            # Check if this x-tick is locked and draw in red if so
-            if i in self._locked_x_ticks:
-                painter.setPen(QColor("red"))
-            else:
-                painter.setPen(STYLE_TEXT_PRIMARY)
-            painter.drawText(step_rect, step_text)
-            if i in self._locked_x_ticks:
-                painter.setPen(QColor("red"))
-            else:
-                painter.setPen(STYLE_TEXT_SECONDARY)
-            painter.setFont(QFont("Arial", 9)); painter.drawText(time_rect, time_text)
-            self._clickable_regions.append((step_rect.united(time_rect), "x_val", i))
+
     def _draw_axes_and_frame(self, painter):
         painter.setPen(QPen(STYLE_FRAME, 2)); painter.drawRect(self.padding['left'], self.padding['top'], self.width() - (self.padding['left'] + self.padding['right']), self.height() - (self.padding['top'] + self.padding['bottom']))
         painter.setPen(STYLE_TEXT_PRIMARY); painter.setFont(QFont("Arial", 11, QFont.Weight.Bold)); painter.save()
@@ -578,12 +720,204 @@ class GraphWidget(QWidget):
         painter.restore()
         painter.drawText(int(self.width()/2 - 30), self.height() - self.padding['bottom'] + 55, "Time Steps")
 
+    def _get_sine_handle_type(self, handle_index, segment_index):
+        if segment_index < 0 or segment_index >= len(self.segments):
+            return None
+        segment = self.segments[segment_index]
+        if segment['type'] != 'sine':
+            return None
+
+        num_cycles = segment['num_cycles']
+        scheme = segment['scheme']
+
+        phi_start = 0
+        if "tensile start" in scheme: phi_start = -math.pi / 2
+        elif "compressive start" in scheme: phi_start = math.pi / 2
+        elif "Pulsating compressive" in scheme: phi_start = math.pi
+
+        angle = 0
+        if handle_index == segment_index:
+            angle = phi_start
+        elif handle_index == segment_index + 1:
+            angle = num_cycles * 2 * math.pi + phi_start
+        else:
+            return None
+
+        sin_val = math.sin(angle)
+        if abs(sin_val) > 0.999:
+            return "peak" if sin_val > 0 else "trough"
+        elif abs(sin_val) < 0.001:
+            return "zero"
+        else:
+            return "other"
+    def _get_sine_parameters(self, p1_d, p2_d, segment_info):
+        num_cycles = segment_info['num_cycles']
+        scheme = segment_info['scheme']
+        y1, y2 = p1_d.y(), p2_d.y()
+
+        phi_start, y_center, amplitude = 0, 0, 0
+
+        if "Alternating" in scheme:
+            y_center = y1
+            phi_start = math.pi if "compressive" in scheme else 0
+            end_angle = num_cycles * 2 * math.pi + phi_start
+            sin_end = math.sin(end_angle)
+            if abs(sin_end) < 1e-9:
+                amplitude = (self._max_strain - self._min_strain) / 4
+            else:
+                amplitude = (y2 - y_center) / sin_end
+        elif "Pulsating" in scheme:
+            phi_start = -math.pi / 2 if "tensile" in scheme else math.pi / 2
+            end_angle = num_cycles * 2 * math.pi + phi_start
+            # y1 = y_center + amp * sin(phi_start)
+            # y2 = y_center + amp * sin(end_angle)
+            # y2 - y1 = amp * (sin(end_angle) - sin(phi_start))
+            denominator = math.sin(end_angle) - math.sin(phi_start)
+            if abs(denominator) < 1e-9:
+                amplitude = (self._max_strain - self._min_strain) / 4
+            else:
+                amplitude = (y2 - y1) / denominator
+            y_center = y1 - amplitude * math.sin(phi_start)
+        else:
+            return None, None, None
+
+        return amplitude, y_center, phi_start
+
+    def _draw_sine_segment(self, painter, segment_index, p1_w, p2_w, segment_info):
+        p1_d = self._norm_to_data(self.points_norm[segment_index])
+        p2_d = self._norm_to_data(self.points_norm[segment_index+1])
+
+        amplitude, y_center, phi_start = self._get_sine_parameters(p1_d, p2_d, segment_info)
+
+        if amplitude is None:
+            painter.setPen(QPen(Qt.GlobalColor.red, 2)); painter.drawLine(p1_w, p2_w)
+            return
+
+        # 1. Draw the sine wave
+        points_to_draw = []
+        num_points = int(p2_w.x() - p1_w.x()) * 2
+        if num_points < 100: num_points = 100
+        if num_points > 1000: num_points = 1000
+
+        x_range_d = p2_d.x() - p1_d.x()
+        k = segment_info['num_cycles'] * 2 * math.pi / x_range_d if x_range_d != 0 else 0
+
+        for i in range(num_points + 1):
+            t = i / num_points
+            x_d = p1_d.x() + t * x_range_d
+            y_d = y_center + amplitude * math.sin(k * (x_d - p1_d.x()) + phi_start)
+            points_to_draw.append(self._norm_to_widget(self._data_to_norm(QPointF(x_d, y_d))))
+
+        painter.setPen(QPen(self.STYLE_LINE, 2))
+        painter.drawPolyline(QPolygonF(points_to_draw))
+
+        # 2. Draw the ghost slope indicator
+        # Find first zero crossing: y_center = y_center + amp * sin(k*x + phi)
+        # sin(k*x + phi) = 0  => k*x + phi = n*pi
+        # x = (n*pi - phi) / k
+        first_zero_x = -1
+        n = 0
+        while True:
+            x_d_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+            if x_d_offset >= -1e-9 and x_d_offset <= x_range_d + 1e-9:
+                first_zero_x = p1_d.x() + x_d_offset
+                break
+            n += 1
+            if n > 1000: break # Safety break
+
+        if first_zero_x != -1:
+            zero_crossing_p_d = QPointF(first_zero_x, y_center)
+            slope_at_zero = amplitude * k * math.cos(k * (first_zero_x - p1_d.x()) + phi_start)
+            rate_at_zero = slope_at_zero / self._timestep if self._timestep > 0 else float('inf')
+
+            # Find next peak/trough to determine length
+            # k*x + phi = (n+0.5)*pi
+            next_peak_x_offset = (n * math.pi + math.pi/2 - phi_start) / k if k != 0 else -1
+            if not (0 <= next_peak_x_offset <= x_range_d):
+                 next_peak_x_offset = (n * math.pi - math.pi/2 - phi_start) / k if k != 0 else -1
+
+            if 0 <= next_peak_x_offset <= x_range_d:
+                p_start_w = self._norm_to_widget(self._data_to_norm(zero_crossing_p_d))
+                
+                # End point of tangent line
+                x_end_d = p1_d.x() + next_peak_x_offset
+                y_end_d = zero_crossing_p_d.y() + slope_at_zero * (x_end_d - zero_crossing_p_d.x())
+                p_end_w = self._norm_to_widget(self._data_to_norm(QPointF(x_end_d, y_end_d)))
+
+                painter.setPen(QPen(QColor("#BDBDBD"), 2, Qt.PenStyle.DashLine))
+                painter.drawLine(p_start_w, p_end_w)
+
+                # Draw slope text
+                fm = QFontMetrics(QFont("Arial", 10))
+                slope_text = f"{slope_at_zero:.4e} {self.get_y_unit()}/step"
+                rate_text = f"{rate_at_zero:.4e} {self.get_y_unit()}/t"
+                text_pos = (p_start_w + p_end_w) / 2
+                slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter(text_pos - QPointF(0, 12))
+                rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter(text_pos + QPointF(0, 2))
+                
+                painter.setPen(STYLE_SLOPE_TEXT)
+                painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
+                painter.setPen(STYLE_TEXT_SECONDARY)
+                painter.drawText(rate_rect, rate_text)
+
+        # 3. Draw amplitude handle - Position at first peak/trough after the midpoint slope
+        # According to the requirements: the handle should always be one quarter period length after the midpoint slope
+        # The midpoint slope occurs where the sine crosses zero (or at the starting phase)
+        
+        num_cycles = segment_info['num_cycles']
+        
+        # First, find the first zero crossing (midpoint slope starting point)
+        first_zero_x = -1
+        n = 0
+        while True:
+            x_d_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+            if x_d_offset >= -1e-9 and x_d_offset <= x_range_d + 1e-9:
+                first_zero_x = p1_d.x() + x_d_offset
+                break
+            n += 1
+            if n > 1000: break # Safety break
+
+        # Position the amplitude handle at one quarter period after the first zero crossing
+        quarter_period = x_range_d / (4 * num_cycles) if num_cycles > 0 else 0
+        peak_trough_x = first_zero_x + quarter_period if first_zero_x != -1 else p1_d.x() + quarter_period
+
+        # Make sure it's within the segment bounds
+        if peak_trough_x >= p1_d.x() - 1e-9 and peak_trough_x <= p2_d.x() + 1e-9:
+            peak_trough_y_d = y_center + amplitude * math.sin(k * (peak_trough_x - p1_d.x()) + phi_start)
+            peak_trough_pos_d = QPointF(peak_trough_x, peak_trough_y_d)
+            peak_trough_pos_w = self._norm_to_widget(self._data_to_norm(peak_trough_pos_d))
+
+            # Store this for mouse events - only for even multiples of quarter periods
+            if (num_cycles * 4) % 2 == 0:
+                self._sine_amplitude_handles[segment_index] = peak_trough_pos_w
+
+            # Draw the handle (e.g., a diamond shape)
+            painter.setPen(QPen(self.STYLE_HANDLE, 2))
+            painter.setBrush(QBrush(QColor("white")))
+            poly = QPolygonF([
+                peak_trough_pos_w + QPointF(0, -HANDLE_RADIUS),
+                peak_trough_pos_w + QPointF(HANDLE_RADIUS, 0),
+                peak_trough_pos_w + QPointF(0, HANDLE_RADIUS),
+                peak_trough_pos_w + QPointF(-HANDLE_RADIUS, 0),
+            ])
+            painter.drawPolygon(poly)
+            
+            # Draw amplitude value label
+            fm = QFontMetrics(QFont("Arial", 10))
+            amplitude_text = f"{peak_trough_y_d:.3f}"
+            amplitude_rect = QRectF(fm.boundingRect(amplitude_text).adjusted(-4,-2,4,2))
+            amplitude_rect.moveCenter(QPointF(peak_trough_pos_w.x(), peak_trough_pos_w.y() - 20))
+            painter.setPen(QPen(STYLE_TEXT_PRIMARY, 1))
+            painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+            painter.drawText(amplitude_rect, Qt.AlignmentFlag.AlignCenter, amplitude_text)
+
     def get_y_unit(self):
         return "ΔT" if self.mode == 'Temperature' else "ε"
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos_widget = event.position()
             self._dragged_handle_index = self._get_handle_at(self._drag_start_pos_widget)
+
             if self._dragged_handle_index is not None:
                 # Check if adjacent segments are fixed, which would constrain movement
                 prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
@@ -611,15 +945,23 @@ class GraphWidget(QWidget):
                 if (self._dragged_handle_index == 0 and next_segment_fixed) or (self._dragged_handle_index == len(self.points_norm) - 1 and prev_segment_fixed):
                     self._dragged_handle_index = None
                     return
+            
             if self._dragged_handle_index is None:
-                self._dragged_segment_index = self._get_segment_at(self._drag_start_pos_widget)
-                if self._dragged_segment_index is not None:
-                    # Segments can always be selected for dragging, regardless of fixed status
-                    # The movement logic will handle constraints appropriately
-                    i = self._dragged_segment_index
-                    p1_w = self._norm_to_widget(self.points_norm[i])
-                    self._drag_mouse_to_p1_offset = self._drag_start_pos_widget - p1_w
-                    self._segment_drag_offset_norm = self.points_norm[i+1] - self.points_norm[i]
+                self._dragged_amplitude_handle_index = self._get_amplitude_handle_at(self._drag_start_pos_widget)
+                # Only allow amplitude handle dragging for even multiples of quarter periods
+                if self._dragged_amplitude_handle_index is not None:
+                    segment_info = self.segments[self._dragged_amplitude_handle_index]
+                    if (segment_info['num_cycles'] * 4) % 2 != 0:  # Odd multiple
+                        self._dragged_amplitude_handle_index = None  # Don't allow dragging for odd multiples
+                if self._dragged_amplitude_handle_index is None:
+                    self._dragged_segment_index = self._get_segment_at(self._drag_start_pos_widget)
+                    if self._dragged_segment_index is not None:
+                        # Segments can always be selected for dragging, regardless of fixed status
+                        # The movement logic will handle constraints appropriately
+                        i = self._dragged_segment_index
+                        p1_w = self._norm_to_widget(self.points_norm[i])
+                        self._drag_mouse_to_p1_offset = self._drag_start_pos_widget - p1_w
+                        self._segment_drag_offset_norm = self.points_norm[i+1] - self.points_norm[i]
         elif event.button() == Qt.MouseButton.RightButton:
             # Handle right-click for locking/unlocking x-axis ticks, y-value labels, and slope segments
             pos = event.position()
@@ -646,15 +988,78 @@ class GraphWidget(QWidget):
                     self.update()
                     self.dataChanged.emit()
                     return
+
     def mouseMoveEvent(self, event):
         pos = event.position()
         self._hovered_handle_index = self._get_handle_at(pos)
-        self._hovered_segment_index = self._get_segment_at(pos) if self._hovered_handle_index is None else None
-        if self._hovered_handle_index is not None or self._dragged_handle_index is not None: self.setCursor(Qt.CursorShape.PointingHandCursor)
-        elif self._hovered_segment_index is not None or self._dragged_segment_index is not None: self.setCursor(Qt.CursorShape.SizeAllCursor)
-        else: self.setCursor(Qt.CursorShape.ArrowCursor)
+        self._hovered_amplitude_handle_index = self._get_amplitude_handle_at(pos)
+        self._hovered_segment_index = self._get_segment_at(pos) if self._hovered_handle_index is None and self._hovered_amplitude_handle_index is None else None
+        
+        if self._hovered_handle_index is not None or self._dragged_handle_index is not None or self._hovered_amplitude_handle_index is not None or self._dragged_amplitude_handle_index is not None:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        elif self._hovered_segment_index is not None or self._dragged_segment_index is not None: 
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        else: 
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
         if not (event.buttons() & Qt.MouseButton.LeftButton): return
-        constrained_pos = pos
+
+        if self._dragged_amplitude_handle_index is not None:
+            seg_idx = self._dragged_amplitude_handle_index
+            
+            # Constrain to vertical movement
+            new_pos_w = event.position()
+            new_pos_w.setX(self._drag_start_pos_widget.x())
+
+            # Convert widget position to data coordinates
+            new_pos_norm = self._widget_to_norm(new_pos_w)
+            new_pos_data = self._norm_to_data(new_pos_norm)
+
+            p1_d = self._norm_to_data(self.points_norm[seg_idx])
+            p2_d = self._norm_to_data(self.points_norm[seg_idx+1])
+            segment_info = self.segments[seg_idx]
+            
+            _, y_center, phi_start = self._get_sine_parameters(p1_d, p2_d, segment_info)
+
+            num_cycles = segment_info['num_cycles']
+            x_range_d = p2_d.x() - p1_d.x()
+            k = num_cycles * 2 * math.pi / x_range_d if x_range_d != 0 else 0
+            x_offset = x_range_d / (4 * num_cycles)
+            
+            sin_val_at_peak = math.sin(k * x_offset + phi_start)
+
+            if abs(sin_val_at_peak) > 1e-9:
+                new_amplitude = (new_pos_data.y() - y_center) / sin_val_at_peak
+            else: # should not happen
+                return
+
+            end_angle = num_cycles * 2 * math.pi + phi_start
+            new_y2 = y_center + new_amplitude * math.sin(end_angle)
+            
+            p2_d.setY(new_y2)
+            self.points_norm[seg_idx + 1] = self._data_to_norm(p2_d)
+            
+            # For even multiples, ensure the right handle has same y as left handle
+            if (num_cycles * 4) % 2 == 0:
+                p1_d.setY(p2_d.y())  # Set left handle to same height as right
+                self.points_norm[seg_idx] = self._data_to_norm(p1_d)
+            
+            self.update()
+            self.dataChanged.emit()
+            return # Done with amplitude handle drag
+        
+
+        i = self._dragged_handle_index
+        if i is not None:
+            is_prev_sine = i > 0 and self.segments[i-1]['type'] == 'sine'
+            if is_prev_sine:
+                handle_type = self._get_sine_handle_type(i, i - 1)
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    if self._drag_axis_lock is None: delta = event.position() - self._drag_start_pos_widget; self._drag_axis_lock = 'y' if abs(delta.y()) > abs(delta.x()) else 'x'
+                if handle_type == 'zero' and self._drag_axis_lock == 'y':
+                    return # Disallow vertical drag
+
+        constrained_pos = event.position()
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             if self._drag_axis_lock is None: delta = pos - self._drag_start_pos_widget; self._drag_axis_lock = 'y' if abs(delta.y()) > abs(delta.x()) else 'x'
             if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
@@ -720,6 +1125,15 @@ class GraphWidget(QWidget):
                     orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
                     p_data.setY(orig_data.y())
                 
+                # Check if this is a sine segment and whether it's an even multiple of quarter periods
+                # If dragging the left handle of a sine segment
+                is_left_handle_of_sine = (i > 0 and self.segments[i-1]['type'] == 'sine')
+                # If dragging the right handle of a sine segment  
+                is_right_handle_of_sine = (i < len(self.segments) and self.segments[i]['type'] == 'sine')
+                
+                final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                original_y = final_p_norm.y()  # Store original y to check if it changed
+                
                 # If adjacent segments are fixed, constrain movement along the fixed slope
                 movement_allowed = True
                 if prev_segment_fixed and not next_segment_fixed:
@@ -780,6 +1194,30 @@ class GraphWidget(QWidget):
                     orig_p_norm = self._data_to_norm(orig_data)
                     final_p_norm = orig_p_norm
                 
+                # Check if this is part of a sine segment with even multiples of quarter periods
+                # Apply synchronization if applicable
+                sync_y = None
+                sync_segment_idx = None
+                
+                if is_left_handle_of_sine:
+                    # Check if it's the left handle of a sine segment
+                    segment_idx = i - 1
+                    if self.segments[segment_idx]['type'] == 'sine':
+                        num_cycles = self.segments[segment_idx]['num_cycles']
+                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
+                            # Store the new y value to sync to the right handle
+                            sync_y = final_p_norm.y()
+                            sync_segment_idx = segment_idx
+                elif is_right_handle_of_sine:
+                    # Check if it's the right handle of a sine segment
+                    segment_idx = i
+                    if self.segments[segment_idx]['type'] == 'sine':
+                        num_cycles = self.segments[segment_idx]['num_cycles']
+                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
+                            # Store the new y value to sync to the left handle
+                            sync_y = final_p_norm.y()
+                            sync_segment_idx = segment_idx
+                
                 # If y is locked or if a slope is fixed, prevent moving past neighboring points
                 neighbor_hit = False
                 if (y_locked or prev_segment_fixed or next_segment_fixed) and self._dragged_handle_index > 0 and self._dragged_handle_index < len(self.points_norm) - 1:
@@ -810,6 +1248,15 @@ class GraphWidget(QWidget):
             self.points_norm[self._dragged_handle_index] = final_p_norm
             self._sort_points()
             self._dragged_handle_index = self.points_norm.index(final_p_norm)
+            
+            # Apply synchronization after setting the current handle
+            if sync_y is not None and sync_segment_idx is not None:
+                if is_left_handle_of_sine:
+                    # Left handle changed, update right handle for even multiples
+                    self.points_norm[sync_segment_idx + 1].setY(sync_y)
+                elif is_right_handle_of_sine:
+                    # Right handle changed, update left handle for even multiples
+                    self.points_norm[sync_segment_idx].setY(sync_y)
         elif self._dragged_segment_index is not None:
             i = self._dragged_segment_index
             
@@ -929,6 +1376,320 @@ class GraphWidget(QWidget):
                     if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
                         self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
         self.update()
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            if self._drag_axis_lock is None: delta = pos - self._drag_start_pos_widget; self._drag_axis_lock = 'y' if abs(delta.y()) > abs(delta.x()) else 'x'
+            if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
+            else: constrained_pos.setX(self._drag_start_pos_widget.x())
+        if self._dragged_handle_index is not None:
+            if self._dragged_handle_index == 0 and self.mode == 'Deformation':
+                return # Don't move the first handle in deformation mode
+
+            # Check if this handle's x or y positions are locked
+            x_locked = self._dragged_handle_index in self._locked_x_ticks
+            y_locked = self._dragged_handle_index in self._locked_y_labels
+            
+            # Check if adjacent segments are fixed, which would constrain movement
+            prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
+            next_segment_fixed = self._dragged_handle_index in self._fixed_segments if self._dragged_handle_index < len(self.points_norm) - 1 else False
+            
+            # If both x and y are locked, or if y is locked and both adjacent segments are fixed, cannot move this handle at all
+            if (x_locked and y_locked) or (y_locked and prev_segment_fixed and next_segment_fixed):
+                return
+                
+            # Cannot move handle if it's at the first or last position and has a fixed segment
+            if (self._dragged_handle_index == 0 and next_segment_fixed) or (self._dragged_handle_index == len(self.points_norm) - 1 and prev_segment_fixed):
+                return
+                
+            if self._dragged_handle_index == 0:
+                if self.mode == 'Deformation':
+                    # First point x is always locked in deformation mode
+                    if not y_locked:  # Only allow y movement if not locked
+                        constrained_pos.setX(self._drag_start_pos_widget.x())
+                        # Ensure the first point stays at x=0
+                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
+                        p_data.setX(0)  # Force x to be 0 for the first point
+                        # Clamp y to min/max strain values
+                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
+                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                        final_p_norm.setX(0)  # Ensure normalized x is also 0
+                    else:
+                        # Y is locked, don't move at all
+                        return
+                else: # Temperature mode, only allow y-drag and ensure x stays at 0
+                    if not y_locked:  # Only allow y movement if not locked
+                        constrained_pos.setX(self._drag_start_pos_widget.x())
+                        # Ensure the first point stays at x=0
+                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
+                        p_data.setX(0)  # Force x to be 0 for the first point
+                        # Clamp y to min/max strain values
+                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
+                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                        final_p_norm.setX(0)  # Ensure normalized x is also 0
+                    else:
+                        # Y is locked, don't move at all
+                        return
+            else:
+                p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
+                
+                # Apply locking constraints
+                if x_locked:
+                    # X position is locked, keep the original x value
+                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    p_data.setX(orig_data.x())
+                if y_locked:
+                    # Y position is locked, keep the original y value
+                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    p_data.setY(orig_data.y())
+                
+                # If adjacent segments are fixed, constrain movement along the fixed slope
+                movement_allowed = True
+                if prev_segment_fixed and not next_segment_fixed:
+                    # Only previous segment is fixed, constrain movement along its slope
+                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
+                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    # Calculate slope of fixed segment
+                    if current_point.x() != prev_point.x():
+                        slope = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x())
+                        # Constrain y position based on x position and slope (unless y is locked)
+                        if not y_locked:
+                            calculated_y = prev_point.y() + slope * (p_data.x() - prev_point.x())
+                            # Check if we've hit min or max y
+                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
+                                movement_allowed = False
+                            # Clamp to min/max strain values
+                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
+                elif not prev_segment_fixed and next_segment_fixed:
+                    # Only next segment is fixed, constrain movement along its slope
+                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
+                    # Calculate slope of fixed segment
+                    if next_point.x() != current_point.x():
+                        slope = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x())
+                        # Constrain y position based on x position and slope (unless y is locked)
+                        if not y_locked:
+                            calculated_y = current_point.y() + slope * (p_data.x() - current_point.x())
+                            # Check if we've hit min or max y
+                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
+                                movement_allowed = False
+                            # Clamp to min/max strain values
+                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
+                elif prev_segment_fixed and next_segment_fixed:
+                    # Both segments are fixed, constrain to the average slope
+                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
+                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
+                    # Calculate slopes of both fixed segments
+                    slope1 = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x()) if current_point.x() != prev_point.x() else 0
+                    slope2 = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x()) if next_point.x() != current_point.x() else 0
+                    # Use average slope for constraint
+                    avg_slope = (slope1 + slope2) / 2
+                    # Constrain y position based on x position and average slope (unless y is locked)
+                    if not y_locked:
+                        # We'll use the position relative to the previous point
+                        calculated_y = prev_point.y() + avg_slope * (p_data.x() - prev_point.x())
+                        # Check if we've hit min or max y
+                        if calculated_y < self._min_strain or calculated_y > self._max_strain:
+                            movement_allowed = False
+                        # Clamp to min/max strain values
+                        p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
+                    
+                final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                
+                # Check if this is a sine segment and whether it's an even multiple of quarter periods
+                # If dragging the left handle of a sine segment
+                is_left_handle_of_sine = (i > 0 and self.segments[i-1]['type'] == 'sine')
+                # If dragging the right handle of a sine segment  
+                is_right_handle_of_sine = (i < len(self.segments) and self.segments[i]['type'] == 'sine')
+                
+                # If we've hit min or max y while following a fixed slope, stop all movement
+                if not movement_allowed:
+                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    orig_p_norm = self._data_to_norm(orig_data)
+                    final_p_norm = orig_p_norm
+                
+                # Check if this is part of a sine segment with even multiples of quarter periods
+                # Apply synchronization if applicable
+                sync_y = None
+                sync_segment_idx = None
+                
+                if is_left_handle_of_sine:
+                    # Check if it's the left handle of a sine segment
+                    segment_idx = i - 1
+                    if self.segments[segment_idx]['type'] == 'sine':
+                        num_cycles = self.segments[segment_idx]['num_cycles']
+                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
+                            # Store the new y value to sync to the right handle
+                            sync_y = final_p_norm.y()
+                            sync_segment_idx = segment_idx
+                elif is_right_handle_of_sine:
+                    # Check if it's the right handle of a sine segment
+                    segment_idx = i
+                    if self.segments[segment_idx]['type'] == 'sine':
+                        num_cycles = self.segments[segment_idx]['num_cycles']
+                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
+                            # Store the new y value to sync to the left handle
+                            sync_y = final_p_norm.y()
+                            sync_segment_idx = segment_idx
+                
+                # If y is locked or if a slope is fixed, prevent moving past neighboring points
+                neighbor_hit = False
+                if (y_locked or prev_segment_fixed or next_segment_fixed) and self._dragged_handle_index > 0 and self._dragged_handle_index < len(self.points_norm) - 1:
+                    # Get neighboring points in normalized coordinates
+                    prev_point_norm = self.points_norm[self._dragged_handle_index - 1]
+                    next_point_norm = self.points_norm[self._dragged_handle_index + 1]
+                    
+                    # Check if we're trying to move past neighbors
+                    if final_p_norm.x() <= prev_point_norm.x() or final_p_norm.x() >= next_point_norm.x():
+                        neighbor_hit = True
+                        # Stop all movement when hitting a neighbor
+                        orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                        orig_p_norm = self._data_to_norm(orig_data)
+                        final_p_norm = orig_p_norm
+                    else:
+                        # Constrain x position to stay between neighbors
+                        final_p_norm.setX(max(prev_point_norm.x(), min(next_point_norm.x(), final_p_norm.x())))
+                
+            if self._dragged_handle_index == len(self.points_norm) - 1:
+                # Last point x is always locked to max_steps
+                final_p_norm.setX(1.0)
+                # Also clamp y to min/max strain values
+                p_data = self._norm_to_data(final_p_norm)
+                p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
+                final_p_norm = self._data_to_norm(p_data)
+                final_p_norm.setX(1.0)  # Ensure x stays locked
+                
+            self.points_norm[self._dragged_handle_index] = final_p_norm
+            self._sort_points()
+            self._dragged_handle_index = self.points_norm.index(final_p_norm)
+            
+            # Apply synchronization after setting the current handle
+            if sync_y is not None and sync_segment_idx is not None:
+                if is_left_handle_of_sine:
+                    # Left handle changed, update right handle for even multiples
+                    self.points_norm[sync_segment_idx + 1].setY(sync_y)
+                elif is_right_handle_of_sine:
+                    # Right handle changed, update left handle for even multiples
+                    self.points_norm[sync_segment_idx].setY(sync_y)
+        elif self._dragged_segment_index is not None:
+            i = self._dragged_segment_index
+            
+            # Check if this segment is fixed
+            is_segment_fixed = self._dragged_segment_index in self._fixed_segments
+            
+            # Check if adjacent segments are fixed
+            prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
+            next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
+            
+            # If this segment is fixed, check if it can be moved
+            if is_segment_fixed:
+                # Cannot move fixed segment if any adjacent segment is also fixed
+                if prev_segment_fixed or next_segment_fixed:
+                    return
+                # Otherwise, fixed segment can be moved (no adjacent fixed segments)
+            
+            # If adjacent segments are fixed, we need to preserve their slopes while allowing movement
+            # BUT we must preserve the slope of the dragged segment itself
+            if prev_segment_fixed or next_segment_fixed:
+                # Get original positions
+                original_p1_data = self._norm_to_data(self.points_norm[i])
+                original_p2_data = self._norm_to_data(self.points_norm[i+1])
+                
+                # Calculate the original slope and length of the dragged segment
+                original_delta_x = original_p2_data.x() - original_p1_data.x()
+                original_delta_y = original_p2_data.y() - original_p1_data.y()
+                
+                # Calculate the new position based on mouse movement
+                target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
+                target_p1_data = self._norm_to_data(self._widget_to_norm(target_p1_w))
+                
+                # Calculate the offset (delta) from original position
+                delta_x = target_p1_data.x() - original_p1_data.x()
+                delta_y = target_p1_data.y() - original_p1_data.y()
+                
+                # Start with unconstrained new positions
+                new_p1_data = QPointF(original_p1_data.x() + delta_x, original_p1_data.y() + delta_y)
+                new_p2_data = QPointF(original_p2_data.x() + delta_x, original_p2_data.y() + delta_y)
+                
+                # Clamp y values to min/max strain
+                new_p1_data.setY(max(self._min_strain, min(self._max_strain, new_p1_data.y())))
+                new_p2_data.setY(max(self._min_strain, min(self._max_strain, new_p2_data.y())))
+                
+                # Handle constraints based on which neighbors are fixed
+                # IMPORTANT: We preserve the ORIGINAL slope of the dragged segment, not calculate new slopes
+                if prev_segment_fixed and next_segment_fixed:
+                    # Both neighbors fixed - this case should have been caught earlier, but handle gracefully
+                    # Preserve both neighbor slopes by adjusting the connecting points
+                    if i > 1:
+                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
+                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
+                        if prev_point_data.x() != prev_prev_point_data.x():
+                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
+                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
+                    if i + 2 < len(self.points_norm):
+                        next_point_data = self._norm_to_data(self.points_norm[i+1])
+                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
+                        if next_next_point_data.x() != next_point_data.x():
+                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
+                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
+                    # Preserve the original slope of the dragged segment
+                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
+                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
+                elif prev_segment_fixed:
+                    # Previous neighbor fixed - preserve its slope
+                    if i > 1:
+                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
+                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
+                        if prev_point_data.x() != prev_prev_point_data.x():
+                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
+                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
+                    # Preserve the original slope of the dragged segment by maintaining delta
+                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
+                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
+                elif next_segment_fixed:
+                    # Next neighbor fixed - preserve its slope
+                    if i + 2 < len(self.points_norm):
+                        next_point_data = self._norm_to_data(self.points_norm[i+1])
+                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
+                        if next_next_point_data.x() != next_point_data.x():
+                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
+                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
+                    # Preserve the original slope of the dragged segment by maintaining delta
+                    new_p1_data.setX(new_p2_data.x() - original_delta_x)
+                    new_p1_data.setY(new_p2_data.y() - original_delta_y)
+                
+                # Convert to normalized coordinates
+                new_p1_norm = self._data_to_norm(new_p1_data)
+                new_p2_norm = self._data_to_norm(new_p2_data)
+                
+                # Check bounds constraints
+                p_prev = self.points_norm[i-1] if i > 0 else None
+                p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
+                if (p_prev is None or new_p1_norm.x() >= p_prev.x()) and (p_next is None or new_p2_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [new_p1_norm, new_p2_norm]):
+                    self.points_norm[i] = new_p1_norm
+                    self.points_norm[i+1] = new_p2_norm
+            else:
+                # Normal segment dragging when no adjacent segments are fixed
+                if i == 0:
+                    p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
+                    p1_new_norm.setX(0)  # Ensure first point stays at x=0
+                    self.points_norm[i] = p1_new_norm
+                else:
+                    target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
+                    p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
+                    # Clamp y values to min/max strain
+                    p1_new_data.setY(max(self._min_strain, min(self._max_strain, p1_new_data.y())))
+                    p1_new_norm = self._data_to_norm(p1_new_data)
+                    p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
+                    # Also clamp the second point
+                    p2_new_data = self._norm_to_data(p2_new_norm)
+                    p2_new_data.setY(max(self._min_strain, min(self._max_strain, p2_new_data.y())))
+                    p2_new_norm = self._data_to_norm(p2_new_data)
+                    p_prev = self.points_norm[i-1] if i > 0 else None
+                    p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
+                    if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
+                        self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
+        self.update()
+
     def mouseReleaseEvent(self, event): 
         # Apply snapping when mouse is released
         if self._dragged_handle_index is not None:
@@ -1004,20 +1765,146 @@ class GraphWidget(QWidget):
         # Ensure the first point stays at x=0 for both modes
         if len(self.points_norm) > 0:
             self.points_norm[0].setX(0)
-        self._dragged_handle_index, self._dragged_segment_index, self._drag_start_pos_widget, self._drag_axis_lock = None, None, None, None
+        self._dragged_handle_index, self._dragged_segment_index, self._drag_start_pos_widget, self._drag_axis_lock, self._dragged_amplitude_handle_index = None, None, None, None, None
         self.dataChanged.emit()
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            # 1. Check if a clickable region (slope, x_val, y_val) is hit
             for region, type, index in self._clickable_regions:
-                if region.contains(event.position()): self._handle_direct_edit(type, index); return
+                if region.contains(event.position()):
+                    self._handle_direct_edit(type, index)
+                    return
+            
+            # 2. Check if a segment is hit
+            seg_idx = self._get_segment_at(event.position())
+            if seg_idx is not None:
+                segment_info = self.segments[seg_idx]
+                if segment_info['type'] == 'line':
+                    # Split the line segment by adding a new point
+                    new_p_norm = self._data_to_norm(self._snap_data_point(self._norm_to_data(self._widget_to_norm(event.position()))))
+                    self.points_norm.append(new_p_norm)
+                    self._sort_points()
+                    # The segment at seg_idx was split. Replace it with a line and insert another line.
+                    self.segments[seg_idx] = {'type': 'line'}
+                    self.segments.insert(seg_idx + 1, {'type': 'line'})
+                    self.update()
+                    self.dataChanged.emit()
+                elif segment_info['type'] == 'sine':
+                    self._show_sine_properties_dialog(seg_idx)
+                return # Event handled
+
+            # 3. If nothing else is hit, add a new point at the clicked position
             new_p_norm = self._data_to_norm(self._snap_data_point(self._norm_to_data(self._widget_to_norm(event.position()))))
-            self.points_norm.append(new_p_norm); self._sort_points(); self.update(); self.dataChanged.emit()
+            self.points_norm.append(new_p_norm)
+            self._sort_points()
+            # A new point was added. It creates a new segment at the end.
+            self.segments.append({'type': 'line'})
+            self.update()
+            self.dataChanged.emit()
     def contextMenuEvent(self, event):
         idx = self._get_handle_at(QPointF(event.pos()))
         if idx is not None:
             menu = QMenu(self); menu.addAction("Set Coordinates...", lambda: self._show_set_coords_dialog(idx))
             if 0 < idx < len(self.points_norm) - 1: menu.addAction("Delete Handle", lambda: self._delete_handle(idx))
             menu.exec(event.globalPos())
+        else: # Check for segment
+            seg_idx = self._get_segment_at(QPointF(event.pos()))
+            if seg_idx is not None:
+                menu = QMenu(self)
+                if self.segments[seg_idx]['type'] == 'line':
+                    menu.addAction("Insert Sine...", lambda: self._show_insert_sine_dialog(seg_idx))
+                elif self.segments[seg_idx]['type'] == 'sine':
+                    menu.addAction("Edit Sine Properties...", lambda: self._show_sine_properties_dialog(seg_idx))
+                    menu.addAction("Change to Line", lambda: self._change_segment_type(seg_idx, 'line'))
+                menu.exec(event.globalPos())
+
+    def _change_segment_type(self, seg_idx, new_type):
+        self.segments[seg_idx]['type'] = new_type
+        self.update()
+        self.dataChanged.emit()
+
+    def _show_insert_sine_dialog(self, seg_idx):
+        self._context_menu_segment_index = seg_idx
+        dialog = InsertSineDialog(self)
+        if dialog.exec():
+            params = dialog.get_parameters()
+            seg_idx = self._context_menu_segment_index
+            if seg_idx is not None:
+                # 1. Get existing points
+                p1_d = self._norm_to_data(self.points_norm[seg_idx])
+
+                # 2. Calculate the correct end Y-value based on the start point
+                num_cycles = params['num_cycles']
+                scheme = params['scheme']
+
+                amplitude = min(abs(self._max_strain), abs(self._min_strain))
+                if amplitude == 0: amplitude = max(abs(self._max_strain), abs(self._min_strain))
+                if amplitude == 0: amplitude = 0.1
+
+                phi_start = 0
+                y_center_offset = 0
+                y_baseline = p1_d.y()
+
+                if "Alternating" in scheme:
+                    if "compressive start" in scheme:
+                        amplitude *= -1
+                elif "Pulsating tensile" in scheme:
+                    y_center_offset = amplitude
+                    phi_start = -math.pi / 2
+                elif "Pulsating compressive" in scheme:
+                    y_center_offset = -amplitude
+                    phi_start = math.pi / 2
+
+                end_angle = num_cycles * 2 * math.pi + phi_start
+                y_end_relative = amplitude * math.sin(end_angle)
+                new_y2 = y_baseline + y_center_offset + y_end_relative
+
+                # 3. Update the right handle's position
+                self.points_norm[seg_idx + 1].setY(self._data_to_norm(QPointF(0, new_y2)).y())
+
+                # 4. Update segment type
+                self.segments[seg_idx] = {
+                    'type': 'sine',
+                    'num_cycles': num_cycles,
+                    'scheme': scheme
+                }
+
+                # If it's an even quarter-period, ensure the right handle has the same y-value as the left handle
+                if (num_cycles * 4) % 2 == 0:
+                    p1_y_norm = self.points_norm[seg_idx].y()
+                    self.points_norm[seg_idx + 1].setY(p1_y_norm)
+
+                self.update()
+                self.dataChanged.emit()
+
+    def _show_sine_properties_dialog(self, seg_idx):
+        segment_info = self.segments[seg_idx]
+        dialog = SinePropertiesDialog(segment_info, self)
+        if dialog.exec():
+            new_params = dialog.get_parameters()
+            self.segments[seg_idx] = {
+                'type': 'sine',
+                'num_cycles': new_params['num_cycles'],
+                'scheme': new_params['scheme']
+            }
+
+            # Recalculate the end-point y-value
+            p1_d = self._norm_to_data(self.points_norm[seg_idx])
+            p2_d = self._norm_to_data(self.points_norm[seg_idx + 1])
+            
+            amplitude, y_center, phi_start = self._get_sine_parameters(p1_d, p2_d, self.segments[seg_idx])
+            if amplitude is not None:
+                num_cycles = new_params['num_cycles']
+                end_angle = num_cycles * 2 * math.pi + phi_start
+                new_y2 = y_center + amplitude * math.sin(end_angle)
+
+                p2_d.setY(new_y2)
+                self.points_norm[seg_idx + 1] = self._data_to_norm(p2_d)
+
+            self.update()
+            self.dataChanged.emit()
+            self.update()
+            self.dataChanged.emit()
     def _handle_direct_edit(self, type, index):
         if index == 0 and type == "x_val": return
         if index == 0 and type == "y_val" and self.mode == 'Deformation': return
@@ -1057,7 +1944,18 @@ class GraphWidget(QWidget):
             self._sort_points()
             self.update()
             self.dataChanged.emit()
-    def _delete_handle(self, index): del self.points_norm[index]; self.update(); self.dataChanged.emit()
+    def _delete_handle(self, index):
+        if 0 < index < len(self.points_norm) - 1:
+            del self.points_norm[index]
+            # Merge segments: remove the two segments adjacent to the handle
+            # and replace them with a single line segment.
+            if index -1 < len(self.segments):
+                del self.segments[index-1] # remove the second segment first
+            if index -1 < len(self.segments):
+                self.segments[index-1] = {'type': 'line'} # replace the first segment
+
+            self.update()
+            self.dataChanged.emit()
 
 class StudyWidget(QWidget):
     dataChanged = pyqtSignal()
@@ -1096,7 +1994,7 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.addItems(["x", "y", "z", "xy", "xz", "yz"])
         self.deform_axis_combo.setMinimumWidth(40)
         self.deform_axis_combo.setMaximumWidth(50)
-        self.deform_axis_combo.setStyleSheet(""" 
+        self.deform_axis_combo.setStyleSheet("""
             QComboBox {
                 combobox-popup: 0;
             }
@@ -1110,7 +2008,7 @@ class StudyWidget(QWidget):
         self.deform_scenario_label = QLabel("<b>Deform Scenario:</b>")
         self.deform_scenario_combo = QComboBox()
         self.deform_scenario_combo.addItems(["symmetric", "shift hi, fix lo", "shift lo, fix hi"])
-        self.deform_scenario_combo.setStyleSheet(""" 
+        self.deform_scenario_combo.setStyleSheet("""
             QComboBox {
                 combobox-popup: 0;
             }
@@ -1295,10 +2193,10 @@ class StudyWidget(QWidget):
 
         self._last_staircase_params = {'cycles': 5, 'factor': 1.0, 'direction': 'Tension'}
         self._last_cyclic_params = {'cycles': 3, 'relax_factor': 0.0, 'start_with': 'Tension'}
+        self._last_sinusoidal_params = {'equilibration_steps': 0, 'num_cycles': 4.0, 'relax_factor': 0.0, 'scheme': 'Alternating (tensile start)'}
         self._last_scheme = "Staircase Loading"
 
         self._is_mode_switching = False
-
         self._undo_stack = []
         self._redo_stack = []
 
@@ -1390,7 +2288,7 @@ class StudyWidget(QWidget):
 
     def _show_preset_dialog(self):
         max_steps = self.max_steps_spinbox.value()
-        dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, max_steps, self)
+        dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, self._last_sinusoidal_params, max_steps, self)
         if dialog.exec():
             scheme, params = dialog.get_parameters()
             self._last_scheme = scheme
@@ -1408,6 +2306,37 @@ class StudyWidget(QWidget):
             elif scheme == "Cyclic Loading":
                 self._last_cyclic_params = params
                 self.graph_widget.generate_cyclic_scheme(params['equilibration_steps'], params['cycles'], params['relax_factor'], params['start_with'])
+            elif scheme == "Sinusoidal Loading":
+                self._last_sinusoidal_params = params
+                
+                # --- Axis Initialization Logic ---
+                min_s_box = self.min_strain_spinbox
+                max_s_box = self.max_strain_spinbox
+                scheme_type = params['scheme']
+                
+                current_max_abs = max(abs(min_s_box.value()), abs(max_s_box.value()))
+                if current_max_abs == 0: current_max_abs = 0.1 # Default if axes are at 0
+                
+                needs_update = False
+                if "Pulsating tensile" in scheme_type:
+                    if max_s_box.value() < current_max_abs:
+                        max_s_box.setValue(current_max_abs)
+                        needs_update = True
+                elif "Pulsating compressive" in scheme_type:
+                    if min_s_box.value() > -current_max_abs:
+                        min_s_box.setValue(-current_max_abs)
+                        needs_update = True
+                else: # Alternating
+                    if min_s_box.value() > -current_max_abs or max_s_box.value() < current_max_abs:
+                        min_s_box.setValue(-current_max_abs)
+                        max_s_box.setValue(current_max_abs)
+                        needs_update = True
+
+                if needs_update:
+                    self._update_graph_controls()
+                # --- End Axis Logic ---
+
+                self.graph_widget.generate_sinusoidal_scheme(params['equilibration_steps'], params['num_cycles'], params['relax_factor'], params['scheme'])
 
 
 
@@ -1474,6 +2403,7 @@ class StudyWidget(QWidget):
     def get_undo_state(self):
         return {
             'data_points': [QPointF(p.x(), p.y()) for p in self.graph_widget.get_data_points()],
+            'segments': [s.copy() for s in self.graph_widget.segments],
             'max_steps': self.max_steps_spinbox.value(),
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
@@ -1494,6 +2424,7 @@ class StudyWidget(QWidget):
 
         self._update_graph_controls()
         self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in state['data_points']]
+        self.graph_widget.segments = [s.copy() for s in state.get('segments', [{'type': 'line'} for _ in range(len(state['data_points']) - 1)])]
         self.graph_widget.update()
         self.dataChanged.emit()
 
@@ -1544,7 +2475,7 @@ class StudyWidget(QWidget):
             'deform_axis': self.deform_axis_combo.currentText(),
             'deform_scenario': self.deform_scenario_combo.currentText(),
             'mode': self.mode,
-            'fixed_segments': list(self.graph_widget._fixed_segments),  # Save fixed segments
+            'segments': self.graph_widget.segments,
             'is_enabled': self.is_enabled,
             'ensemble': {
                 'ensemble': self.ensemble_combo.currentText(),
@@ -1635,6 +2566,9 @@ class StudyWidget(QWidget):
         # Load fixed segments
         fixed_segments = state.get('fixed_segments', [])
         self.graph_widget._fixed_segments = set(fixed_segments)
+
+        # Load segments
+        self.graph_widget.segments = state.get('segments', [{'type': 'line'} for _ in range(len(state.get('data_points', [])) - 1)])
         
         # Now set the data points
         data_points_list = state.get('data_points', [])
@@ -1727,16 +2661,22 @@ class StudyWidget(QWidget):
         if self.mode == mode:
             return
 
-        self._is_mode_switching = True
-
         self.mode = mode
         is_temp_mode = mode == 'Temperature'
+
+        # Convert sine segments to linear when switching to Temperature mode
+        if is_temp_mode:
+            for segment in self.graph_widget.segments:
+                if segment['type'] == 'sine':
+                    segment['type'] = 'line'
+
+
 
         # Set ranges FIRST to avoid clamping issues
         if is_temp_mode:
             self.min_strain_spinbox.setRange(0.001, 1e9)
             self.max_strain_spinbox.setRange(0.001, 1e9)
-        else:
+        else:  # Deformation mode
             self.min_strain_spinbox.setRange(-0.999999, 1e9)
             self.max_strain_spinbox.setRange(-1e9, 1e9)
 
@@ -1790,7 +2730,7 @@ class StudyWidget(QWidget):
 
 class DeformationTab(QWidget):
     studiesChanged = pyqtSignal()
-    
+
     def __init__(self, main_window, parent=None):
         super().__init__(parent); self.setWindowTitle("Interactive Strain-Time Profile Editor")
         self.main_window = main_window
@@ -2116,7 +3056,7 @@ class DeformationTab(QWidget):
         enabled_action.setChecked(widget.is_enabled)
         enabled_action.toggled.connect(lambda checked: self._toggle_study_enabled(index, checked))
         menu.addAction(enabled_action)
-    
+
         menu.exec(tab_bar.mapToGlobal(pos))
 
     def _toggle_study_enabled(self, index, enabled):
@@ -2142,75 +3082,89 @@ class DeformationTab(QWidget):
         self.update_summaries()
 
     def update_summaries(self):
-        # Skip updating during batch loading to improve performance
-        if self._batch_loading:
-            return
-
+        if self._batch_loading: return
         self._update_tab_colors()
-        timestep = 0
-        unit_key = "s"
-        if self.tab_widget.count() > 0:
-            # Get timestep and unit from first widget
-            first_widget = self.tab_widget.widget(0)
-            if first_widget:
-                timestep = first_widget.graph_widget._timestep
-                unit_key = first_widget.graph_widget._time_unit
+        timestep = self.main_window.timestep.value() if self.main_window else 0
+        unit_key = LAMMPS_UNITS.get(self.main_window.units_combo.currentText(), "s") if self.main_window else "s"
 
-        # Build all summaries in one text area
         all_summaries = []
-        
-        # Filter for active studies first to handle separators correctly
-        active_studies = []
-        for i in range(self.tab_widget.count()):
-            study_widget = self.tab_widget.widget(i)
-            if study_widget and study_widget.is_enabled:
-                active_studies.append((i, study_widget))
+        active_studies = [(i, self.tab_widget.widget(i)) for i in range(self.tab_widget.count()) if self.tab_widget.widget(i) and self.tab_widget.widget(i).is_enabled]
 
         for idx, (i, study_widget) in enumerate(active_studies):
             study_name = self.tab_widget.tabText(i)
             mode = study_widget.mode
-            
-            # Add study header with separator
-            bond_breakage_status = "Disabled"
             study_state = study_widget.get_state()
-            if study_state.get('bond_breakage', {}).get('enable_bond_breakage', False):
-                bond_breakage_status = "Enabled"
-            
-            all_summaries.append(f"--- Summary for {study_name} | Mode: {mode} | Bond Breakage: {bond_breakage_status} ---")
-            
-            # Add data
+            bond_breakage_status = "Enabled" if study_state.get('bond_breakage', {}).get('enable_bond_breakage', False) else "Disabled"
+            all_summaries.append(f'--- Summary for {study_name} | Mode: {mode} | Bond Breakage: {bond_breakage_status} ---')
+
             points = study_widget.graph_widget.get_data_points()
+            segments = study_widget.graph_widget.segments
             y_unit = study_widget.graph_widget.get_y_unit()
             y_header = "Temperature" if mode == 'Temperature' else "Strain"
-            header = f"{ 'Segment':<10} | { 'Time Step':<18} | { 'Time':<18} | {y_header:<18} | {f'Slope ({y_unit}/step)':<20} | {f'Rate ({y_unit}/t)':<20}"
-            all_summaries.append(header)
-            all_summaries.append("-" * len(header))
-            
-            for j in range(len(points) - 1):
-                p1, p2 = points[j], points[j+1]
-                p1_t = p1.x() * timestep
-                p2_t = p2.x() * timestep
-                dx_s, dx_t, dy_e = p2.x() - p1.x(), p2_t - p1_t, p2.y() - p1.y()
-                slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
-                time_unit = ""
-                for key, val in LAMMPS_UNITS.items():
-                    if val == unit_key:
-                        time_unit = key
-                        break
-                all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
-            
-            # Add blank line between studies if it's not the last active one
-            if idx < len(active_studies) - 1:
-                all_summaries.append("")
 
-        # Set the text
-        # Preserve scroll position to prevent jumping to top when updating text
+            linear_segments_data = []
+            sine_segments_data = []
+            for j, segment_info in enumerate(segments):
+                if j + 1 < len(points):
+                    p1, p2 = points[j], points[j+1]
+                    if segment_info['type'] == 'line':
+                        linear_segments_data.append({'index': j, 'p1': p1, 'p2': p2})
+                    elif segment_info['type'] == 'sine':
+                        sine_segments_data.append({'index': j, 'p1': p1, 'p2': p2, 'info': segment_info})
+
+            if linear_segments_data:
+                all_summaries.append("Linear Segments")
+                header = f"{ 'Segment':<10} | {'Time Step':<18} | {'Time':<18} | {y_header:<18} | {f'Slope ({y_unit}/step)':<20} | {f'Rate ({y_unit}/t)':<20}"
+                all_summaries.append(header)
+                all_summaries.append("-" * len(header))
+                for data in linear_segments_data:
+                    j, p1, p2 = data['index'], data['p1'], data['p2']
+                    p1_t, p2_t = p1.x() * timestep, p2.x() * timestep
+                    dx_s, dx_t, dy_e = p2.x() - p1.x(), p2_t - p1_t, p2.y() - p1.y()
+                    slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
+                    all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
+
+            if sine_segments_data:
+                if linear_segments_data: all_summaries.append("")
+                all_summaries.append("Sinusoidal Segments")
+                header = f"{ 'Segment':<10} | {'Time Step':<18} | {'Scheme':<28} | {'Cycles':<8} | {'Amplitude':<12} | {'Period':<12} | {'Midpoint Slope':<20} | {'Midpoint Rate':<20}"
+                all_summaries.append(header)
+                all_summaries.append("-" * len(header))
+                for data in sine_segments_data:
+                    j, p1, p2, info = data['index'], data['p1'], data['p2'], data['info']
+                    amplitude, y_center, phi_start = study_widget.graph_widget._get_sine_parameters(p1, p2, info)
+                    amplitude = 0 if amplitude is None else amplitude
+                    num_cycles = info['num_cycles']
+                    period = (p2.x() - p1.x()) / num_cycles if num_cycles > 0 else 0
+
+                    x_range_d = p2.x() - p1.x()
+                    k = num_cycles * 2 * math.pi / x_range_d if x_range_d != 0 else 0
+                    
+                    # Find the first zero-crossing to match the canvas slope indicator
+                    first_zero_x_offset = -1
+                    n = 0
+                    while True:
+                        x_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+                        if x_offset >= -1e-9 and x_offset <= x_range_d + 1e-9:
+                            first_zero_x_offset = x_offset
+                            break
+                        n += 1
+                        if n > 1000: break # Safety break
+
+                    midpoint_slope = 0
+                    if first_zero_x_offset != -1:
+                        midpoint_slope = amplitude * k * math.cos(k * first_zero_x_offset + phi_start)
+                    
+                    midpoint_rate = midpoint_slope / timestep if timestep > 0 else float('inf')
+
+                    all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {info['scheme']:<28} | {num_cycles:<8.2f} | {f'{abs(amplitude):.4f}':<12} | {f'{period:.0f}':<12} | {f'{midpoint_slope:.4e}':<20} | {f'{midpoint_rate:.4e}':<20}")
+
+            if idx < len(active_studies) - 1: all_summaries.append("")
+
         scrollbar = self.summary_text.verticalScrollBar()
         current_scroll_position = scrollbar.value() if scrollbar else 0
         self.summary_text.setText("\n".join(all_summaries))
-        # Restore scroll position after updating text
-        if scrollbar:
-            scrollbar.setValue(current_scroll_position)
+        if scrollbar: scrollbar.setValue(current_scroll_position)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
