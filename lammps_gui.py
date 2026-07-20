@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-LAMMPS Input Script Generator GUI - Complete PyQt6 Version
+LAMMPSdeformer GUI - Complete PyQt6 Version
 
 A graphical user interface for creating LAMMPS input scripts for particle-based deformation simulations.
-Supports both local execution and cluster job submission.
-This version includes ALL features from the original implementation.
 """
 
 import sys
@@ -65,7 +63,7 @@ except ImportError as e:
 
 # Import the script generator
 try:
-    from script_generator import LammpsScriptGenerator as ScriptGen
+    from script_generator import LAMMPSdeformerGenerator as ScriptGen
 except ImportError as e:
     ScriptGen = None
 
@@ -1112,19 +1110,19 @@ class SystemSetWidget(QWidget):
         return super().eventFilter(obj, event)
 
 
-class LammpsGui(QMainWindow):
-    """Main application window for LAMMPS script generation"""
+class LAMMPSdeformerGui(QMainWindow):
+    """Main application window for LAMMPSdeformer"""
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LAMMPS Input Script Generator")
+        self.setWindowTitle("LAMMPSdeformer")
         self.setGeometry(100, 100, 1200, 800)
         
         # Apply modern stylesheet
         self.apply_modern_stylesheet()
         
         # Initialize settings with organization and app name
-        self.settings = QSettings("LammpsScriptGenerator", "LammpsInputGenerator")
+        self.settings = QSettings("LAMMPSdeformer", "LAMMPSdeformer")
         
         # Emergency save timer
         self.emergency_save_timer = QTimer()
@@ -1722,76 +1720,6 @@ class LammpsGui(QMainWindow):
         height = int(num_lines * line_height + padding)
         text_edit.setFixedHeight(height)
 
-    def toggle_potential_settings(self, state):
-        """Toggle potential definition widgets."""
-        enabled = (state == Qt.CheckState.Checked.value)
-        self.potential_source_combo.setEnabled(enabled)
-        self.potential_pos_combo.setEnabled(enabled)
-        
-        # Also toggle current visible mode widget
-        self.update_potential_visibility(self.potential_source_combo.currentText())
-
-    def update_potential_visibility(self, source_text):
-        """Show/Hide potential widgets based on source selection."""
-        is_enabled = self.use_potential_file.isChecked()
-        
-        if source_text == "file":
-            self.potential_file_widget.setVisible(True)
-            self.potential_text_edit.setVisible(False)
-            self.potential_file_widget.setEnabled(is_enabled)
-        else:
-            self.potential_file_widget.setVisible(False)
-            self.potential_text_edit.setVisible(True)
-            self.potential_text_edit.setEnabled(is_enabled)
-
-    def _add_chip(self, text, layout, remove_slot):
-        chip = Chip(text)
-        chip.removed.connect(remove_slot)
-        layout.addWidget(chip)
-
-    def _add_data_extension_chip(self):
-        self._add_extension_chip(self.extensions_input, self.data_file_extensions, self.chips_layout, self._remove_data_extension_chip)
-
-    def _add_extension_chip(self, input_widget, extensions_list, chips_layout, remove_slot):
-        text = input_widget.text().strip()
-        delimiters = [',', ';', ':', ' ']
-        for delimiter in delimiters:
-            if delimiter in text:
-                extensions = [ext.strip() for ext in text.split(delimiter)]
-                for ext in extensions:
-                    if ext:
-                        self._add_single_extension(ext, extensions_list, chips_layout, remove_slot)
-                input_widget.clear()
-                return
-
-        if text:
-            self._add_single_extension(text, extensions_list, chips_layout, remove_slot)
-            input_widget.clear()
-
-    def _add_single_extension(self, text, extensions_list, chips_layout, remove_slot):
-        if not text.startswith('.'):
-            text = '.' + text
-        if text not in extensions_list:
-            extensions_list.append(text)
-            self._add_chip(text, chips_layout, remove_slot)
-            # Refresh the system type display if a path is entered
-            self.update_system_type()
-
-    def _remove_data_extension_chip(self, text):
-        self._remove_extension_chip(text, self.data_file_extensions, self.chips_layout)
-
-    def _remove_extension_chip(self, text, extensions_list, chips_layout):
-        if text in extensions_list:
-            extensions_list.remove(text)
-        # Find and remove the chip widget
-        for i in range(chips_layout.count()):
-            widget = chips_layout.itemAt(i).widget()
-            if isinstance(widget, Chip) and widget.text == text:
-                widget.deleteLater()
-                break
-        # Refresh the system type display if a path is entered
-        self.update_system_type()
-
     def _add_item_chip(self, index, combo_box, chips_layout, remove_slot):
         """Generic method to add a chip for a selected item from a combo box."""
         if index == 0:  # "Add quantity..."
@@ -1856,7 +1784,7 @@ class LammpsGui(QMainWindow):
         if thermo_freq <= 0 or nevery <= 0:  # Avoid division by zero and invalid values
             self.validate_nrepeat() # Still validate nrepeat in case thermo_freq changed
             return
-        
+
         # If it's already a valid divisor, do nothing.
         if thermo_freq % nevery == 0:
             self.validate_nrepeat() # Still validate nrepeat in case thermo_freq changed
@@ -1868,19 +1796,19 @@ class LammpsGui(QMainWindow):
             if thermo_freq % i == 0:
                 divisors.add(i)
                 divisors.add(thermo_freq // i)
-        
+
         if not divisors:
             self.validate_nrepeat()
             return
 
         # Find the closest divisor to the current nevery value
         closest_divisor = min(divisors, key=lambda d: abs(d - nevery))
-        
+
         # Set the spinbox value to the closest divisor, blocking signals to prevent recursion
         self.avg_nevery_spinbox.blockSignals(True)
         self.avg_nevery_spinbox.setValue(closest_divisor)
         self.avg_nevery_spinbox.blockSignals(False)
-        
+
         # Now that nevery is valid, trigger validation for nrepeat
         self.validate_nrepeat()
 
@@ -1892,21 +1820,36 @@ class LammpsGui(QMainWindow):
 
         if nevery <= 0:  # Avoid division by zero
             return
-            
+
         # We enforce thermo_freq = nevery * nrepeat.
         # The validation for nevery ensures it's a divisor of thermo_freq.
         # Therefore, the maximum allowed nrepeat is thermo_freq / nevery.
         max_nrepeat = thermo_freq // nevery
-        
+
         # nrepeat must be at least 1.
         if max_nrepeat < 1:
             max_nrepeat = 1
-        
+
         if nrepeat > max_nrepeat:
             self.avg_nrepeat_spinbox.blockSignals(True)
             self.avg_nrepeat_spinbox.setValue(max_nrepeat)
             self.avg_nrepeat_spinbox.blockSignals(False)
 
+        self.update_avg_params_label()
+
+    def update_avg_params_label(self):
+        """Update the informational label for averaging parameters."""
+        if not hasattr(self, 'avg_params_label'):
+            return
+
+        nevery = self.avg_nevery_spinbox.value()
+        nrepeat = self.avg_nrepeat_spinbox.value()
+        thermo_freq = self.thermo_freq_spinbox.value()
+
+        # Nfreq must always match thermo_freq for the output to occur at thermo output
+        nfreq = thermo_freq
+
+        self.avg_params_label.setText(f"(Nevery = {nevery}, Nrepeat = {nrepeat}, Nfreq = {nfreq})")
 
     def toggle_velocity_settings(self, state):
         """Toggle velocity initialization fields based on checkbox state"""
@@ -2444,7 +2387,7 @@ class LammpsGui(QMainWindow):
         avg_settings_layout.setContentsMargins(0, 0, 0, 0)
         
         # Indent slightly to visually group with average selector
-        avg_settings_layout.addWidget(QLabel("Average every"))
+        avg_settings_layout.addWidget(QLabel("Sample every"))
         
         self.avg_nevery_spinbox = QSpinBox()
         self.avg_nevery_spinbox.setRange(1, 10000000)
@@ -2453,7 +2396,7 @@ class LammpsGui(QMainWindow):
         self.avg_nevery_spinbox.editingFinished.connect(self.validate_and_round_nevery)
         avg_settings_layout.addWidget(self.avg_nevery_spinbox)
         
-        avg_settings_layout.addWidget(QLabel("timesteps and consider"))
+        avg_settings_layout.addWidget(QLabel("steps and consider"))
         
         self.avg_nrepeat_spinbox = QSpinBox()
         self.avg_nrepeat_spinbox.setRange(1, 10000000)
@@ -2462,7 +2405,11 @@ class LammpsGui(QMainWindow):
         self.avg_nrepeat_spinbox.editingFinished.connect(self.validate_nrepeat)
         avg_settings_layout.addWidget(self.avg_nrepeat_spinbox)
         
-        avg_settings_layout.addWidget(QLabel("values before each thermo ouput"))
+        avg_settings_layout.addWidget(QLabel("values before each thermo output"))
+
+        self.avg_params_label = QLabel("(Nevery = 10, Nrepeat = 10, Nfreq = 100)")
+        self.avg_params_label.setStyleSheet("color: #666666; font-style: italic; margin-left: 10px;")
+        avg_settings_layout.addWidget(self.avg_params_label)
         
         avg_time_url = QUrl("https://docs.lammps.org/fix_ave_time.html")
         self.avg_time_info_label = create_info_icon_label(avg_time_url, "fix ave/time docs", "blue")
@@ -2473,8 +2420,15 @@ class LammpsGui(QMainWindow):
         
         # Connect visibility toggle
         self.avg_selector.selectionChanged.connect(self.update_avg_settings_visibility)
-        # Initialize visibility
+        
+        # Connect changes to parameter label update
+        self.avg_nevery_spinbox.valueChanged.connect(self.update_avg_params_label)
+        self.avg_nrepeat_spinbox.valueChanged.connect(self.update_avg_params_label)
+        self.thermo_freq_spinbox.valueChanged.connect(self.validate_and_round_nevery)
+        
+        # Initialize visibility and labels
         self.update_avg_settings_visibility()
+        self.update_avg_params_label()
 
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
@@ -2758,93 +2712,6 @@ class LammpsGui(QMainWindow):
         
         self.main_layout.addLayout(button_layout)
         
-    def browse_system_path(self):
-        """Browse for system path (file or directory)"""
-        # Determine starting directory based on current text field content
-        current_path = self.system_path_edit.text().strip()
-        if current_path and os.path.exists(current_path):
-            # If it's a file, use its directory; if it's a directory, use it directly
-            if os.path.isfile(current_path):
-                start_dir = os.path.dirname(current_path)
-            else:
-                start_dir = current_path
-        else:
-            start_dir = ""
-
-        # Let user choose between file and directory
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Select System")
-        dialog.setMinimumSize(300, 120)
-        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)  # Remove help button
-
-        layout = QVBoxLayout()
-
-        label = QLabel("Select data file or directory containing data files:")
-        layout.addWidget(label)
-
-        button_layout = QHBoxLayout()
-
-        file_button = QPushButton("Select File")
-        dir_button = QPushButton("Select Directory")
-
-        button_layout.addWidget(file_button)
-        button_layout.addWidget(dir_button)
-
-        layout.addLayout(button_layout)
-        dialog.setLayout(layout)
-
-        selected_path = None
-        select_file = False
-
-        def select_file_path():
-            nonlocal selected_path, select_file
-            extensions = " ".join([f"*{ext}" for ext in self.data_file_extensions])
-            file_path, _ = QFileDialog.getOpenFileName(dialog, "Select Data File", start_dir, f"Data Files ({extensions});;All Files (*)")
-            if file_path:
-                selected_path = file_path
-                select_file = True
-                dialog.accept()
-
-        def select_dir_path():
-            nonlocal selected_path, select_file
-            dir_path = QFileDialog.getExistingDirectory(dialog, "Select Directory", start_dir)
-            if dir_path:
-                selected_path = dir_path
-                select_file = False
-                dialog.accept()
-
-        file_button.clicked.connect(select_file_path)
-        dir_button.clicked.connect(select_dir_path)
-
-        if dialog.exec() == QDialog.DialogCode.Accepted and selected_path:
-            self.system_path_edit.setText(selected_path)
-    
-    def browse_potential_file(self):
-        """Browse for potential file"""
-        # Determine starting directory based on current text field content
-        current_path = self.potential_path_edit.text().strip()
-        if current_path and os.path.exists(current_path):
-            # If it's a file, use its directory; if it's a directory, use it directly
-            if os.path.isfile(current_path):
-                start_dir = os.path.dirname(current_path)
-            else:
-                start_dir = current_path
-        else:
-            start_dir = ""
-
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", start_dir, "All Files (*)")
-        if file_path:
-            self.potential_path_edit.setText(file_path)
-            # Automatically check the "Use separate potential file" checkbox
-            if not self.use_potential_file.isChecked():
-                self.use_potential_file.setChecked(True)
-    
-    def toggle_potential_file(self, state):
-        """Toggle potential file settings"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.potential_path_edit.setEnabled(enabled)
-        # Note: The browse button should always be enabled to allow browsing
-    
     def browse_output_path(self):
         """Browse for output path"""
         # Determine starting directory based on current text field content
@@ -2997,8 +2864,7 @@ class LammpsGui(QMainWindow):
             "• Copy all generated files (or root folder) to the cluster and run ``chmod 755 *`` before calling ./cluster_run_jobs.sh to submit all jobs to the sbatch queuing.\n"
             "\n"
             "• All input .in files are located in their respective study/system folders\n"
-            "• Data files and potential iles were copied to the _input_files folder and are referenced in the .in scripts using the relative path (../../_input_files/)\n"
-            "• BEWARE! If system/atom data files contained a 'Pair Coeffs' section, it was removed to avoid LAMMPS errors. Make sure to state pair_style followed by the pair_coeff in the potential file!\n"
+            "• Data files and potential files were copied to the _input_files folder and are referenced in the .in scripts using the relative path (../../_input_files/)\n"
             "• Output will be generated in each study/system folder"
         )
         layout.addWidget(instructions_text)
@@ -3424,6 +3290,14 @@ class LammpsGui(QMainWindow):
                         # Restore the tab name if it exists in the saved state
                         if "name" in set_state:
                             self.system_sets_tab_widget.setTabText(i, set_state["name"])
+                
+                # Update tab colors after loading all states
+                self._update_system_tab_colors()
+                
+                # Restore active system set tab
+                system_tab_index = self.settings.value("gui/active_system_tab_index", 0, type=int)
+                if 0 <= system_tab_index < self.system_sets_tab_widget.count():
+                    self.system_sets_tab_widget.setCurrentIndex(system_tab_index)
             else:
                 # Fallback to single system settings
                 self.update_system_sets(1)
@@ -3560,7 +3434,10 @@ class LammpsGui(QMainWindow):
                 deform_tab_index = self.settings.value("gui/active_deformation_tab_index", 0, type=int)
                 if 0 <= deform_tab_index < self.deformation_tab_widget.tab_widget.count():
                     self.deformation_tab_widget.tab_widget.setCurrentIndex(deform_tab_index)
-
+            
+            # Ensure visibility of averaging settings is updated after loading
+            self.update_avg_settings_visibility()
+            
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -3640,6 +3517,8 @@ class LammpsGui(QMainWindow):
             self.settings.setValue("gui/active_main_tab_index", self.tab_widget.currentIndex())
             if hasattr(self, 'deformation_tab_widget'):
                 self.settings.setValue("gui/active_deformation_tab_index", self.deformation_tab_widget.tab_widget.currentIndex())
+            
+            self.settings.setValue("gui/active_system_tab_index", self.system_sets_tab_widget.currentIndex())
 
         except Exception as e:
             print(f"Error saving settings: {e}")
@@ -3889,24 +3768,44 @@ class LammpsGui(QMainWindow):
             # System configuration
             if "system" in config:
                 system = config["system"]
-                self.system_path_edit.setText(system.get("system_path", ""))
-
-                extensions = system.get("data_file_extensions", [".data"])
-                self.data_file_extensions = []
-                for i in reversed(range(self.chips_layout.count())):
-                    if self.chips_layout.itemAt(i).widget():
-                        self.chips_layout.itemAt(i).widget().setParent(None)
-                for ext in extensions:
-                    if ext not in self.data_file_extensions:
-                        self.data_file_extensions.append(ext)
-                        self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
-
-                self.use_potential_file.setChecked(system.get("use_potential_file", False))
-                self.potential_path_edit.setText(system.get("potential_file", ""))
-                self.potential_source_combo.setCurrentText(system.get("potential_source", "file"))
-                self.potential_pos_combo.setCurrentText(system.get("potential_position", "after"))
-                self.potential_text_edit.setPlainText(system.get("potential_content", ""))
                 
+                # Handle system sets (new multi-set format)
+                if "system_sets" in system and system["system_sets"]:
+                    # Clear existing sets
+                    while self.system_sets_tab_widget.count() > 0:
+                        self._close_system_tab(0, force=True)
+                    
+                    # Add and apply each set
+                    for i, set_config in enumerate(system["system_sets"]):
+                        self._add_system_set(is_first=(i==0))
+                        set_widget = self.system_sets_tab_widget.widget(i)
+                        if isinstance(set_widget, SystemSetWidget):
+                            set_widget.set_state(set_config)
+                            self.system_sets_tab_widget.setTabText(i, set_config.get("name", f"Variant{i+1:02d}"))
+                else:
+                    # Legacy format: Clear everything and add exactly one tab
+                    while self.system_sets_tab_widget.count() > 0:
+                        self._close_system_tab(0, force=True)
+                    
+                    self._add_system_set(is_first=True)
+                    first_set = self.system_sets_tab_widget.widget(0)
+                    if isinstance(first_set, SystemSetWidget):
+                        # Construct a state dictionary for the SystemSetWidget from the legacy system dict
+                        set_state = {
+                            "system_path": system.get("system_path", ""),
+                            "data_file_extensions": system.get("data_file_extensions", [".data"]),
+                            "use_potential_file": system.get("use_potential_file", False),
+                            "potential_file": system.get("potential_file", ""),
+                            "potential_source": system.get("potential_source", "file"),
+                            "potential_position": system.get("potential_position", "after"),
+                            "potential_content": system.get("potential_content", ""),
+                            "sync_potential": system.get("sync_potential", False),
+                            "is_enabled": system.get("is_enabled", True)
+                        }
+                        first_set.set_state(set_state)
+                        self.system_sets_tab_widget.setTabText(0, "Variant01")
+
+                # Global system settings still in LammpsGui
                 self.atom_style_combo.setCurrentText(system.get("atom_style", "atomic"))
                 self.units_combo.setCurrentText(system.get("units", "metal"))
                 self.boundary_x_combo.setCurrentText(system.get("boundary_x", "p"))
@@ -3943,6 +3842,10 @@ class LammpsGui(QMainWindow):
                 # Averaged Items
                 avg_items = output.get("averaged_quantities", [])
                 self.avg_selector.set_items(avg_items)
+                
+                # Explicitly update visibility and labels after setting items
+                self.update_avg_settings_visibility()
+                self.update_avg_params_label()
 
                 self.avg_nevery_spinbox.setValue(output.get('avg_nevery', 10))
                 self.avg_nrepeat_spinbox.setValue(output.get('avg_nrepeat', 100))
@@ -4009,6 +3912,7 @@ class LammpsGui(QMainWindow):
             print(f"Error applying configuration: {e}")
         
         self._update_output_tab_visibility()
+        self.update_avg_settings_visibility()
 
     def apply_chips_from_config(self, config_section, key, chips_layout, all_items_list, combo_box, remove_slot):
         """Helper to load chip selections from a config dictionary."""
@@ -4055,7 +3959,7 @@ def main():
     app.setStyle('Fusion')
     
     # Create and show the main window
-    window = LammpsGui()
+    window = LAMMPSdeformerGui()
     window.show()
     
     # Run the application

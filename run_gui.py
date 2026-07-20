@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-LAMMPS Input Script Generator Launcher - PyQt6 Version
+LAMMPSdeformer Launcher - PyQt6 Version
 
-A simple launcher for the LAMMPS Input Script Generator GUI application.
+A simple launcher for the LAMMPSdeformer GUI application.
 """
 
 import sys

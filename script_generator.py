@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-LAMMPS Script Generator
+LAMMPSdeformer Script Generator
 
 Handles the generation of LAMMPS input scripts and cluster job files
 based on user configuration with support for symmetric wall movement,
 engineering strain (tensile and shear), proper units handling, 
 and structured file generation.
 
-This version includes a robust, flag-based restart and predictive
-termination system for HPC cluster environments.
-Supports multiple data sets and studies.
+This version implements a robust Phase Setup / Caller architecture 
+to ensure mathematical continuity for thermostats/barostats across
+HPC predictive walltime chunking and restarts.
 """
 
 import os
@@ -22,7 +22,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
-class LammpsScriptGenerator:
+class LAMMPSdeformerGenerator:
     """Generates LAMMPS input scripts and job files"""
     
     def __init__(self, config):
@@ -48,7 +48,7 @@ class LammpsScriptGenerator:
         # 2. Validate System Sets
         system_sets = system_config.get("system_sets", [])
         if not system_sets:
-            # Fallback to legacy single path if system_sets is missing (should not happen with new GUI)
+            # Fallback to legacy single path if system_sets is missing
             system_path = system_config.get("system_path", "")
             if not system_path:
                 return {"success": False, "message": "No data sets defined."}
@@ -65,7 +65,6 @@ class LammpsScriptGenerator:
 
         validated_sets = []
         for i, s_set in enumerate(system_sets):
-            # Only validate enabled sets
             if not s_set.get("is_enabled", True):
                 continue
 
@@ -76,7 +75,6 @@ class LammpsScriptGenerator:
             if not os.path.exists(path):
                 return {"success": False, "message": f"Path does not exist for Data Set {i+1}: {path}"}
 
-            # Resolve files for this set
             if os.path.isfile(path):
                 set_files = [path]
             elif os.path.isdir(path):
@@ -89,7 +87,6 @@ class LammpsScriptGenerator:
             else:
                 return {"success": False, "message": f"Invalid path type for Data Set {i+1}: {path}"}
             
-            # Validate potential if enabled for this set
             if s_set.get("use_potential_file", False):
                 source = s_set.get("potential_source", "file")
                 if source == "file":
@@ -100,8 +97,6 @@ class LammpsScriptGenerator:
                     if not s_set.get("potential_content", "").strip():
                         return {"success": False, "message": f"Potential commands missing for Data Set {i+1}"}
 
-            # Determine base name for this set
-            # If we have multiple system sets in the config, use the tab name (ConfigXX/VariantXX)
             if len(system_sets) > 1 and "name" in s_set:
                 base_name = s_set["name"]
             else:
@@ -116,7 +111,7 @@ class LammpsScriptGenerator:
         if not validated_sets:
             return {"success": False, "message": "No active data sets selected."}
 
-        # 3. Check Units Consistency (Warning only - across all active files)
+        # 3. Check Units Consistency
         all_active_files = []
         for v_set in validated_sets:
             all_active_files.extend(v_set["files"])
@@ -140,7 +135,6 @@ class LammpsScriptGenerator:
                 if field not in study:
                     return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
         
-        # 5. Validate Output Configuration
         output_config = self.config.get("output", {})
         if not isinstance(output_config, dict):
             return {"success": False, "message": "Invalid output configuration"}
@@ -157,62 +151,48 @@ class LammpsScriptGenerator:
         try:
             self.generated_files = []
             
-            # --- PHASE 1: VALIDATION ---
             val_result = self.validate_configuration()
             if not val_result["success"]:
                 return val_result
             
-            # Extract data derived during validation
             warnings = val_result["warnings"]
             validated_sets = val_result["validated_sets"]
             
-            # Retrieve configs
             system_config = self.config.get("system", {})
             output_config = self.config.get("output", {})
             deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
 
-            # Determine naming convention
             total_sets_in_ui = len(system_config.get("system_sets", []))
             use_naming_prefix = total_sets_in_ui > 1
-
-            # --- PHASE 2: GENERATION (Write Operations) ---
             
             output_path = output_config.get("output_path", "")
             if not output_path:
-                # Default to directory of first data file if not set
                 output_path = os.path.dirname(validated_sets[0]["files"][0])
             
             root_simulation_dir = output_path
             os.makedirs(root_simulation_dir, exist_ok=True)
             
-            # Create _input_files folder
             data_files_folder = os.path.join(root_simulation_dir, "_input_files")
             os.makedirs(data_files_folder, exist_ok=True)
             
-            # Generate base settings file
             base_settings_result = self.generate_base_settings_file(root_simulation_dir)
             if not base_settings_result["success"]:
                 return base_settings_result
             
-            all_simulations = [] # To track all generated simulations for batch scripts
-            
-            # Shared potential reference if syncing is enabled
+            all_simulations = [] 
             synced_potential_ref = None
             synced_potential_processed = False
 
-            # Process each Data Set
             for set_idx, v_set in enumerate(validated_sets):
                 set_config = v_set["config"]
                 set_files = v_set["files"]
                 set_base_name = v_set["name"]
+                prefix = f"{set_base_name}_" if use_naming_prefix else ""
                 
-                # Handle potential for this set
                 potential_ref = None
                 if set_config.get("use_potential_file", False):
-                    # Check if we should use a shared synced potential
                     if set_config.get("sync_potential", False):
                         if not synced_potential_processed:
-                            # Generate the shared potential once
                             source = set_config.get("potential_source", "file")
                             if source == "file":
                                 potential_file = set_config.get("potential_file", "")
@@ -229,51 +209,54 @@ class LammpsScriptGenerator:
                                     f.write(potential_content)
                                 synced_potential_ref = f"_input_files/{unique_pot_name}"
                             synced_potential_processed = True
-                        
                         potential_ref = synced_potential_ref
                     else:
-                        # Standard per-variant potential
-                        source = set_config.get("potential_source", "file")
-                        prefix = f"{set_base_name}_" if use_naming_prefix else ""
                         if source == "file":
                             potential_file = set_config.get("potential_file", "")
                             if potential_file and os.path.exists(potential_file):
-                                unique_pot_name = f"{prefix}{Path(potential_file).name}"
+                                pot_name = Path(potential_file).name
+                                unique_pot_name = pot_name if prefix and pot_name.startswith(prefix) else f"{prefix}{pot_name}"
                                 potential_dest = os.path.join(data_files_folder, unique_pot_name)
                                 shutil.copy2(potential_file, potential_dest)
                                 potential_ref = f"_input_files/{unique_pot_name}"
                         elif source == "text":
                             potential_content = set_config.get("potential_content", "")
-                            unique_pot_name = f"{prefix}custom.potential"
+                            pot_name = "custom.potential"
+                            unique_pot_name = pot_name if prefix and pot_name.startswith(prefix) else f"{prefix}{pot_name}"
                             potential_dest = os.path.join(data_files_folder, unique_pot_name)
                             with open(potential_dest, 'w') as f:
                                 f.write(potential_content)
                             potential_ref = f"_input_files/{unique_pot_name}"
 
-                # Generate scripts for each study and file combination
                 for study in deform_studies:
                     study_name = study.get("name", "study")
-                    # Apply naming convention
-                    study_folder_name = f"{set_base_name}_{study_name}" if use_naming_prefix else study_name
+                    study_folder_name = study_name if prefix and study_name.startswith(prefix) else f"{prefix}{study_name}"
                     study_folder = os.path.join(root_simulation_dir, study_folder_name)
                     os.makedirs(study_folder, exist_ok=True)
 
                     for system_file in set_files:
                         system_name = Path(system_file).stem
-                        
-                        # Copy data file with variant prefix
-                        prefix = f"{set_base_name}_" if use_naming_prefix else ""
-                        unique_data_name = f"{prefix}{system_name}.data"
+                        unique_data_name = f"{system_name}.data" if prefix and system_name.startswith(prefix) else f"{prefix}{system_name}.data"
                         data_file_dest = os.path.join(data_files_folder, unique_data_name)
                         shutil.copy2(system_file, data_file_dest)
                         data_file_relative_path = f"_input_files/{unique_data_name}"
 
-                        # Create simulation-specific folder
                         sim_folder = os.path.join(study_folder, system_name)
                         os.makedirs(sim_folder, exist_ok=True)
                         
-                        # Generate script
-                        model_name = f"{study_folder_name}_{system_name}"
+                        # Avoid double naming if system_name already starts with the prefix
+                        if prefix and system_name.startswith(prefix):
+                            # Use study_name and strip prefix if it's there too
+                            study_part = study_name
+                            if study_part.startswith(prefix):
+                                study_part = study_part[len(prefix):]
+                            model_name = f"{study_part}_{system_name}"
+                        else:
+                            model_name = f"{study_folder_name}_{system_name}"
+
+                        # Final guard for exact redundancy (e.g. system name already includes study)
+                        if system_name.startswith(f"{study_folder_name}_"):
+                            model_name = system_name
                         
                         result = self.generate_single_script(
                             system_file, model_name, study, 
@@ -291,7 +274,6 @@ class LammpsScriptGenerator:
                             "model_name": model_name
                         })
             
-            # Generate execution scripts using the new all_simulations list
             exec_script_result = self.generate_execution_script(root_simulation_dir, all_simulations)
             if not exec_script_result["success"]:
                 return exec_script_result
@@ -300,12 +282,10 @@ class LammpsScriptGenerator:
             if not cluster_script_result["success"]:
                 return cluster_script_result
             
-            # Save settings to JSON file
             settings_result = self.save_settings_to_json(root_simulation_dir)
             if not settings_result["success"]:
                 return settings_result
             
-            # Final message
             final_msg = f"Successfully generated {len(self.generated_files)} scripts across {len(validated_sets)} data sets."
             if warnings:
                 final_msg += "\n\n" + "\n".join(warnings)
@@ -341,11 +321,9 @@ class LammpsScriptGenerator:
                 if not first_file_with_units:
                     first_file_with_units = (file_path, units)
                     
-        # If we found no units, or only one type of unit, we are consistent
         if len(defined_units) <= 1:
             return {"consistent": True, "units": list(defined_units)[0] if defined_units else None}
             
-        # If we reached here, we have conflicting definitions (e.g. metal AND real)
         return {
             "consistent": False, 
             "message": f"Units mismatch detected in source files: {defined_units}. The generator will proceed using the units defined in the System Configuration tab ('{self.config.get('system', {}).get('units', 'unknown')}'). Please check your input data files before running the simulations!"
@@ -364,7 +342,7 @@ class LammpsScriptGenerator:
             return {"success": False, "message": f"Error generating script: {str(e)}"}
 
     def generate_script_content(self, data_file, model_name, deform_study, potential_ref=None, set_config=None):
-        """Generate the content of a LAMMPS input script"""
+        """Generate the content of a LAMMPS input script using the Call-Setup architecture"""
         try:
             system_config = self.config.get("system", {})
             if set_config is None:
@@ -374,28 +352,15 @@ class LammpsScriptGenerator:
             output_config = self.config.get("output", {}).copy()
             job_submission_config = self.config.get("job_submission", {})
             enable_restart = job_submission_config.get("enable_restart", False)
-            restart_freq = job_submission_config.get("restart_freq", 100000)
+            restart_freq = job_submission_config.get("restart_freq", 100000) if enable_restart else float('inf')
             max_steps = deform_study.get("max_steps", 0)
 
             script_lines = [
                 f"# {model_name}.in",
-                f"# Generated by LAMMPS Input Script Generator on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "",
+                f"# Generated by LAMMPSdeformer on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "",
                 "#------------------------", "# Base settings", "#------------------------", "include ../../base_input.in", ""
             ]
 
-            # Check for sine segments to add global sine variables
-            has_sine_segment = any(s.get("type") == "sine" for s in deform_study.get("segments", []))
-            if has_sine_segment:
-                script_lines.extend([
-                    "#------------------------",
-                    "# Global Sine Variables",
-                    "#------------------------",
-                    "variable started equal 1",
-                    "variable sinState equal 0",
-                    ""
-                ])
-
-            # Prepare potential include line
             potential_include_line = ""
             potential_position = set_config.get("potential_position", "after")
             
@@ -419,10 +384,9 @@ class LammpsScriptGenerator:
                 script_lines.append(f"read_data ../../{data_file}")
                 script_lines.append("")
             
-            # Add potential after read_data if configured
             if potential_include_line and potential_position == "after":
                 script_lines.extend([potential_include_line, ""])
-            # --- New logic for preserving initial box dimensions ---
+                
             if enable_restart:
                 new_lines = [
                     "#------------------------",
@@ -465,19 +429,17 @@ class LammpsScriptGenerator:
             if (ensemble_config.get("ensemble") == "NPT" and ensemble_config.get("npt_aniso") == "tri") or is_shear:
                 script_lines.extend(["change_box all triclinic", ""])
 
-            points = deform_study.get("data_points", [])
-
-            # --- Define base_pressure variable ---
             pressure = self._format_float(ensemble_config.get("pressure", 1.0))
             script_lines.extend([f"variable base_pressure equal {pressure}", ""])
 
             if mode == "Temperature":
                 script_lines.extend(["#------------------------", "# Temperature Variables", "#------------------------"])
+                points = deform_study.get("data_points", [])
                 initial_temp = points[0][1] if points else 300.0
                 script_lines.extend([f"variable set_temp equal {initial_temp}", ""])
 
-            # --- Initial Velocity (Moved BEFORE Fixes) ---
             if system_config.get("enable_velocity", True):
+                points = deform_study.get("data_points", [])
                 initial_temp = points[0][1] if mode == "Temperature" and points else ensemble_config.get("temperature", 300.0)
                 velocity_command = f"velocity all create {initial_temp} {system_config.get('initial_velocity_seed', 12345)} mom yes rot yes dist gaussian"
                 
@@ -494,26 +456,21 @@ class LammpsScriptGenerator:
                         ""
                     ])
 
-            # --- Fixes & Computes ---
             fixes_computes_lines, final_thermo_style = self._generate_fixes_computes_section(deform_study, output_config, fixes_config, mode, deform_axis, is_shear)
             if fixes_computes_lines:
                 script_lines.extend(["#------------------------", "# Fixes & Computes", "#------------------------", *fixes_computes_lines])
             
-            # Handle the new bond commands functionality - if the new field exists, use it
             bond_commands_config = deform_study.get("bond_commands", {})
             bond_commands_text = bond_commands_config.get("commands", "").strip()
 
-            if bond_commands_text:  # If there are study-specific commands
-                # Add the custom study-specific commands to the script
+            if bond_commands_text: 
                 script_lines.extend(["#------------------------", "# Study-specific Commands", "#------------------------"])
-                # Split the commands by newlines and add each one
                 for line in bond_commands_text.split('\n'):
                     line = line.strip()
-                    if line and not line.startswith('#'):  # Skip empty lines and comments
+                    if line and not line.startswith('#'): 
                         script_lines.append(line)
-                script_lines.append("")  # Add empty line for formatting
+                script_lines.append("") 
 
-            # Handle backward compatibility for old bond breakage settings
             bond_breakage_config = deform_study.get("bond_breakage", {})
             if bond_breakage_config.get("enable_bond_breakage", False):
                 script_lines.extend(self._generate_bond_breakage_section(bond_breakage_config))
@@ -522,116 +479,107 @@ class LammpsScriptGenerator:
             if output_lines:
                  script_lines.extend(["#------------------------", "# Output Settings", "#------------------------", *output_lines])
             
-            script_lines.extend(["#===========================================================", "# Main Simulation Logic", "#===========================================================", ""])
+            # ==========================================================
+            # MAIN SIMULATION LOGIC (New Caller Architecture)
+            # ==========================================================
+            script_lines.extend([
+                "#===========================================================", 
+                "# Main Simulation Logic", 
+                "#===========================================================", 
+                ""
+            ])
             
             write_data_option = output_config.get("write_data_option", "At the end of the simulation")
             base_name = Path(data_file).stem
             write_data_filename = f"{base_name}_*.data"
 
-            if enable_restart:
-                execution_blocks = self._generate_execution_blocks(deform_study)
-                user_handle_steps = {int(p[0]) for p in deform_study.get("data_points", []) if int(p[0]) > 0}
+            # Global phase tracker
+            script_lines.extend([
+                "variable active_phase equal 0",
+                ""
+            ])
 
+            if enable_restart:
                 script_lines.extend([
                     "# --- Timer and Maximum Time Setup for Predictive Quit ---",
                     "variable global_start_time timer",
-					"variable chunk_start_time timer",
-					"variable max_chunk_time equal 0.0",
-					""
+                    "variable chunk_start_time timer",
+                    "variable max_chunk_time equal 0.0",
+                    ""
                 ])
-                script_lines.extend(["# --- Jump to correct segment based on restart step ---"])
-                script_lines.append("label segment_distribution")
-                restart_steps = sorted(list(set([block['start_step'] for block in execution_blocks])))
+
+            execution_blocks = self._generate_execution_blocks(deform_study, enable_restart, restart_freq)
+            user_handle_steps = {int(p[0]) for p in deform_study.get("data_points", []) if int(p[0]) > 0}
+
+            # 1. Distribution Hub
+            script_lines.extend(["# --- Jump to correct segment based on current step ---", "label segment_distribution"])
+            
+            if execution_blocks:
+                first_step = execution_blocks[0]['start_step']
+                script_lines.append(f"if \"${{curstep}} == {first_step}\" then \"jump SELF segment_{execution_blocks[0]['user_segment_id']}_{first_step}\"")
+                
+            if enable_restart:
+                restart_steps = sorted(list(set([block['start_step'] for block in execution_blocks if block['start_step'] > 0])))
                 for step in restart_steps:
                     block = next((b for b in execution_blocks if b['start_step'] == step), None)
-                    if block: script_lines.append("if \"${curstep} == " + str(step) + "\" then \"jump SELF segment_" + str(block['user_segment_id']) + "_" + str(step) + "\"")
+                    if block: 
+                        script_lines.append(f"if \"${{curstep}} == {step}\" then \"jump SELF segment_{block['user_segment_id']}_{step}\"")
 
-                if max_steps > 0:
-                    script_lines.append("if \"${curstep} == " + str(int(max_steps)) + "\" then \"jump SELF end\"")
-                
+            if max_steps > 0:
+                script_lines.append(f"if \"${{curstep}} >= {int(max_steps)}\" then \"jump SELF end\"")
+
+            if enable_restart:
                 script_lines.extend(["if \"${curstep} > 0\" then \"print 'ERROR: Restart step ${curstep} does not match any known segment start. Aborting.' ; quit\"", ""])
-
-                # --- Main Execution Loop ---
-                processed_sine_segments = set()
-                for block in execution_blocks:
-                    # Generate restart chunk if necessary
-                    start_step = block['start_step']
-                    if start_step > 0 and start_step % restart_freq == 0:
-                        script_lines.extend([
-                            f"\n# --- Restart Chunk Boundary at step {block['start_step']} ---",
-                            "variable current_time timer",
-                            "variable current_chunk_time equal $(v_current_time-v_chunk_start_time)",
-                            "variable current_global_time equal $(v_current_time-v_global_start_time)",
-                            "if \"${current_chunk_time} > ${max_chunk_time}\" then \"variable max_chunk_time equal ${current_chunk_time}\"",
-                            f"write_restart restart_files/{model_name}.restart.*",
-                            "variable predict_elapsed equal $(v_current_global_time+v_max_chunk_time)",
-                            "print \"Current Time=${current_global_time}s, Max Chunk time=${max_chunk_time}s, Predicted Next=${predict_elapsed}s, Max time allowed=${maxtime}s\"",
-                            "if \"${predict_elapsed} > ${maxtime}\" then &",
-                            "  \"print 'PREDICTIVE QUIT: Estimated next chunk would exceed walltime.'\" &",
-                            "  \"shell 'touch resubmit.flag'\" &",
-                            "  \"quit\" &",
-                            "else &",
-                            "  \"print 'Time check: OK.'\"",
-                            "variable chunk_start_time timer"
-                        ])
-
-                    # If this is the first time we're seeing a sine segment, generate its init block.
-                    segment_info = block.get("segment_info", {})
-                    user_segment_id = block.get("user_segment_id")
-                    if segment_info.get("type") == "sine" and user_segment_id not in processed_sine_segments:
-                        
-                        amp = self._format_float(segment_info.get('amplitude_strain', 0))
-                        period = self._format_float(segment_info.get('period_steps', 0))
-                        phase = self._format_float(segment_info.get('phase_shift_steps', 0))
-                        ashift = self._format_float(segment_info.get('ashift_factor', 0))
-                        
-                        shear_dim_map = {'xy': 'y', 'xz': 'z', 'yz': 'z'}
-                        if is_shear:
-                            ref_len_var = f"v_L0{shear_dim_map[deform_axis]}"
-                        else:
-                            ref_len_var = f"v_L0{deform_axis}"
-
-                        init_block = [
-                            f"\n# --- Segment {user_segment_id} Init ---",
-                            f"label segment_{user_segment_id}_init",
-                            f"variable A equal {amp}*{ref_len_var}",
-                            f"variable Sp equal {period}",
-                            f"variable phaseShift equal {phase}",
-                            f"variable Ashift equal {ashift}*v_A",
-                            'variable displace equal "v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift - v_sinState"',
-                            'variable rate equal "2*PI/v_Sp * v_A * cos(2*PI * (step-v_phaseShift)/v_Sp)"',
-                            'if "$(v_started) == 1" then &',
-                            '  "variable started equal 0" &',
-                            '  "jump SELF segment_distribution"'
-                        ]
-                        script_lines.extend(init_block)
-                        processed_sine_segments.add(user_segment_id)
-                    
-                    script_lines.extend(self._generate_segment_block(block, deform_study, system_config, is_shear, has_sine_segment))
-
-                    if write_data_option == "After each deformation/temperature step":
-                        if block['end_step'] in user_handle_steps:
-                            script_lines.extend(["", f"# Write data at handle at step {block['end_step']}", f"write_data {write_data_filename}"])
-
-                if max_steps > 0 and max_steps % restart_freq == 0:
-                    script_lines.extend([
-                        "\n# --- Final Chunk Check ---",
-                        "variable current_time timer",
-                        "variable current_chunk_time equal $(v_current_time - v_chunk_start_time)",
-                        "if \"${current_chunk_time} > ${max_chunk_time}\" then \"variable max_chunk_time equal ${current_chunk_time}\"",
-                        f"write_restart restart_files/{model_name}.restart.*"
-                    ])
-
-                if execution_blocks: script_lines.append(f"\njump SELF end")
-            
             else:
-                for i in range(len(points) - 1):
-                    p1, p2 = points[i], points[i+1]
-                    if int(p1[0]) >= int(p2[0]): continue
-                    block_info = { "start_step": int(p1[0]), "end_step": int(p2[0]), "sub_start_y": p1[1], "sub_end_y": p2[1], "user_segment_id": i + 1 }
-                    script_lines.extend(self._generate_segment_block(block_info, deform_study, system_config, is_shear, has_sine_segment))
-                    if write_data_option == "After each deformation/temperature step":
-                        script_lines.extend(["", f"# Write data after segment {i+1}", f"write_data {write_data_filename}"])
+                script_lines.append("")
+
+            # 2. Setup Blocks (Generated once per physical phase)
+            script_lines.append("# --- Phase Setup Blocks ---")
+            processed_phases = set()
+            for block in execution_blocks:
+                uid = block['user_segment_id']
+                if uid not in processed_phases:
+                    script_lines.extend(self._generate_setup_block(block, deform_study, system_config, is_shear))
+                    processed_phases.add(uid)
+
+            # 3. Main Execution Chunks
+            script_lines.append("# --- Main Execution Loop ---")
+            for block in execution_blocks:
+                if enable_restart and block['start_step'] > 0 and block['start_step'] % restart_freq == 0:
+                    script_lines.extend([
+                        f"\n# --- Restart Chunk Boundary at step {block['start_step']} ---",
+                        "variable current_time timer",
+                        "variable current_chunk_time equal $(v_current_time-v_chunk_start_time)",
+                        "variable current_global_time equal $(v_current_time-v_global_start_time)",
+                        "if \"${current_chunk_time} > ${max_chunk_time}\" then \"variable max_chunk_time equal ${current_chunk_time}\"",
+                        f"write_restart restart_files/{model_name}.restart.*",
+                        "variable predict_elapsed equal $(v_current_global_time+v_max_chunk_time)",
+                        "print \"Current Time=${current_global_time}s, Max Chunk time=${max_chunk_time}s, Predicted Next=${predict_elapsed}s, Max time allowed=${maxtime}s\"",
+                        "if \"${predict_elapsed} > ${maxtime}\" then &",
+                        "  \"print 'PREDICTIVE QUIT: Estimated next chunk would exceed walltime.'\" &",
+                        "  \"shell 'touch resubmit.flag'\" &",
+                        "  \"quit\" &",
+                        "else &",
+                        "  \"print 'Time check: OK.'\"",
+                        "variable chunk_start_time timer"
+                    ])
+                    
+                script_lines.extend(self._generate_chunk_block(block, deform_study))
+                
+                if write_data_option == "After each deformation/temperature step":
+                    if block['end_step'] in user_handle_steps:
+                        script_lines.extend(["", f"# Write data at handle at step {block['end_step']}", f"write_data {write_data_filename}"])
+
+            if enable_restart and max_steps > 0 and max_steps % restart_freq == 0:
+                script_lines.extend([
+                    "\n# --- Final Chunk Check ---",
+                    "variable current_time timer",
+                    "variable current_chunk_time equal $(v_current_time - v_chunk_start_time)",
+                    "if \"${current_chunk_time} > ${max_chunk_time}\" then \"variable max_chunk_time equal ${current_chunk_time}\"",
+                    f"write_restart restart_files/{model_name}.restart.*"
+                ])
+
+            if execution_blocks: script_lines.append(f"\njump SELF end")
 
             script_lines.extend(["\n# --- Simulation End ---", "label end"])
             if write_data_option == "At the end of the simulation":
@@ -646,10 +594,8 @@ class LammpsScriptGenerator:
             traceback.print_exc()
             return f"# Error generating script content: {str(e)}\n# Please check your configuration."
 
-    def _generate_execution_blocks(self, deform_study):
-        """Creates a unified list of execution blocks based on user handles and restart frequency."""
-        job_config = self.config.get("job_submission", {})
-        restart_freq = job_config.get("restart_freq", 100000)
+    def _generate_execution_blocks(self, deform_study, enable_restart, restart_freq):
+        """Creates a unified list of execution blocks, maintaining global phase knowledge."""
         points = deform_study.get("data_points", []).copy()
         segments = deform_study.get("segments", [])
         max_steps = deform_study.get("max_steps", 0)
@@ -659,10 +605,12 @@ class LammpsScriptGenerator:
         
         event_steps = {0, int(max_steps)}
         for p in points: event_steps.add(int(p[0]))
-        step = restart_freq
-        while step < max_steps:
-            event_steps.add(step)
-            step += restart_freq
+        
+        if enable_restart:
+            step = restart_freq
+            while step < max_steps:
+                event_steps.add(step)
+                step += restart_freq
             
         sorted_steps = sorted(list(event_steps))
 
@@ -677,235 +625,225 @@ class LammpsScriptGenerator:
             
             segment_info = segments[user_segment_idx] if user_segment_idx < len(segments) else {'type': 'line'}
 
+            p1 = points[user_segment_idx]
+            p2 = points[user_segment_idx + 1] if user_segment_idx + 1 < len(points) else p1
+            
             block_info = {
                 "start_step": start_step,
                 "end_step": end_step,
                 "user_segment_id": user_segment_idx + 1,
                 "segment_info": segment_info,
-                "write_restart_at_end": (end_step % restart_freq == 0 and end_step > 0)
+                "phase_start_step": int(p1[0]),
+                "phase_end_step": int(p2[0]),
+                "phase_start_y": float(p1[1]),
+                "phase_end_y": float(p2[1])
             }
-
-            if segment_info.get('type') == 'line':
-                p1 = points[user_segment_idx]
-                p2 = points[user_segment_idx + 1] if user_segment_idx + 1 < len(points) else p1
-                start_step_orig, end_step_orig = int(p1[0]), int(p2[0])
-                start_y_orig, end_y_orig = p1[1], p2[1]
-                total_duration = end_step_orig - start_step_orig
-                
-                if total_duration > 0:
-                    sub_start_y = start_y_orig + (end_y_orig - start_y_orig) * ((start_step - start_step_orig) / total_duration)
-                    sub_end_y = start_y_orig + (end_y_orig - start_y_orig) * ((end_step - start_step_orig) / total_duration)
-                else:
-                    sub_start_y = start_y_orig
-                    sub_end_y = end_y_orig
-                
-                block_info["sub_start_y"] = sub_start_y
-                block_info["sub_end_y"] = sub_end_y
 
             blocks.append(block_info)
         return blocks
 
-    def _generate_segment_block(self, block_info, deform_study, system_config, is_shear, has_sine_segment):
-        """Generates the core physics commands for a single execution block or user segment."""
+    def _generate_setup_block(self, block_info, deform_study, system_config, is_shear):
+        """Generates the single-execution Setup Block for a given physical phase."""
         lines = []
-        start_step, end_step = block_info['start_step'], block_info['end_step']
-        duration = end_step - start_step
+        uid = block_info['user_segment_id']
+        phase_start_step = block_info['phase_start_step']
+        phase_end_step = block_info['phase_end_step']
+        phase_start_y = block_info['phase_start_y']
+        phase_end_y = block_info['phase_end_y']
+        segment_info = block_info['segment_info']
         
         mode = deform_study.get("mode", "Deformation")
         deform_axis = deform_study.get("deform_axis", "x")
         ensemble_config = deform_study.get("ensemble", {})
-        ensemble = ensemble_config.get("ensemble", "NVT")
         remap_val = deform_study.get("remap", "x")
-        
-        segment_info = block_info.get("segment_info", {'type': 'line'})
         is_strain_recovery = segment_info.get('strain_recovery', False)
 
-        # Pre-calculate common variables used in all blocks
-        temp = self._format_float(ensemble_config.get("temperature", 300.0))
+        temp_start_ens = self._format_float(phase_start_y) if mode == "Temperature" else self._format_float(ensemble_config.get("temperature", 300.0))
+        temp_end_ens = self._format_float(phase_end_y) if mode == "Temperature" else self._format_float(ensemble_config.get("temperature", 300.0))
         pressure = self._format_float(ensemble_config.get("pressure", 1.0))
         damping = self._format_float(system_config.get("damping_factor", 100.0))
-        
-        temp_start_ens = temp
-        temp_end_ens = temp
+
+        lines.append(f"\n# --- Phase {uid} Setup ---")
+        lines.append(f"label segment_{uid}_setup")
+        lines.append(f"variable active_phase equal {uid}")
+
+        # --- Dynamic Temperature Setup ---
         if mode == "Temperature":
-             temp_start_ens = self._format_float(block_info.get('sub_start_y', temp))
-             temp_end_ens = self._format_float(block_info.get('sub_end_y', temp))
+            duration = phase_end_step - phase_start_step
+            if duration > 0:
+                slope = (phase_end_y - phase_start_y) / duration
+                lines.append(f"variable ramp_slope equal {self._format_float(slope)}")
+                lines.append(f"variable set_temp equal \"{self._format_float(phase_start_y)} + (step - {phase_start_step}) * v_ramp_slope\"")
+            else:
+                lines.append(f"variable set_temp equal {self._format_float(phase_end_y)}")
 
-        lines.append(f"\n# --- Segment {block_info['user_segment_id']}: from step {start_step} to {end_step} ---")
-        lines.append(f"label segment_{block_info['user_segment_id']}_{start_step}")
+        # --- Deform Setup ---
+        if mode == "Deformation" and not is_strain_recovery:
+            if segment_info.get('type') == 'sine':
+                amp = self._format_float(segment_info.get('amplitude_strain', 0))
+                period = self._format_float(segment_info.get('period_steps', 0))
+                phase = self._format_float(segment_info.get('phase_shift_steps', 0))
+                ashift = self._format_float(segment_info.get('ashift_factor', 0))
+                
+                shear_dim_map = {'xy': 'y', 'xz': 'z', 'yz': 'z'}
+                ref_len_var = f"v_L0{shear_dim_map[deform_axis]}" if is_shear else f"v_L0{deform_axis}"
+                
+                lines.append(f"variable A equal {amp}*{ref_len_var}")
+                lines.append(f"variable Sp equal {period}")
+                lines.append(f"variable phaseShift equal {phase}")
+                lines.append(f"variable Ashift equal {ashift}*v_A")
+                
+                # Dynamic wave offset guarantees smooth resumption regardless of chunk step
+                lines.append(f"variable current_wave_val equal \"v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift\"")
+                lines.append(f"variable wave_offset equal ${{current_wave_val}}")
+                lines.append(f"variable displace equal \"v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift - v_wave_offset\"")
+                lines.append(f"variable rate equal \"2*PI/v_Sp * v_A * cos(2*PI * (step-v_phaseShift)/v_Sp)\"")
+                
+                lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap {remap_val} flip no")
+                
+            else: 
+                final_target_y = self._format_float(phase_end_y)
+                if is_shear:
+                    lines.append(f"variable tilt_target equal \"{final_target_y} * v_L0{deform_axis[1]}\"")
+                    lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box remap {remap_val} flip no")
+                else:
+                    deform_scenario = deform_study.get("deform_scenario", "symmetric")
+                    if deform_scenario == "shift hi, fix lo":
+                        lines.extend([f'variable {deform_axis}lo_target equal v_{deform_axis}lo0', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y})"'])
+                    elif deform_scenario == "shift lo, fix hi":
+                        lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y})"', f"variable {deform_axis}hi_target equal v_{deform_axis}hi0"])
+                    else: 
+                        lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y}) / 2"', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y}) / 2"'])
+                    lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap {remap_val} flip no")
 
-        if has_sine_segment and segment_info.get('type') == 'line':
-            lines.append("variable started equal 0")
+        # --- Ensemble Setup ---
+        study_lateral_settings = ensemble_config.get("lateral_contraction", {})
+        segment_lateral_overrides = segment_info.get('lateral_overrides', {})
+        effective_lateral_settings = study_lateral_settings.copy()
+        for ax, override_val in segment_lateral_overrides.items():
+            effective_lateral_settings[ax] = override_val
 
-        if segment_info.get('type') == 'sine' and mode == "Deformation":
-            lines.append(f"if \"$(v_started) == 1\" then \"jump SELF segment_{block_info['user_segment_id']}_init\"")
-            lines.append(f"variable sinState equal $(v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift)")
-            lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap {remap_val} flip no")
-
-        elif mode == "Deformation": # This is now the 'line' segment case
-            # Determine effective lateral settings for this segment
-            study_lateral_settings = ensemble_config.get("lateral_contraction", {})
-            segment_lateral_overrides = segment_info.get('lateral_overrides', {})
-            
-            effective_lateral_settings = study_lateral_settings.copy()
-            for ax, override_val in segment_lateral_overrides.items():
-                effective_lateral_settings[ax] = override_val
-
-            is_strain_recovery = segment_info.get('strain_recovery', False)
-            
-            # Sub-segment Y values
-            sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
-            final_target_y = self._format_float(sub_end_y)
-
-            # --- Strain Recovery Logic ---
+        if mode == "Deformation":
             if is_strain_recovery:
-                # No fix deform for strain recovery
-                # Force NPT for all axes (including deform axis)
                 npt_parts = []
-                # Always put deform_axis in NPT
-                # For shear, target pressure/stress is 0. For tensile, it's the system pressure.
                 target_p = "0.0" if is_shear else pressure
                 npt_parts.append(f"{deform_axis} {target_p} {target_p} $({1000}*dt)")
 
-                all_axes = ['x', 'y', 'z']
-                # Add control for non-deforming normal axes based on effective_lateral_settings
-                for ax in all_axes:
+                for ax in['x', 'y', 'z']:
                     if ax != deform_axis and effective_lateral_settings.get(ax) == "free (NPT)":
                         npt_parts.append(f"{ax} {pressure} {pressure} $({1000}*dt)")
                 
-                # Handle Tilt/Shear controls for NPT recovery
-                npt_aniso_study = ensemble_config.get("npt_aniso", "aniso")
-                npt_aniso_effective = "tri" if is_shear else npt_aniso_study
+                npt_aniso_effective = "tri" if is_shear else ensemble_config.get("npt_aniso", "aniso")
 
                 if npt_aniso_effective == "tri":
-                    for tilt in ['xy', 'xz', 'yz']:
+                    for tilt in['xy', 'xz', 'yz']:
                         if tilt != deform_axis:
                             npt_parts.append(f"{tilt} 0.0 0.0 $({1000}*dt)")
                 
                 lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_parts)} flip no")
-            
-            # --- Normal Deformation Logic ---
             else:
-                # Existing fix deform logic
-                if segment_info.get('type') == 'sine':
-                    lines.append(f"if \"$(v_started) == 1\" then \"jump SELF segment_{block_info['user_segment_id']}_init\"")
-                    lines.append(f"variable sinState equal $(v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift)")
-                    lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap {remap_val} flip no")
-                else: # Line segment
-                    if is_shear:
-                        lines.append(f"variable tilt_target equal \"{final_target_y} * v_L0{deform_axis[1]}\"")
-                        lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box remap {remap_val} flip no")
-                    else:
-                        deform_scenario = deform_study.get("deform_scenario", "symmetric")
-                        if deform_scenario == "shift hi, fix lo":
-                            lines.extend([f'variable {deform_axis}lo_target equal v_{deform_axis}lo0', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y})"'])
-                        elif deform_scenario == "shift lo, fix hi":
-                            lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y})"', f"variable {deform_axis}hi_target equal v_{deform_axis}hi0"])
-                        else: # symmetric
-                            lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y}) / 2"', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y}) / 2"'])
-                        lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap {remap_val} flip no")
-                
-                # Ensemble for normal deformation
                 free_axes = [ax for ax, setting in effective_lateral_settings.items() if setting == "free (NPT)"]
-
                 if not free_axes:
-                    # No free lateral axes -> NVT
                     lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) flip no")
                 else:
-                    # At least one free axis -> NPT
                     npt_parts = []
-                    
-                    # Add control for free normal axes
                     for ax in free_axes:
                         npt_parts.append(f"{ax} {pressure} {pressure} $({1000}*dt)")
                     
-                    # Handle Tilt/Shear controls
-                    npt_aniso_study = ensemble_config.get("npt_aniso", "aniso")
-                    npt_aniso_effective = "tri" if is_shear else npt_aniso_study
-                    
+                    npt_aniso_effective = "tri" if is_shear else ensemble_config.get("npt_aniso", "aniso")
                     if npt_aniso_effective == "tri":
-                        for tilt in ['xy', 'xz', 'yz']:
+                        for tilt in['xy', 'xz', 'yz']:
                             if tilt != deform_axis:
                                 npt_parts.append(f"{tilt} 0.0 0.0 $({1000}*dt)")
 
                     lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_parts)} flip no")
-
         elif mode == "Temperature":
-            sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
-            slope = (sub_end_y - sub_start_y) / duration if duration > 0 else 0
-            lines.extend([f"variable ramp_slope equal {self._format_float(slope)}", f"variable set_temp equal \"{self._format_float(sub_start_y)} + (step - {start_step}) * v_ramp_slope\""])
-
-            if ensemble == "NVT":
+            if ensemble_config.get("ensemble", "NVT") == "NVT":
                 lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) flip no")
-            else: # NPT
+            else:
                 npt_aniso = ensemble_config.get("npt_aniso", "iso")
                 lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt) flip no")
 
-        lines.append(f"run {int(duration)}")
+        lines.append(f"jump SELF ${{resume_label}}")
+        return lines
+
+    def _generate_chunk_block(self, block_info, deform_study):
+        """Generates the execution chunk. Interpolation handled natively via start/stop."""
+        lines = []
+        uid = block_info['user_segment_id']
+        start_step = block_info['start_step']
+        end_step = block_info['end_step']
+        phase_start_step = block_info['phase_start_step']
+        phase_end_step = block_info['phase_end_step']
+        segment_info = block_info['segment_info']
+        duration = end_step - start_step
         
-        if mode == "Deformation" and not is_strain_recovery: lines.append("unfix deform")
-        lines.append("unfix ensemble")
-        
+        mode = deform_study.get("mode", "Deformation")
+        is_strain_recovery = segment_info.get('strain_recovery', False)
+
+        lines.append(f"\n# --- Segment {uid}: from step {start_step} to {end_step} ---")
+        lines.append(f"label segment_{uid}_{start_step}")
+
+        # --- Caller Logic: Initialize Phase if needed ---
+        lines.append(f"if \"${{active_phase}} != {uid}\" then &")
+        lines.append(f"  \"variable resume_label string segment_{uid}_{start_step}\" &")
+        lines.append(f"  \"jump SELF segment_{uid}_setup\"")
+
+        # --- Run logic (Native Interpolation) ---
+        if duration > 0:
+            if phase_end_step > phase_start_step:
+                lines.append(f"run {int(duration)} start {phase_start_step} stop {phase_end_step}")
+            else:
+                lines.append(f"run {int(duration)}")
+
+        # --- Phase Teardown ---
+        if end_step == phase_end_step:
+            if mode == "Deformation" and not is_strain_recovery:
+                lines.append("unfix deform")
+            lines.append("unfix ensemble")
+
         return lines
 
     def _generate_fixes_computes_section(self, deform_study, output_config, fixes_config, mode, deform_axis, is_shear):
         """Generates the full string for the Fixes & Computes section, including time-averaging."""
         lines = []
-        
-        # 1. Base Thermo Style
         base_thermo_style = output_config.get("thermo_style", "step temp press")
         thermo_style_parts = base_thermo_style.split()
         
-        ensemble_config = deform_study.get("ensemble", {})
-        
-        # Define Maps
         strain_map = {'εxx': 'strain_xx', 'εyy': 'strain_yy', 'εzz': 'strain_zz', 
                       'εxy': 'strain_xy', 'εxz': 'strain_xz', 'εyz': 'strain_yz'}
         stress_map = {'σxx': 'cauchy_xx', 'σyy': 'cauchy_yy', 'σzz': 'cauchy_zz', 
                       'σxy': 'cauchy_xy', 'σxz': 'cauchy_xz', 'σyz': 'cauchy_yz', 
                       'von Mises': 'vMises', 'hydrostatic': 'hydrostatic'}
 
-        # --- Add selected strains/stresses to thermo output ---
         if mode == "Deformation":
             for strain in output_config.get("eng_strains", []):
-                # Handle distinct label
-                if strain == 'strain deformation direction':
-                    axis_suffix = deform_axis if is_shear else deform_axis * 2
-                    thermo_style_parts.append(f"v_strain_{axis_suffix}")
-                elif strain == 'deformation direction': # Legacy fallback
+                if strain in ['strain deformation direction', 'deformation direction']:
                     axis_suffix = deform_axis if is_shear else deform_axis * 2
                     thermo_style_parts.append(f"v_strain_{axis_suffix}")
                 elif strain in strain_map:
                     thermo_style_parts.append(f"v_{strain_map[strain]}")
             
             for stress in output_config.get("cauchy_stresses", []):
-                # Handle distinct label
-                if stress == 'stress deformation direction':
-                     axis_suffix = deform_axis if is_shear else deform_axis * 2
-                     thermo_style_parts.append(f"v_cauchy_{axis_suffix}")
-                elif stress == 'deformation direction': # Legacy fallback
+                if stress in ['stress deformation direction', 'deformation direction']:
                      axis_suffix = deform_axis if is_shear else deform_axis * 2
                      thermo_style_parts.append(f"v_cauchy_{axis_suffix}")
                 elif stress in stress_map:
                     thermo_style_parts.append(f"v_{stress_map[stress]}")
         
-        # --- Add target temperature if in Temperature mode ---
         if mode == "Temperature" and output_config.get("add_target_to_thermo", False):
             thermo_style_parts.append("v_set_temp")
 
-        # --- Time Averaging Logic ---
         averaged_quantities = output_config.get("averaged_quantities", [])
         
         if averaged_quantities:
             nevery = output_config.get("avg_nevery", 10)
             nrepeat = output_config.get("avg_nrepeat", 100)
-            nfreq = nevery * nrepeat
+            # Nfreq must always match thermo_freq to ensure output aligns with thermo logging
+            nfreq = output_config.get("thermo_freq", 100)
             lines.append("# --- Time Averaging ---")
             
-            # Keep track of variables we've already processed to avoid duplicates
             processed_vars = set() 
-
-            # 1. Pressure Tensor Terms
             pressure_terms = {'press', 'pxx', 'pyy', 'pzz', 'pxy', 'pxz', 'pyz'}
             requested_press = [q for q in averaged_quantities if q in pressure_terms]
             
@@ -914,12 +852,9 @@ class LammpsScriptGenerator:
                 lines.append(f"fix ave_press all ave/time {nevery} {nrepeat} {nfreq} c_press_tensor[*]")
                 
                 lines.extend([
-                    "variable press_avg equal f_ave_press",
-                    "variable pxx_avg equal f_ave_press[1]",
-                    "variable pyy_avg equal f_ave_press[2]",
-                    "variable pzz_avg equal f_ave_press[3]",
-                    "variable pxy_avg equal f_ave_press[4]",
-                    "variable pxz_avg equal f_ave_press[5]",
+                    "variable press_avg equal f_ave_press", "variable pxx_avg equal f_ave_press[1]",
+                    "variable pyy_avg equal f_ave_press[2]", "variable pzz_avg equal f_ave_press[3]",
+                    "variable pxy_avg equal f_ave_press[4]", "variable pxz_avg equal f_ave_press[5]",
                     "variable pyz_avg equal f_ave_press[6]"
                 ])
                 
@@ -928,7 +863,6 @@ class LammpsScriptGenerator:
                     thermo_style_parts.append(f"v_{var_name}")
                     processed_vars.add(term)
 
-            # 2. Standard Computes (Temp, KE, PE)
             if 'temp' in averaged_quantities:
                 lines.append("compute avg_temp_compute all temp")
                 lines.append(f"fix avg_temp all ave/time {nevery} {nrepeat} {nfreq} c_avg_temp_compute")
@@ -950,45 +884,31 @@ class LammpsScriptGenerator:
                 thermo_style_parts.append("v_pe_avg")
                 processed_vars.add('pe')
             
-            # 3. Individual Strains, Stresses, and Generic Quantities
             for item in averaged_quantities:
-                # Skip if already handled by complex logic above
                 if item in processed_vars: continue
-                
                 var_name = None
                 
-                # Check Strains
-                if item == 'strain deformation direction':
+                if item in ['strain deformation direction', 'deformation direction']:
                     if mode == "Deformation":
                         axis_suffix = deform_axis if is_shear else deform_axis * 2
                         var_name = f"strain_{axis_suffix}"
-                # Check Stresses
                 elif item == 'stress deformation direction':
                     if mode == "Deformation":
                         axis_suffix = deform_axis if is_shear else deform_axis * 2
                         var_name = f"cauchy_{axis_suffix}"
-                # Legacy fallback
-                elif item == 'deformation direction':
-                    if mode == "Deformation":
-                        axis_suffix = deform_axis if is_shear else deform_axis * 2
-                        var_name = f"strain_{axis_suffix}"
-                # Maps
                 elif item in strain_map:
                     if mode == "Deformation": var_name = strain_map[item]
                 elif item in stress_map:
                     if mode == "Deformation": var_name = stress_map[item]
                 
-                # If identified as a specific Strain/Stress variable
                 if var_name:
                     if var_name not in processed_vars:
                         lines.append(f"fix avg_{var_name} all ave/time {nevery} {nrepeat} {nfreq} v_{var_name}")
                         lines.append(f"variable {var_name}_avg equal f_avg_{var_name}")
                         thermo_style_parts.append(f"v_{var_name}_avg")
                         processed_vars.add(var_name)
-                        processed_vars.add(item) # Mark original text as processed
+                        processed_vars.add(item)
                 else:
-                    # 4. Generic Fallback for Standard Keywords (e.g. density, vol, step, etc.)
-                    # Create a variable to wrap the keyword so it can be averaged
                     lines.append(f"variable {item}_input equal {item}")
                     lines.append(f"fix ave_{item} all ave/time {nevery} {nrepeat} {nfreq} v_{item}_input")
                     lines.append(f"variable {item}_avg equal f_ave_{item}")
@@ -997,7 +917,6 @@ class LammpsScriptGenerator:
             
             lines.append("")
 
-        # Remove duplicates from thermo_style while preserving order
         seen = set()
         final_thermo_style_list = []
         for x in thermo_style_parts:
@@ -1006,7 +925,6 @@ class LammpsScriptGenerator:
                 seen.add(x)
 
         final_thermo_style = " ".join(final_thermo_style_list)
-        
         return lines, final_thermo_style
 
     def _format_float(self, f):
@@ -1108,7 +1026,6 @@ class LammpsScriptGenerator:
             job_config = self.config.get("job_submission", {})
             enable_restart = job_config.get("enable_restart", False)
 
-            # 1. Master Job File
             master_job_path = os.path.join(root_simulation_dir, "lammps_simulation.job")
             job_lines = [job_config.get("slurm_header", "#!/bin/bash\n#SBATCH --time=24:00:00"), ""]
             
@@ -1156,13 +1073,14 @@ class LammpsScriptGenerator:
             os.chmod(master_job_path, 0o755)
             self.generated_files.append(master_job_path)
 
-            # 2. Submission Script
             cluster_script_path = os.path.join(root_simulation_dir, "cluster_run_all.sh")
             script_lines = ["#!/bin/bash", ""]
             for sim in all_simulations:
                 script_lines.append(f"cd {sim['study_folder']}/{sim['system_folder']}")
                 script_lines.append(f"{job_config.get('sbatch_cmd', 'sbatch')} --job-name=\"{sim['model_name']}\" \"../../lammps_simulation.job\" \"{sim['model_name']}.in\"")
                 script_lines.append("cd ../../\n")
+            
+            script_lines.append(f"echo \"{len(all_simulations)} jobs have been submitted\"")
             
             with open(cluster_script_path, 'w', newline='\n') as f: f.write("\n".join(script_lines))
             os.chmod(cluster_script_path, 0o755)
@@ -1194,9 +1112,17 @@ class LammpsScriptGenerator:
                 "variable strain_xx equal (lx-v_L0x)/v_L0x",
                 "variable strain_yy equal (ly-v_L0y)/v_L0y",
                 "variable strain_zz equal (lz-v_L0z)/v_L0z",
+                "variable strain_xy equal xy/v_L0y",
+                "variable strain_xz equal xz/v_L0z",
+                "variable strain_yz equal yz/v_L0z",
                 f"variable cauchy_xx equal -(pxx-v_base_pressure)",
                 f"variable cauchy_yy equal -(pyy-v_base_pressure)",
                 f"variable cauchy_zz equal -(pzz-v_base_pressure)",
+                "variable cauchy_xy equal -pxy",
+                "variable cauchy_xz equal -pxz",
+                "variable cauchy_yz equal -pyz",
+                "variable hydrostatic equal (v_cauchy_xx+v_cauchy_yy+v_cauchy_zz)/3",
+                'variable vMises equal "sqrt(0.5*((v_cauchy_xx-v_cauchy_yy)^2+(v_cauchy_yy-v_cauchy_zz)^2+(v_cauchy_zz-v_cauchy_xx)^2+6*(v_cauchy_xy^2+v_cauchy_yz^2+v_cauchy_xz^2)))"',
                 ""
             ])
 
