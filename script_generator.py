@@ -369,6 +369,20 @@ class LammpsScriptGenerator:
                         potential_path = (Path("_input_files") / potential_name).as_posix()
                         script_lines.append(f"include ../../{potential_path}")
                 script_lines.append("")
+
+            # Variables
+            deform_axis = deform_study.get("deform_axis", "x")
+            script_lines.extend([
+                "#------------------------",
+                "# Variables",
+                "#------------------------",
+                f"variable L0{deform_axis} equal $(l{deform_axis})",
+                f"variable {deform_axis}lo0 equal $({deform_axis}lo)",
+                f"variable {deform_axis}hi0 equal $({deform_axis}hi)",
+                f"variable estrain_{deform_axis}{deform_axis} equal (l{deform_axis}-v_L0{deform_axis})/v_L0{deform_axis}",
+                f""
+                ""
+            ])
             
             # Ensemble settings (specific to each study)
             ensemble_config = deform_study.get("ensemble", {})
@@ -420,6 +434,20 @@ class LammpsScriptGenerator:
             # Thermo output settings
             if output_config.get("enable_thermo", True):
                 thermo_style = output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
+                add_target_to_thermo = output_config.get("add_target_to_thermo", False)
+                mode = deform_study.get("mode", "Deformation")
+                deform_axis = deform_study.get("deform_axis", "x")
+
+                if add_target_to_thermo:
+                    if mode == "Deformation":
+                        thermo_style += f" v_estrain_{deform_axis}{deform_axis}"
+                    else: # Temperature
+                        # Get initial temperature from the first point
+                        points = deform_study.get("data_points", [])
+                        initial_temp = points[0][1] if points else 300.0
+                        output_lines.append(f"variable set_temp equal {initial_temp}")
+                        thermo_style += " v_set_temp"
+
                 output_lines.extend([
                     f"thermo {thermo_output_freq}",
                     f"thermo_style custom {thermo_style}",
@@ -468,7 +496,9 @@ class LammpsScriptGenerator:
             script_lines.extend([
                 "#------------------------",
                 "# Deformation",
-                "#------------------------"
+                "#------------------------",
+                f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0{deform_axis}}}\"",
+                ""
             ])
 
             points = deform_study.get("data_points", [])
@@ -478,14 +508,7 @@ class LammpsScriptGenerator:
                 timestep = system_config.get("timestep", 0.001)
                 deform_axis = deform_study.get("deform_axis", "x")
                 
-                if mode == "Deformation":
-                    # Store initial box boundaries for symmetric deformation
-                    script_lines.append(f"# Store initial box boundaries for symmetric engineering strain calculation")
-                    script_lines.append(f"variable {deform_axis}lo0 equal $({deform_axis}lo)")
-                    script_lines.append(f"variable {deform_axis}hi0 equal $({deform_axis}hi)")
-                    script_lines.append(f"variable L0 equal $(l{deform_axis})")
-                    script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0}}\"")
-                    script_lines.append("")
+
 
                 for i in range(len(points) - 1):
                     p1 = points[i]
@@ -504,6 +527,8 @@ class LammpsScriptGenerator:
 
                     script_lines.append(f"# --- Segment {i+1}: from step {start_step:.0f} to {end_step:.0f} ---")
 
+
+
                     if mode == "Deformation":
                         # Calculate new boundaries based on engineering strain from initial state
                         new_lo_var = f"{deform_axis}lo_target_{i+1}"
@@ -513,14 +538,14 @@ class LammpsScriptGenerator:
                         script_lines.append(f"# Target engineering strain: {end_y:.6f}, Scenario: {deform_scenario}")
 
                         if deform_scenario == "shift hi, fix lo":
-                            script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0\"")
-                            script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_y})\"")
+                            script_lines.append(f"variable {new_lo_var} equal v_{deform_axis}lo0")
+                            script_lines.append(f'variable {new_hi_var} equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {end_y})"')
                         elif deform_scenario == "shift lo, fix hi":
-                            script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_y})\"")
-                            script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0\"")
+                            script_lines.append(f'variable {new_lo_var} equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {end_y})"')
+                            script_lines.append(f"variable {new_hi_var} equal v_{deform_axis}hi0")
                         else:  # symmetric
-                            script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_y}) / 2\"")
-                            script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_y}) / 2\"")
+                            script_lines.append(f'variable {new_lo_var} equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {end_y}) / 2"')
+                            script_lines.append(f'variable {new_hi_var} equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {end_y}) / 2"')
                         
                         script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
 
@@ -775,15 +800,22 @@ class LammpsScriptGenerator:
                     f"  {srun_cmd} {cluster_lammps_cmd} -in \"$input\" -var restart FALSE -var maxtime $MAXTIME",
                     "fi",
                     "",
-                    "# Check if job ran for significant time and resubmit if needed",
-                    "if [ \"$SECONDS\" -gt \"3600\" ]; then",
-                    "  cd \"$SLURM_SUBMIT_DIR\"",
-                    f"  {sbatch_cmd} \"$SLURM_SUBMIT_DIR/lammps_simulation.job\" \"$input\"",
-                    "fi",
-                    "",
-                    "cd \"$SLURM_SUBMIT_DIR\"",
-                    "echo 'Completed simulation: $MODEL_NAME'",
-                ]
+                                        "# Check if a restart file was created, indicating the job was halted and should be resubmitted.",
+                                        "if compgen -G \"restart_files/${MODEL_NAME}.restart.*\" > /dev/null; then",
+                                        "  # Check if the job ran for a minimum amount of time to avoid restart loops on immediate failure.",
+                                        "  if [ \"$SECONDS\" -gt 60 ]; then",
+                                        "    echo \"Restart file found and job ran long enough. Resubmitting.\"",
+                                        "    cd \"$SLURM_SUBMIT_DIR\"",
+                                        f"    {sbatch_cmd} --job-name=\"$SLURM_JOB_NAME\" \"$SLURM_SUBMIT_DIR/lammps_simulation.job\" \"$input\"",
+                                        "    echo \"Killing current job...\"",
+                                        "    scancel $SLURM_JOB_ID",
+                                        "  else",
+                                        "    echo \"WARNING: Job took less than 60s, no resubmission to prevent loops!\"",
+                                        "  fi",
+                                        "fi",
+                                        "",
+                                        "cd \"$SLURM_SUBMIT_DIR\"",
+                                        "echo 'Completed simulation: $MODEL_NAME'",                 ]
             else:
                 # Generate simple job file without restart functionality
                 job_lines = [

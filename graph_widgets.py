@@ -70,38 +70,122 @@ def create_info_icon_label(urls, tooltip, color_name):
 
 # --- Custom Dialogs ---
 class PresetDialog(QDialog):
-    def __init__(self, last_scheme, last_staircase_params, last_cyclic_params, parent=None):
-        super().__init__(parent); self.setWindowTitle("Generate Scheme")
-        self.scheme_combo = QComboBox(); self.scheme_combo.addItems(["Staircase Loading", "Cyclic Loading"])
+    def __init__(self, last_scheme, last_staircase_params, last_cyclic_params, max_steps, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Generate Scheme")
+        self.max_steps = max_steps
+        self.scheme_combo = QComboBox()
+        self.scheme_combo.addItems(["Staircase Loading", "Cyclic Loading"])
         self.scheme_combo.setCurrentText(last_scheme)
         self.scheme_combo.currentIndexChanged.connect(self._update_options)
         self.stacked_widget = QStackedWidget()
-        self._create_staircase_options(last_staircase_params); self._create_cyclic_options(last_cyclic_params)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
-        layout = QFormLayout(self); layout.addRow("Scheme Type:", self.scheme_combo); layout.addWidget(self.stacked_widget); layout.addWidget(buttons)
+        self._create_staircase_options(last_staircase_params)
+        self._create_cyclic_options(last_cyclic_params)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QFormLayout(self)
+        layout.addRow("Scheme Type:", self.scheme_combo)
+        layout.addWidget(self.stacked_widget)
+        layout.addWidget(buttons)
         self._update_options(self.scheme_combo.currentIndex())
+
     def _create_staircase_options(self, params):
         self.staircase_widget = QWidget()
         layout = QFormLayout(self.staircase_widget)
-        self.staircase_cycles = QSpinBox(); self.staircase_cycles.setRange(1, 1000); self.staircase_cycles.setValue(params['cycles'])
-        self.staircase_factor = QDoubleSpinBox(); self.staircase_factor.setRange(0.0, 1000.0); self.staircase_factor.setValue(params['factor'])
-        self.staircase_direction = QComboBox(); self.staircase_direction.addItems(["Tension", "Compression"]); self.staircase_direction.setCurrentText(params['direction'])
-        layout.addRow("Number of Stairs:", self.staircase_cycles); layout.addRow("Hold Time Factor:", self.staircase_factor); layout.addRow("Direction:", self.staircase_direction)
+
+        self.staircase_equilibration_steps = QSpinBox()
+        self.staircase_equilibration_steps.setRange(0, self.max_steps - 1 if self.max_steps > 0 else 0)
+        self.staircase_equilibration_steps.setValue(params.get('equilibration_steps', 0))
+        layout.addRow("Equilibration timesteps:", self.staircase_equilibration_steps)
+
+        self.staircase_cycles = QSpinBox()
+        self.staircase_cycles.setRange(1, 1000)
+        self.staircase_cycles.setValue(params['cycles'])
+        self.staircase_factor = QDoubleSpinBox()
+        self.staircase_factor.setRange(0.0, 1000.0)
+        self.staircase_factor.setValue(params['factor'])
+        self.staircase_direction = QComboBox()
+
+        is_temp_mode = self.parent() and self.parent().mode == 'Temperature'
+        direction_items = ["Heating", "Cooling"] if is_temp_mode else ["Tension", "Compression"]
+        self.staircase_direction.addItems(direction_items)
+
+        current_direction = params['direction']
+        if is_temp_mode:
+            if current_direction == "Tension":
+                current_direction = "Heating"
+            elif current_direction == "Compression":
+                current_direction = "Cooling"
+
+        if current_direction not in direction_items:
+            current_direction = direction_items[0]
+
+        self.staircase_direction.setCurrentText(current_direction)
+
+        layout.addRow("Number of Stairs:", self.staircase_cycles)
+        layout.addRow("Hold Time Factor:", self.staircase_factor)
+        layout.addRow("Direction:", self.staircase_direction)
         self.stacked_widget.addWidget(self.staircase_widget)
+
     def _create_cyclic_options(self, params):
         self.cyclic_widget = QWidget()
         layout = QFormLayout(self.cyclic_widget)
-        self.cyclic_cycles = QSpinBox(); self.cyclic_cycles.setRange(1, 1000); self.cyclic_cycles.setValue(params['cycles'])
-        self.cyclic_relax_factor = QDoubleSpinBox(); self.cyclic_relax_factor.setRange(0.0, 1000.0); self.cyclic_relax_factor.setValue(params['relax_factor'])
-        self.cyclic_start = QComboBox(); self.cyclic_start.addItems(["Tension", "Compression"]); self.cyclic_start.setCurrentText(params['start_with'])
-        layout.addRow("Number of Cycles:", self.cyclic_cycles); layout.addRow("Final Relaxation Factor (of 1 cycle):", self.cyclic_relax_factor); layout.addRow("Start With:", self.cyclic_start)
+
+        self.cyclic_equilibration_steps = QSpinBox()
+        self.cyclic_equilibration_steps.setRange(0, self.max_steps - 1 if self.max_steps > 0 else 0)
+        self.cyclic_equilibration_steps.setValue(params.get('equilibration_steps', 0))
+        layout.addRow("Equilibration timesteps:", self.cyclic_equilibration_steps)
+
+        self.cyclic_cycles = QSpinBox()
+        self.cyclic_cycles.setRange(1, 1000)
+        self.cyclic_cycles.setValue(params['cycles'])
+        self.cyclic_relax_factor = QDoubleSpinBox()
+        self.cyclic_relax_factor.setRange(0.0, 1000.0)
+        self.cyclic_relax_factor.setValue(params['relax_factor'])
+        self.cyclic_start = QComboBox()
+
+        is_temp_mode = self.parent() and self.parent().mode == 'Temperature'
+        start_items = ["Heating", "Cooling"] if is_temp_mode else ["Tension", "Compression"]
+        self.cyclic_start.addItems(start_items)
+
+        current_start = params['start_with']
+        if is_temp_mode:
+            if current_start == "Tension":
+                current_start = "Heating"
+            elif current_start == "Compression":
+                current_start = "Cooling"
+
+        if current_start not in start_items:
+            current_start = start_items[0]
+
+        self.cyclic_start.setCurrentText(current_start)
+
+        layout.addRow("Number of Cycles:", self.cyclic_cycles)
+        layout.addRow("Final Relaxation Factor (of 1 cycle):", self.cyclic_relax_factor)
+        layout.addRow("Start With:", self.cyclic_start)
         self.stacked_widget.addWidget(self.cyclic_widget)
-    def _update_options(self, index): self.stacked_widget.setCurrentIndex(index)
+
+    def _update_options(self, index):
+        self.stacked_widget.setCurrentIndex(index)
+
     def get_parameters(self):
         scheme_index = self.stacked_widget.currentIndex()
         scheme = self.scheme_combo.itemText(scheme_index)
-        if scheme == "Staircase Loading": return scheme, {'cycles': self.staircase_cycles.value(), 'factor': self.staircase_factor.value(), 'direction': self.staircase_direction.currentText()}
-        elif scheme == "Cyclic Loading": return scheme, {'cycles': self.cyclic_cycles.value(), 'relax_factor': self.cyclic_relax_factor.value(), 'start_with': self.cyclic_start.currentText()}
+        if scheme == "Staircase Loading":
+            return scheme, {
+                'equilibration_steps': self.staircase_equilibration_steps.value(),
+                'cycles': self.staircase_cycles.value(),
+                'factor': self.staircase_factor.value(),
+                'direction': self.staircase_direction.currentText()
+            }
+        elif scheme == "Cyclic Loading":
+            return scheme, {
+                'equilibration_steps': self.cyclic_equilibration_steps.value(),
+                'cycles': self.cyclic_cycles.value(),
+                'relax_factor': self.cyclic_relax_factor.value(),
+                'start_with': self.cyclic_start.currentText()
+            }
         return None, None
 
 class SlopeEditDialog(QDialog):
@@ -221,45 +305,98 @@ class GraphWidget(QWidget):
         self._fixed_segments.clear()
         self.update()
         self.dataChanged.emit()
-    def generate_staircase_scheme(self, cycles, relax_factor, direction):
+    def generate_staircase_scheme(self, equilibration_steps, cycles, relax_factor, direction):
         if cycles <= 0 or relax_factor < 0: return
-        target_strain = self._max_strain if direction == "Tension" else self._min_strain
-        if abs(target_strain - self.get_y_start()) < 1e-9: self.reset_graph(); return
-        strain_per_cycle = target_strain / cycles; total_ratio_units = cycles * (1 + relax_factor)
+
+        y_start = self.get_y_start()
+        is_temp_mode = self.mode == 'Temperature'
+
+        if is_temp_mode:
+            target_y = self._max_strain if direction == "Heating" else self._min_strain
+        else:
+            target_y = self._max_strain if direction == "Tension" else self._min_strain
+
+        if abs(target_y - y_start) < 1e-9: self.reset_graph(); return
+
+        y_per_cycle = (target_y - y_start) / cycles
+
+        effective_max_steps = self._max_steps - equilibration_steps
+        if effective_max_steps <= 0: return
+
+        total_ratio_units = cycles * (1 + relax_factor)
         if total_ratio_units == 0: return
-        steps_per_load_unit = self._max_steps / total_ratio_units
+
+        steps_per_load_unit = effective_max_steps / total_ratio_units
         load_steps, relax_steps = steps_per_load_unit, steps_per_load_unit * relax_factor
-        new_data_points = [QPointF(0, self.get_y_start())]
+
+        new_data_points = [QPointF(0, y_start)]
+        if equilibration_steps > 0:
+            new_data_points.append(QPointF(equilibration_steps, y_start))
+
         for i in range(1, cycles + 1):
-            load_end_step = i * load_steps + (i - 1) * relax_steps; load_end_strain = i * strain_per_cycle
-            new_data_points.append(QPointF(load_end_step, load_end_strain))
-            if (i * (load_steps + relax_steps)) < self._max_steps:
-                relax_end_step = i * (load_steps + relax_steps); new_data_points.append(QPointF(relax_end_step, load_end_strain))
-        if new_data_points[-1].x() < self._max_steps: new_data_points.append(QPointF(self._max_steps, target_strain))
-        self.points_norm = [self._data_to_norm(self._snap_data_point(p)) for p in new_data_points]; self._sort_points(); self.update(); self.dataChanged.emit()
-    def generate_cyclic_scheme(self, cycles, relax_factor, start_with):
+            load_end_step = equilibration_steps + i * load_steps + (i - 1) * relax_steps
+            load_end_y = y_start + i * y_per_cycle
+            new_data_points.append(QPointF(load_end_step, load_end_y))
+
+            if (i * (load_steps + relax_steps)) < effective_max_steps:
+                relax_end_step = equilibration_steps + i * (load_steps + relax_steps)
+                new_data_points.append(QPointF(relax_end_step, load_end_y))
+
+        if new_data_points[-1].x() < self._max_steps:
+            new_data_points.append(QPointF(self._max_steps, target_y))
+
+        self.points_norm = [self._data_to_norm(self._snap_data_point(p)) for p in new_data_points]
+        self._sort_points()
+        self.update()
+        self.dataChanged.emit()
+    def generate_cyclic_scheme(self, equilibration_steps, cycles, relax_factor, start_with):
         if cycles <= 0: return
         y_start = self.get_y_start()
         path = [y_start]
-        peak1 = self._max_strain if start_with == "Tension" else self._min_strain
-        peak2 = self._min_strain if start_with == "Tension" else self._max_strain
+
+        is_temp_mode = self.mode == 'Temperature'
+        if is_temp_mode:
+            peak1 = self._max_strain if start_with == "Heating" else self._min_strain
+            peak2 = self._min_strain if start_with == "Heating" else self._max_strain
+        else:
+            peak1 = self._max_strain if start_with == "Tension" else self._min_strain
+            peak2 = self._min_strain if start_with == "Tension" else self._max_strain
+
         for i in range(cycles):
             path.append(peak1)
             path.extend([y_start, peak2, y_start])
+
         total_dist = sum(abs(path[i] - path[i-1]) for i in range(1, len(path)))
         if total_dist == 0: return
-        steps_per_one_cycle = total_dist / cycles
+
+        effective_max_steps = self._max_steps - equilibration_steps
+        if effective_max_steps <= 0: return
+
+        steps_per_one_cycle = total_dist / cycles if cycles > 0 else 0
         total_steps_for_cycles_and_relax = total_dist + (steps_per_one_cycle * relax_factor)
-        scaling_factor = self._max_steps / total_steps_for_cycles_and_relax if total_steps_for_cycles_and_relax > 0 else 0
-        points = [QPointF(0,0)]; current_step = 0.0
+        scaling_factor = effective_max_steps / total_steps_for_cycles_and_relax if total_steps_for_cycles_and_relax > 0 else 0
+
+        points = [QPointF(0, y_start)]
+        if equilibration_steps > 0:
+            points.append(QPointF(equilibration_steps, y_start))
+
+        current_step_dist = 0.0
         for i in range(1, len(path)):
-            current_step += abs(path[i] - path[i-1])
-            points.append(QPointF(current_step, path[i]))
+            current_step_dist += abs(path[i] - path[i-1])
+            points.append(QPointF(equilibration_steps + current_step_dist * scaling_factor, path[i]))
+
         if relax_factor > 0:
-            current_step += steps_per_one_cycle * relax_factor
-            points.append(QPointF(current_step, points[-1].y()))
-        final_points = [QPointF(p.x() * scaling_factor, p.y()) for p in points]
-        self.points_norm = [self._data_to_norm(self._snap_data_point(p)) for p in final_points]; self._sort_points(); self.update(); self.dataChanged.emit()
+            current_step_dist += steps_per_one_cycle * relax_factor
+            points.append(QPointF(equilibration_steps + current_step_dist * scaling_factor, points[-1].y()))
+
+        final_points = points
+        if final_points[-1].x() < self._max_steps:
+            final_points.append(QPointF(self._max_steps, final_points[-1].y()))
+
+        self.points_norm = [self._data_to_norm(self._snap_data_point(p)) for p in final_points]
+        self._sort_points()
+        self.update()
+        self.dataChanged.emit()
     def get_data_points(self): return [self._norm_to_data(p) for p in self.points_norm]
     def _norm_to_data(self, p_norm):
         strain_range = self._max_strain - self._min_strain
@@ -1080,6 +1217,8 @@ class StudyWidget(QWidget):
         self._last_cyclic_params = {'cycles': 3, 'relax_factor': 0.0, 'start_with': 'Tension'}
         self._last_scheme = "Staircase Loading"
 
+        self._is_mode_switching = False
+
         self._undo_stack = []
         self._redo_stack = []
 
@@ -1126,192 +1265,72 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
 
+        # Set ranges based on mode
         if self.mode == 'Deformation':
             self.min_strain_spinbox.setRange(-0.999999, 1e9)
             self.max_strain_spinbox.setRange(-1e9, 1e9)
-            if min_val > 0:
-                min_val = -min_val
-                self.min_strain_spinbox.setValue(min_val)
-            if min_val <= -1:
-                min_val = -0.999
-                self.min_strain_spinbox.setValue(min_val)
-            if max_val < 0:
-                max_val = -max_val
-                self.max_strain_spinbox.setValue(max_val)
-        else: # Temperature
+        else:  # Temperature
             self.min_strain_spinbox.setRange(0.001, 1e9)
             self.max_strain_spinbox.setRange(0.001, 1e9)
-            if min_val < 0.001:
-                self.min_strain_spinbox.setValue(0.001)
-            if max_val < 0.001:
-                self.max_strain_spinbox.setValue(0.001)
+
+        if not self._is_mode_switching:
+            # Apply value corrections only when not mode switching
+            if self.mode == 'Deformation':
+                if min_val > 0:
+                    self.min_strain_spinbox.setValue(-min_val)
+                if min_val <= -1:
+                    self.min_strain_spinbox.setValue(-0.999)
+                if max_val < 0:
+                    self.max_strain_spinbox.setValue(-max_val)
+            else:  # Temperature
+                if min_val < 0.001:
+                    self.min_strain_spinbox.setValue(0.001)
+                if max_val < 0.001:
+                    self.max_strain_spinbox.setValue(0.001)
+
+        # Re-read values after potential changes
+        current_min = self.min_strain_spinbox.value()
+        current_max = self.max_strain_spinbox.value()
+
+        if current_min >= current_max:
+            if not self._is_mode_switching:
+                if self.mode == 'Temperature':
+                    self.max_strain_spinbox.setValue(current_min + 1.0)
+                else:
+                    self.min_strain_spinbox.setValue(round(current_max - 0.01, 3))
 
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
 
         self.max_steps_spinbox.setSingleStep(max(1, int(max_steps * 0.02)))
-        self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_val) * 0.02) if min_val != 0 else 0.001)
-        self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_val) * 0.02) if max_val != 0 else 0.001)
-
-        if self.min_strain_spinbox.value() >= self.max_strain_spinbox.value():
-            self.min_strain_spinbox.blockSignals(True)
-            self.min_strain_spinbox.setValue(round(self.max_strain_spinbox.value() - 0.01, 3))
-            self.min_strain_spinbox.blockSignals(False)
+        self.min_strain_spinbox.setSingleStep(max(0.001, abs(self.min_strain_spinbox.value()) * 0.02) if self.min_strain_spinbox.value() != 0 else 0.001)
+        self.max_strain_spinbox.setSingleStep(max(0.001, abs(self.max_strain_spinbox.value()) * 0.02) if self.max_strain_spinbox.value() != 0 else 0.001)
 
         self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), self.max_strain_spinbox.value())
 
     def _show_preset_dialog(self):
-        dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, self)
-        if dialog.exec():
-            scheme, params = dialog.get_parameters()
-            self._last_scheme = scheme
-            if scheme == "Staircase Loading":
-                if params['direction'] == "Tension" and self.max_strain_spinbox.value() <= 0: QMessageBox.warning(self, "Invalid Parameter", "Max Strain must be > 0 for a Tension staircase."); return
-                if params['direction'] == "Compression" and self.min_strain_spinbox.value() >= 0: QMessageBox.warning(self, "Invalid Parameter", "Min Strain must be < 0 for a Compression staircase."); return
-                self._last_staircase_params = params; self.graph_widget.generate_staircase_scheme(params['cycles'], params['factor'], params['direction'])
-            elif scheme == "Cyclic Loading":
-                self._last_cyclic_params = params; self.graph_widget.generate_cyclic_scheme(params['cycles'], params['relax_factor'], params['start_with'])
-
-
-
-    def _setup_undo_redo(self):
-        self.undo_action = QAction("Undo", self)
-        self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
-        self.undo_action.triggered.connect(self.undo)
-        self.addAction(self.undo_action)
-
-        self.redo_action = QAction("Redo", self)
-        self.redo_action.setShortcut(QKeySequence("Ctrl+Y"))
-        self.redo_action.triggered.connect(self.redo)
-        self.addAction(self.redo_action)
-
-        self.undo_button.clicked.connect(self.undo)
-        self.redo_button.clicked.connect(self.redo)
-
-        # Use a single connection for all change events to prevent duplicate recordings
-        self.graph_widget.dataChanged.connect(self._schedule_undo_save)
-        
-        # Timer to debounce undo saves
-        self._undo_debounce_timer = QTimer()
-        self._undo_debounce_timer.setSingleShot(True)
-        self._undo_debounce_timer.timeout.connect(self._save_state_for_undo)
-        
-    def _schedule_undo_save(self):
-        # Debounce undo saves to prevent multiple recordings of the same user action
-        self._undo_debounce_timer.start(50)  # 50ms debounce
-
-        self.update_undo_redo_buttons()
-
-    def _save_state_for_undo(self):
-        state = self.get_undo_state()
-        if not self._undo_stack or self._undo_stack[-1] != state:
-            self._undo_stack.append(state)
-            self._redo_stack.clear()
-            self.update_undo_redo_buttons()
-
-    def undo(self):
-        if len(self._undo_stack) > 1:
-            # Move current state to redo stack
-            current_state = self._undo_stack.pop()
-            self._redo_stack.append(current_state)
-            # Restore previous state
-            previous_state = self._undo_stack[-1]
-            self.set_undo_state(previous_state)
-            self.update_undo_redo_buttons()
-
-    def redo(self):
-        if self._redo_stack:
-            # Move state from redo stack back to undo stack
-            state_to_redo = self._redo_stack.pop()
-            self._undo_stack.append(state_to_redo)
-            # Apply the state
-            self.set_undo_state(state_to_redo)
-            self.update_undo_redo_buttons()
-
-    def update_undo_redo_buttons(self):
-        self.undo_button.setEnabled(len(self._undo_stack) > 1)
-        self.redo_button.setEnabled(len(self._redo_stack) > 0)
-        self.undo_action.setEnabled(len(self._undo_stack) > 1)
-        self.redo_action.setEnabled(len(self._redo_stack) > 0)
-
-    def get_undo_state(self):
-        return {
-            'data_points': [QPointF(p.x(), p.y()) for p in self.graph_widget.get_data_points()],
-            'max_steps': self.max_steps_spinbox.value(),
-            'min_strain': self.min_strain_spinbox.value(),
-            'max_strain': self.max_strain_spinbox.value(),
-        }
-
-    def set_undo_state(self, state):
-        self.max_steps_spinbox.blockSignals(True)
-        self.min_strain_spinbox.blockSignals(True)
-        self.max_strain_spinbox.blockSignals(True)
-
-        self.max_steps_spinbox.setValue(state['max_steps'])
-        self.min_strain_spinbox.setValue(state['min_strain'])
-        self.max_strain_spinbox.setValue(state['max_strain'])
-
-        self.max_steps_spinbox.blockSignals(False)
-        self.min_strain_spinbox.blockSignals(False)
-        self.max_strain_spinbox.blockSignals(False)
-
-        self._update_graph_controls()
-        self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in state['data_points']]
-        self.graph_widget.update()
-        self.dataChanged.emit()
-
-    def _update_graph_controls(self):
         max_steps = self.max_steps_spinbox.value()
-        min_val = self.min_strain_spinbox.value()
-        max_val = self.max_strain_spinbox.value()
-
-        self.min_strain_spinbox.blockSignals(True)
-        self.max_strain_spinbox.blockSignals(True)
-
-        if self.mode == 'Deformation':
-            self.min_strain_spinbox.setRange(-0.999999, 1e9)
-            self.max_strain_spinbox.setRange(-1e9, 1e9)
-            if min_val > 0:
-                min_val = -min_val
-                self.min_strain_spinbox.setValue(min_val)
-            if min_val <= -1:
-                min_val = -0.999
-                self.min_strain_spinbox.setValue(min_val)
-            if max_val < 0:
-                max_val = -max_val
-                self.max_strain_spinbox.setValue(max_val)
-        else: # Temperature
-            self.min_strain_spinbox.setRange(0.001, 1e9)
-            self.max_strain_spinbox.setRange(0.001, 1e9)
-            if min_val < 0.001:
-                self.min_strain_spinbox.setValue(0.001)
-            if max_val < 0.001:
-                self.max_strain_spinbox.setValue(0.001)
-
-        self.min_strain_spinbox.blockSignals(False)
-        self.max_strain_spinbox.blockSignals(False)
-
-        self.max_steps_spinbox.setSingleStep(max(1, int(max_steps * 0.02)))
-        self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_val) * 0.02) if min_val != 0 else 0.001)
-        self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_val) * 0.02) if max_val != 0 else 0.001)
-
-        if self.min_strain_spinbox.value() >= self.max_strain_spinbox.value():
-            self.min_strain_spinbox.blockSignals(True)
-            self.min_strain_spinbox.setValue(round(self.max_strain_spinbox.value() - 0.01, 3))
-            self.min_strain_spinbox.blockSignals(False)
-
-        self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), self.max_strain_spinbox.value())
-    def _show_preset_dialog(self):
-        dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, self)
+        dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, max_steps, self)
         if dialog.exec():
             scheme, params = dialog.get_parameters()
             self._last_scheme = scheme
             if scheme == "Staircase Loading":
-                if params['direction'] == "Tension" and self.max_strain_spinbox.value() <= 0: QMessageBox.warning(self, "Invalid Parameter", "Max Strain must be > 0 for a Tension staircase."); return
-                if params['direction'] == "Compression" and self.min_strain_spinbox.value() >= 0: QMessageBox.warning(self, "Invalid Parameter", "Min Strain must be < 0 for a Compression staircase."); return
-                self._last_staircase_params = params; self.graph_widget.generate_staircase_scheme(params['cycles'], params['factor'], params['direction'])
+                direction = params['direction']
+                is_temp_mode = self.mode == 'Temperature'
+                if not is_temp_mode:
+                    if direction == "Tension" and self.max_strain_spinbox.value() <= 0:
+                        QMessageBox.warning(self, "Invalid Parameter", "Max Strain must be > 0 for a Tension staircase."); return
+                    if direction == "Compression" and self.min_strain_spinbox.value() >= 0:
+                        QMessageBox.warning(self, "Invalid Parameter", "Min Strain must be < 0 for a Compression staircase."); return
+
+                self._last_staircase_params = params
+                self.graph_widget.generate_staircase_scheme(params['equilibration_steps'], params['cycles'], params['factor'], params['direction'])
             elif scheme == "Cyclic Loading":
-                self._last_cyclic_params = params; self.graph_widget.generate_cyclic_scheme(params['cycles'], params['relax_factor'], params['start_with'])
+                self._last_cyclic_params = params
+                self.graph_widget.generate_cyclic_scheme(params['equilibration_steps'], params['cycles'], params['relax_factor'], params['start_with'])
+
+
+
     def _setup_undo_redo(self):
         self.undo_action = QAction("Undo", self)
         self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
@@ -1328,11 +1347,6 @@ class StudyWidget(QWidget):
 
         # Use a single connection for all change events to prevent duplicate recordings
         self.graph_widget.dataChanged.connect(self._schedule_undo_save)
-        
-        # Connect editingFinished signals for spinboxes
-        self.max_steps_spinbox.editingFinished.connect(self._schedule_undo_save)
-        self.min_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
-        self.max_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
         
         # Timer to debounce undo saves
         self._undo_debounce_timer = QTimer()
@@ -1402,6 +1416,8 @@ class StudyWidget(QWidget):
         self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in state['data_points']]
         self.graph_widget.update()
         self.dataChanged.emit()
+
+
 
     def get_state(self):
         return {
@@ -1582,21 +1598,53 @@ class StudyWidget(QWidget):
         self.dataChanged.emit() # Emit dataChanged to update summaries
 
     def set_mode(self, mode):
+        if self.mode == mode:
+            return
+
+        self._is_mode_switching = True
+
         self.mode = mode
         is_temp_mode = mode == 'Temperature'
+
+        # Set ranges FIRST to avoid clamping issues
+        if is_temp_mode:
+            self.min_strain_spinbox.setRange(0.001, 1e9)
+            self.max_strain_spinbox.setRange(0.001, 1e9)
+        else:
+            self.min_strain_spinbox.setRange(-0.999999, 1e9)
+            self.max_strain_spinbox.setRange(-1e9, 1e9)
+
+        # Adjust min/max based on slope
+        points = self.graph_widget.get_data_points()
+        if len(points) > 1:
+            first_point = points[0]
+            last_point = points[-1]
+
+            dx = last_point.x() - first_point.x()
+            dy = last_point.y() - first_point.y()
+            slope = dy / dx if dx != 0 else 0
+
+            if is_temp_mode:
+                self.min_strain_spinbox.setValue(1.0)
+                self.max_strain_spinbox.setValue(300.0)
+            else:  # Deformation mode
+                if slope >= 0:
+                    self.min_strain_spinbox.setValue(0.0)
+                    self.max_strain_spinbox.setValue(0.5)
+                else:
+                    self.min_strain_spinbox.setValue(-0.5)
+                    self.max_strain_spinbox.setValue(0.0)
 
         self.min_strain_spinbox.setPrefix("Min Temp: " if is_temp_mode else "Min Strain: ")
         self.max_strain_spinbox.setPrefix("Max Temp: " if is_temp_mode else "Max Strain: ")
 
         self.temp_spinbox.setVisible(not is_temp_mode)
-        # Show/hide deformation direction fields based on mode
         self.deform_axis_label.setVisible(not is_temp_mode)
         self.deform_axis_combo.setVisible(not is_temp_mode)
         self.deform_scenario_label.setVisible(not is_temp_mode)
         self.deform_scenario_combo.setVisible(not is_temp_mode)
 
         self.graph_widget.set_mode(mode)
-
         self._update_graph_controls()
 
         button_style = "background-color: darkorange;" if is_temp_mode else ""
@@ -1604,13 +1652,14 @@ class StudyWidget(QWidget):
         self.redo_button.setStyleSheet(button_style)
         self.generate_button.setStyleSheet(button_style)
         self.reset_button.setStyleSheet(button_style)
-        
-        # Notify the parent DeformationTab to update tab colors
+
         parent_tab = self.parent().parent() if self.parent() and self.parent().parent() else None
         if parent_tab and hasattr(parent_tab, '_update_tab_colors'):
             parent_tab._update_tab_colors()
-        
+
         self.dataChanged.emit()
+
+        self._is_mode_switching = False
 
 class DeformationTab(QWidget):
     def __init__(self, main_window, parent=None):

@@ -1339,7 +1339,11 @@ class LammpsGui(QMainWindow):
         thermo_freq_layout.addWidget(thermo_freq_label)
         thermo_freq_layout.addWidget(self.thermo_freq_spinbox)
         thermo_freq_layout.addStretch()
-        thermo_top_layout.addLayout(thermo_freq_layout, 4)
+        thermo_top_layout.addLayout(thermo_freq_layout, 2)
+
+        self.add_target_to_thermo_check = QCheckBox("Add Target Strain/Temp to Thermo")
+        self.add_target_to_thermo_check.setToolTip("If checked, adds the target strain/temperature for the current study step to the thermo output.")
+        thermo_top_layout.addWidget(self.add_target_to_thermo_check, 2)
 
         thermo_layout.addLayout(thermo_top_layout)
 
@@ -2182,11 +2186,10 @@ class LammpsGui(QMainWindow):
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_freq": self.thermo_freq_spinbox.value(),
                 "thermo_style": self.thermo_style.toPlainText(),
-                "enable_custom_computes": self.enable_custom_computes.isChecked(),
+                "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
-
                 "custom_dumps": self.custom_dumps_text.toPlainText(),
-                    "write_data_option": self.write_data_combo.currentText(),
+                "write_data_option": self.write_data_combo.currentText(),
             },
             
             "multistudy": {
@@ -2298,6 +2301,7 @@ class LammpsGui(QMainWindow):
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
             self.thermo_style.setPlainText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
+            self.add_target_to_thermo_check.setChecked(self.settings.value("output/add_target_to_thermo", False, type=bool))
             self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
 
@@ -2620,10 +2624,11 @@ class LammpsGui(QMainWindow):
                 self.traj_format.setCurrentText(output.get("traj_format", "lammpstrj"))
                 self.trj_output_items.setPlainText(output.get("trj_output_items", "id type x y z fx fy fz"))
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
+                self.thermo_freq_spinbox.setValue(output.get("thermo_freq", 100))
                 self.thermo_style.setPlainText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
+                self.add_target_to_thermo_check.setChecked(output.get("add_target_to_thermo", False))
                 self.enable_custom_computes.setChecked(output.get("enable_custom_computes", False))
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
-
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
                 # For backward compatibility, handle the old boolean setting
                 if "write_data_option" in output:
