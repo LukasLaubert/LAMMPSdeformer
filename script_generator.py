@@ -54,12 +54,19 @@ class LammpsScriptGenerator:
         
         # 3. Validate Potential File (if enabled)
         if system_config.get("use_potential_file", False):
-            potential_file = system_config.get("potential_file", "")
-            if not potential_file:
-                return {"success": False, "message": "Potential file usage is enabled, but no file path is specified."}
+            potential_source = system_config.get("potential_source", "file")
             
-            if not os.path.exists(potential_file):
-                return {"success": False, "message": f"Potential file does not exist: {potential_file}\nPlease check your selection in the System Configuration tab."}
+            if potential_source == "file":
+                potential_file = system_config.get("potential_file", "")
+                if not potential_file:
+                    return {"success": False, "message": "Potential file usage is enabled, but no file path is specified."}
+                
+                if not os.path.exists(potential_file):
+                    return {"success": False, "message": f"Potential file does not exist: {potential_file}\nPlease check your selection in the System Configuration tab."}
+            elif potential_source == "text":
+                potential_content = system_config.get("potential_content", "")
+                if not potential_content.strip():
+                    return {"success": False, "message": "Potential usage is enabled (text mode), but no potential commands were provided."}
 
         # 4. Resolve and Validate System Files
         if os.path.isfile(system_path):
@@ -155,18 +162,27 @@ class LammpsScriptGenerator:
                 system_name = Path(system_file).stem
                 data_file_dest = os.path.join(data_files_folder, f"{system_name}.data")
                 
-                # Process the data file to remove Pair Coeffs section if it exists
-                self.process_and_copy_data_file(system_file, data_file_dest)
+                # Copy the data file directly without modification
+                shutil.copy2(system_file, data_file_dest)
                 
                 data_file_dest_paths[system_file] = (Path("_input_files") / f"{system_name}.data").as_posix()
             
             # Copy potential file
+            # Copy or create potential file
             if system_config.get("use_potential_file", False):
-                potential_file = system_config.get("potential_file", "")
-                # We validated existence in validate_configuration, so this is safe
-                if os.path.exists(potential_file):
-                    potential_dest = os.path.join(data_files_folder, Path(potential_file).name)
-                    shutil.copy2(potential_file, potential_dest)
+                potential_source = system_config.get("potential_source", "file")
+                
+                if potential_source == "file":
+                    potential_file = system_config.get("potential_file", "")
+                    # We validated existence in validate_configuration, so this is safe
+                    if os.path.exists(potential_file):
+                        potential_dest = os.path.join(data_files_folder, Path(potential_file).name)
+                        shutil.copy2(potential_file, potential_dest)
+                elif potential_source == "text":
+                    potential_content = system_config.get("potential_content", "")
+                    potential_dest = os.path.join(data_files_folder, "custom.potential")
+                    with open(potential_dest, 'w') as f:
+                        f.write(potential_content)
             
             # Generate scripts for each deformation study and system combination
             for study in deform_studies:
@@ -218,52 +234,6 @@ class LammpsScriptGenerator:
             
         except Exception as e:
             return {"success": False, "message": f"Error generating scripts: {str(e)}"}
-        
-    def process_and_copy_data_file(self, source_path, dest_path):
-        """
-        Process and copy a data file, removing the 'Pair Coeffs' section if present.
-        
-        This function copies a LAMMPS data file from source to destination, but removes
-        the 'Pair Coeffs' section if it exists to avoid the error:
-        ERROR: Must define pair_style before Pair Coeffs (src/read_data.cpp:686)
-        """
-        with open(source_path, 'r') as infile:
-            lines = infile.readlines()
-        
-        # Process lines to remove Pair Coeffs section if it exists
-        processed_lines = []
-        in_pair_coeffs_section = False
-        current_line_index = 0
-        
-        while current_line_index < len(lines):
-            line = lines[current_line_index]
-            line_stripped = line.strip()
-            
-            if line_stripped.startswith("Pair Coeffs"):
-                # Found the start of the Pair Coeffs section, skip it
-                in_pair_coeffs_section = True
-                current_line_index += 1
-                continue
-            
-            # Check if we are in the Pair Coeffs section and if this line starts with a letter
-            if in_pair_coeffs_section:
-                # Check if the line starts with a letter (non-whitespace character)
-                line_stripped_no_ws = line.lstrip()  # Remove leading whitespace
-                if line_stripped_no_ws and line_stripped_no_ws[0].isalpha():
-                    # This is the start of the next section, so we're done skipping
-                    in_pair_coeffs_section = False
-                    # Add this line to the output as it's the start of the next section
-                    processed_lines.append(lines[current_line_index])
-                # Skip all lines while in_pair_coeffs_section is True
-            else:
-                # We're not in the Pair Coeffs section, so add the line to output
-                processed_lines.append(lines[current_line_index])
-            
-            current_line_index += 1
-        
-        # Write the processed content to the destination
-        with open(dest_path, 'w') as outfile:
-            outfile.writelines(processed_lines)
 
     def save_settings_to_json(self, root_simulation_dir):
         """Save all settings to a JSON file in the root folder"""
@@ -342,22 +312,39 @@ class LammpsScriptGenerator:
                     ""
                 ])
 
+            # Prepare potential include line
+            potential_include_line = ""
+            potential_position = system_config.get("potential_position", "after")
+            
+            if system_config.get("use_potential_file", False):
+                potential_source = system_config.get("potential_source", "file")
+                if potential_source == "file":
+                    potential_file = system_config.get("potential_file", "")
+                    if potential_file:
+                        potential_filename = Path(potential_file).name
+                        potential_include_line = f"include ../../_input_files/{potential_filename}"
+                else: # text
+                    potential_include_line = "include ../../_input_files/custom.potential"
+
+            if potential_include_line and potential_position == "before":
+                script_lines.extend([potential_include_line, ""])
+
             if enable_restart:
                 script_lines.extend([
                     "#------------------------", "# Restart Setup", "#------------------------",
                     "shell \"mkdir -p restart_files\"",
                     f"if \"${{curstep}} > 0\" then \"read_restart restart_files/{model_name}.restart.${{curstep}}\" &",
-                    f"else \"read_data ../../{data_file}\"", ""
+                    "else &",
+                    f"  \"read_data ../../{data_file}\"",
+                    ""
                 ])
             else:
-                script_lines.extend(["#------------------------", "# System Setup", "#------------------------", f"read_data ../../{data_file}"])
+                script_lines.extend(["#------------------------", "# System Setup", "#------------------------"])
+                script_lines.append([f"read_data ../../{data_file}", ""])
             
-            if system_config.get("use_potential_file", False):
-                potential_file = system_config.get("potential_file", "")
-                if potential_file:
-                    potential_path = (Path("_input_files") / Path(potential_file).name).as_posix()
-                    script_lines.extend([f"include ../../{potential_path}", ""])
-
+            # Add potential after read_data if configured
+            if potential_include_line and potential_position == "after":
+                script_lines.extend([potential_include_line, ""])
             # --- New logic for preserving initial box dimensions ---
             if enable_restart:
                 new_lines = [
@@ -937,12 +924,21 @@ class LammpsScriptGenerator:
         """Generate execution script for local, multi-terminal processing."""
         try:
             import platform
-            current_os = platform.system().lower()
-            
             job_config = self.config.get("job_submission", {})
+            os_type = job_config.get("os_type", "Auto-detect")
+            
+            is_unix = False
+            if os_type == "Windows":
+                is_unix = False
+            elif os_type == "Unix/Linux":
+                is_unix = True
+            else:
+                # Auto-detect
+                current_os = platform.system().lower()
+                is_unix = current_os in ['linux', 'darwin']
             
             # --- Define OS-specific commands and script structure ---
-            if current_os in ['linux', 'darwin']:  # Linux or Mac
+            if is_unix:  # Linux or Mac
                 exec_path = os.path.join(root_simulation_dir, "local_run_all.sh")
                 lines = [
                     "#!/bin/bash",
@@ -998,7 +994,7 @@ class LammpsScriptGenerator:
                     ])
 
             # --- Add final messages ---
-            if current_os in ['linux', 'darwin']:
+            if is_unix:
                 lines.extend(["echo 'All simulation terminals started.'", "echo 'Each simulation runs in its own terminal window.'", ""])
             else:
                 lines.extend(["echo All simulation terminals started.", "echo Each simulation runs in its own command prompt window.", ""])
@@ -1007,7 +1003,7 @@ class LammpsScriptGenerator:
             with open(exec_path, 'w', newline='\n') as f:
                 f.write("\n".join(lines))
             
-            if current_os in ['linux', 'darwin']:
+            if is_unix:
                 os.chmod(exec_path, 0o755)
             
             self.generated_files.append(exec_path)
@@ -1136,23 +1132,17 @@ class LammpsScriptGenerator:
                 "dimension 3",
                 f"boundary {config.get('boundary_x', 'p')} {config.get('boundary_y', 'p')} {config.get('boundary_z', 'p')}",
                 "", "# Ensemble Settings", f"timestep {config.get('timestep', 0.001)}",
-                "", "# Neighbor Settings",
+                ""
             ]
-            if config.get('enable_neighbor_distance', True):
-                lines.append(f"neighbor {config.get('neighbor_distance', 0.3)} bin")
-            
-            neigh_modify_parts = ["neigh_modify"]
-            if config.get('enable_neigh_modify_every', True): neigh_modify_parts.append(f"every {config.get('neigh_modify_every', 1)}")
-            if config.get('enable_neigh_modify_delay', True): neigh_modify_parts.append(f"delay {config.get('neigh_modify_delay', 10)}")
-            if config.get('enable_neigh_modify_check', True): neigh_modify_parts.append(f"check {config.get('neigh_modify_check', 'yes')}")
-            if config.get('enable_neigh_modify_one', False): neigh_modify_parts.append(f"one {config.get('neigh_modify_one', 0)}")
-            
-            if len(neigh_modify_parts) > 1:
-                lines.append(" ".join(neigh_modify_parts))
+
+            # --- Custom Commands (formerly neighbor settings) ---
+            custom_commands = config.get("custom_commands", "")
+            if custom_commands:
+                lines.extend(["# Custom Commands", custom_commands, ""])
 
             # --- Strain and Stress Variables ---
             lines.extend([
-                "", "# Strain and Stress Variables",
+                "# Strain and Stress Variables",
                 "variable strain_xx equal (lx-v_L0x)/v_L0x",
                 "variable strain_yy equal (ly-v_L0y)/v_L0y",
                 "variable strain_zz equal (lz-v_L0z)/v_L0z",
@@ -1170,15 +1160,8 @@ class LammpsScriptGenerator:
                 ""
             ])
 
-            # --- Custom Fixes ---
-            fixes_config = self.config.get("fixes", {})
-            if fixes_config.get("enable_custom_fixes", False):
-                custom_fixes = fixes_config.get("custom_fixes", "")
-                if custom_fixes:
-                    lines.extend(["", "# Custom Fixes", custom_fixes, ""])
-
             # --- Custom Computes ---
-            output_config = self.config.get("output", {})
+            output_config = self.config.get("output", {}) # We removed fixes tab, so we don't look at fixes_config anymore
             if output_config.get("enable_custom_computes", False):
                 custom_computes = output_config.get("custom_computes", "")
                 if custom_computes:

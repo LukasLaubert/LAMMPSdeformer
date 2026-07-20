@@ -269,7 +269,7 @@ class LammpsGui(QMainWindow):
         # Create tabs
         self.create_system_tab()
         self.create_deformation_tab()
-        self.create_fixes_tab()
+
         self.create_output_tab()
         self.create_job_submission_tab()
         
@@ -393,30 +393,75 @@ class LammpsGui(QMainWindow):
         system_group.setLayout(system_layout_main)
         scroll_layout.addWidget(system_group)
         
-        # Potential file selection
-        potential_group = InfoGroupBox("Potential File Selection", "include")
+        # Potential Definition
+        potential_group = InfoGroupBox("Potential Definition", "include")
         potential_layout = QVBoxLayout(potential_group)
 
-        self.use_potential_file = QCheckBox("Use separate potential file")
-        self.use_potential_file.stateChanged.connect(self.toggle_potential_file)
-        self.use_potential_file.setToolTip("Enable to use a separate potential file instead of inline potentials")
-        potential_layout.addWidget(self.use_potential_file)
+        # Header row
+        header_layout = QHBoxLayout()
+        self.use_potential_file = QCheckBox("Use separate potential definition from")
+        self.use_potential_file.setChecked(False) 
+        self.use_potential_file.stateChanged.connect(self.toggle_potential_settings)
+        
+        self.potential_source_combo = QComboBox()
+        self.potential_source_combo.addItems(["file", "text"])
+        self.potential_source_combo.currentTextChanged.connect(self.update_potential_visibility)
+        
+        header_layout.addWidget(self.use_potential_file)
+        header_layout.addWidget(self.potential_source_combo)
+        header_layout.addWidget(QLabel("and initialize"))
+        
+        self.potential_pos_combo = QComboBox()
+        self.potential_pos_combo.addItems(["after", "before"])
+        self.potential_pos_combo.setCurrentText("after")
+        header_layout.addWidget(self.potential_pos_combo)
+        
+        header_layout.addWidget(QLabel("reading atom data"))
+        header_layout.addStretch()
+        
+        potential_layout.addLayout(header_layout)
 
-        # Potential extensions (UI removed by user request)
-
-        # Potential path
-        potential_path_layout = QHBoxLayout()
-        potential_path_label = QLabel("Potential File Path:")
-        potential_path_layout.addWidget(potential_path_label)
+        # File Mode UI
+        self.potential_file_widget = QWidget()
+        file_layout = QHBoxLayout(self.potential_file_widget)
+        file_layout.setContentsMargins(0,0,0,0)
         self.potential_path_edit = QLineEdit()
-        self.potential_path_edit.setEnabled(False)
         self.potential_path_browse = QPushButton("Browse...")
         self.potential_path_browse.clicked.connect(self.browse_potential_file)
-        self.potential_path_edit.setToolTip("Path to the potential file containing force field parameters")
-        self.potential_path_browse.setToolTip("Browse for potential file")
-        potential_path_layout.addWidget(self.potential_path_edit)
-        potential_path_layout.addWidget(self.potential_path_browse)
-        potential_layout.addLayout(potential_path_layout)
+        self.potential_path_edit.setToolTip("Path to the potential file")
+        file_layout.addWidget(QLabel("Path:"))
+        file_layout.addWidget(self.potential_path_edit)
+        file_layout.addWidget(self.potential_path_browse)
+        potential_layout.addWidget(self.potential_file_widget)
+
+        # Text Mode UI
+        self.potential_text_edit = QTextEdit()
+        self.potential_text_edit.setPlaceholderText("Enter potential commands here...")
+        self.set_precise_height(self.potential_text_edit, 4.3) # Precise 4.3 lines
+        
+        # Apply style to scrollbar
+        scrollbar_style = """
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 10px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """
+        self.potential_text_edit.setStyleSheet(scrollbar_style)
+        potential_layout.addWidget(self.potential_text_edit)
+        
+        # Initial visibility update
+        self.update_potential_visibility(self.potential_source_combo.currentText())
+        self.toggle_potential_settings(self.use_potential_file.checkState())
 
         scroll_layout.addWidget(potential_group)
         
@@ -452,8 +497,7 @@ class LammpsGui(QMainWindow):
         self.units_combo.currentTextChanged.connect(self.update_units_display)
         
         units_layout.addWidget(units_label)
-        units_layout.addWidget(self.units_combo)
-        units_layout.addStretch()
+        units_layout.addWidget(self.units_combo, 1) # Stretch to fill
         
         units_group.setLayout(units_layout)
         units_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -476,9 +520,8 @@ class LammpsGui(QMainWindow):
         timestep_label = QLabel("Timestep:")
 
         timestep_layout.addWidget(timestep_label)
-        timestep_layout.addWidget(self.timestep)
+        timestep_layout.addWidget(self.timestep, 1) # Stretch to fill
         timestep_layout.addWidget(self.timestep_unit_label)
-        timestep_layout.addStretch()
         timestep_group.setLayout(timestep_layout)
         timestep_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -536,193 +579,117 @@ class LammpsGui(QMainWindow):
         
         # Velocity initialization settings
         velocity_group = InfoGroupBox("Velocity Initialization", "velocity")
-        velocity_layout = QVBoxLayout()
+        velocity_layout = QHBoxLayout() # Changed to HBox
         
-        self.enable_velocity = QCheckBox("Enable Velocity Initialization")
+        self.enable_velocity = QCheckBox("Initialize velocity")
         self.enable_velocity.setChecked(True)
         self.enable_velocity.setToolTip("Enable initial velocity generation")
         self.enable_velocity.stateChanged.connect(self.toggle_velocity_settings)
+        velocity_layout.addWidget(self.enable_velocity)
         
-        velocity_form_layout = QFormLayout()
-        
+        velocity_layout.addSpacing(20)
+
         self.initial_velocity_seed = QSpinBox()
         self.initial_velocity_seed.setRange(1, 1000000)
         self.initial_velocity_seed.setValue(12345)
-        self.initial_velocity_seed.setToolTip("Random seed for initial velocity generation")
+        self.initial_velocity_seed.setToolTip("Random seed for initializing the velocity")
         
         self.damping_factor = QDoubleSpinBox()
         self.damping_factor.setRange(0.1, 1000)
         self.damping_factor.setValue(100.0)
         self.damping_factor.setSingleStep(10.0)
-        self.damping_factor.setToolTip("Damping factor as multiple of timestep")
+        self.damping_factor.setToolTip("Damping factor multiplied with timestep for thermostating the system")
         
-        velocity_label = QLabel("Velocity Settings:")
-        velocity_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            velocity_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        velocity_label.mousePressEvent = lambda e: self.open_lammps_doc("velocity")
-        velocity_label.setToolTip("Click to open LAMMPS velocity documentation")
+        velocity_layout.addWidget(QLabel("Seed:"))
+        velocity_layout.addWidget(self.initial_velocity_seed, 1)
+        velocity_layout.addSpacing(10)
+        velocity_layout.addWidget(QLabel("Damping factor:"))
+        velocity_layout.addWidget(self.damping_factor, 1)
         
-        velocity_form_layout.addRow("Random Seed:", self.initial_velocity_seed)
-        velocity_form_layout.addRow("Damping Factor:", self.damping_factor)
-        
-        velocity_layout.addWidget(self.enable_velocity)
-        velocity_layout.addLayout(velocity_form_layout)
         velocity_group.setLayout(velocity_layout)
         scroll_layout.addWidget(velocity_group)
         
-        # Neighbor settings
-        neighbor_group = InfoGroupBox("Neighbor Settings", "neighbor", additional_docs=[("neigh_modify", False)])
+        # Custom Commands (formerly Neighbor Settings)
+        custom_commands_group = InfoGroupBox("Custom Commands", "neighbor", additional_docs=[("comm_modify", False)])
+        custom_commands_layout = QVBoxLayout(custom_commands_group)
         
-        # Create horizontal layout to hold both the neighbor and neigh_modify settings
-        neighbor_main_layout = QVBoxLayout()
+        self.custom_commands_edit = QTextEdit()
+        self.custom_commands_edit.setPlaceholderText("e.g., neighbor 2.0 bin\nneigh_modify delay 5 every 1 check yes one 20000 page 200000\ncomm_modify cutoff 20.0")
         
-        # Neighbor settings layout
-        main_neighbor_layout = QHBoxLayout()
+        # Apply style to scrollbar
+        self.custom_commands_edit.setStyleSheet(scrollbar_style)
         
-        # Left column for neighbor distance
-        left_col_layout = QVBoxLayout()
-        left_col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # Align to top
+        # Fixed height (4 lines)
+        self.set_precise_height(self.custom_commands_edit, 4)
         
-        # Neighbor distance
-        neighbor_hbox_layout = QHBoxLayout()
-        self.enable_neighbor_distance = QCheckBox()
-        self.enable_neighbor_distance.setChecked(True)
-        self.enable_neighbor_distance.setToolTip("Enable neighbor distance setting")
-        
-        neighbor_distance_label = QLabel("Neighbor Distance:")
-        self.neighbor_distance = QDoubleSpinBox()
-        self.neighbor_distance.setRange(0, 100)
-        self.neighbor_distance.setValue(0.3)
-        self.neighbor_distance.setSingleStep(0.1)
-        self.neighbor_distance.setToolTip("Cutoff distance for neighbor list building")
-        self.neighbor_distance.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
-        
-        neighbor_hbox_layout.addWidget(self.enable_neighbor_distance)
-        neighbor_hbox_layout.addWidget(neighbor_distance_label)
-        neighbor_hbox_layout.addWidget(self.neighbor_distance)
-        
-        left_col_layout.addLayout(neighbor_hbox_layout)
-        
-        # Right column for neigh_modify settings
-        right_col_layout = QVBoxLayout()
-        right_col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # Align to top
-        
-        # Neigh modify every
-        neigh_modify_every_hbox_layout = QHBoxLayout()
-        self.enable_neigh_modify_every = QCheckBox()
-        self.enable_neigh_modify_every.setChecked(True)
-        self.enable_neigh_modify_every.setToolTip("Enable neigh_modify every setting")
-        
-        neigh_modify_every_label = QLabel("Neigh Modify Every:")
-        self.neigh_modify_every = QSpinBox()
-        self.neigh_modify_every.setRange(1, 1000)
-        self.neigh_modify_every.setValue(1)
-        self.neigh_modify_every.setToolTip("How often to rebuild neighbor list")
-        self.neigh_modify_every.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
-        
-        neigh_modify_every_hbox_layout.addWidget(self.enable_neigh_modify_every)
-        neigh_modify_every_hbox_layout.addWidget(neigh_modify_every_label)
-        neigh_modify_every_hbox_layout.addWidget(self.neigh_modify_every)
-        
-        right_col_layout.addLayout(neigh_modify_every_hbox_layout)
-        
-        # Neigh modify delay
-        neigh_modify_delay_hbox_layout = QHBoxLayout()
-        self.enable_neigh_modify_delay = QCheckBox()
-        self.enable_neigh_modify_delay.setChecked(True)
-        self.enable_neigh_modify_delay.setToolTip("Enable neigh_modify delay setting")
-        
-        neigh_modify_delay_label = QLabel("Neigh Modify Delay:")
-        self.neigh_modify_delay = QSpinBox()
-        self.neigh_modify_delay.setRange(0, 1000)
-        self.neigh_modify_delay.setValue(10)
-        self.neigh_modify_delay.setToolTip("Delay between neighbor list builds")
-        self.neigh_modify_delay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
-        
-        neigh_modify_delay_hbox_layout.addWidget(self.enable_neigh_modify_delay)
-        neigh_modify_delay_hbox_layout.addWidget(neigh_modify_delay_label)
-        neigh_modify_delay_hbox_layout.addWidget(self.neigh_modify_delay)
-        
-        right_col_layout.addLayout(neigh_modify_delay_hbox_layout)
-        
-        # Neigh modify check
-        neigh_modify_check_hbox_layout = QHBoxLayout()
-        self.enable_neigh_modify_check = QCheckBox()
-        self.enable_neigh_modify_check.setChecked(True)
-        self.enable_neigh_modify_check.setToolTip("Enable neigh_modify check setting")
-        
-        neigh_modify_check_label = QLabel("Neigh Modify Check:")
-        self.neigh_modify_check_combo = QComboBox()
-        self.neigh_modify_check_combo.addItems(["yes", "no"])
-        self.neigh_modify_check_combo.setCurrentText("yes")
-        self.neigh_modify_check_combo.setToolTip("Enable checking for neighbor list rebuilds")
-        self.neigh_modify_check_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
-        
-        neigh_modify_check_hbox_layout.addWidget(self.enable_neigh_modify_check)
-        neigh_modify_check_hbox_layout.addWidget(neigh_modify_check_label)
-        neigh_modify_check_hbox_layout.addWidget(self.neigh_modify_check_combo)
-        
-        right_col_layout.addLayout(neigh_modify_check_hbox_layout)
-        
-        # Neigh modify one
-        neigh_modify_one_hbox_layout = QHBoxLayout()
-        self.enable_neigh_modify_one = QCheckBox()
-        self.enable_neigh_modify_one.setChecked(False)
-        self.enable_neigh_modify_one.setToolTip("Enable neigh_modify one setting")
-        
-        neigh_modify_one_label = QLabel("Neigh Modify One:")
-        self.neigh_modify_one = QSpinBox()
-        self.neigh_modify_one.setRange(0, 10000)
-        self.neigh_modify_one.setValue(0)
-        self.neigh_modify_one.setToolTip("Number for 'neigh_modify one' option")
-        self.neigh_modify_one.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
-        
-        neigh_modify_one_hbox_layout.addWidget(self.enable_neigh_modify_one)
-        neigh_modify_one_hbox_layout.addWidget(neigh_modify_one_label)
-        neigh_modify_one_hbox_layout.addWidget(self.neigh_modify_one)
-        
-        right_col_layout.addLayout(neigh_modify_one_hbox_layout)
-        
-        # Put the columns into the main layout
-        main_neighbor_layout.addLayout(left_col_layout)
-        main_neighbor_layout.addLayout(right_col_layout)
-        
-        # Add the horizontal layout to the main neighbor layout
-        neighbor_main_layout.addLayout(main_neighbor_layout)
-        
-        # Create layout for the documentation icons in the top right
-        top_right_layout = QHBoxLayout()
-        
-        # Create a container layout to position the icons at the top
-        container_layout = QVBoxLayout()
-        container_layout.addLayout(top_right_layout)
-        container_layout.addLayout(neighbor_main_layout)
-        
-        neighbor_group.setLayout(container_layout)
-        scroll_layout.addWidget(neighbor_group)
+        custom_commands_layout.addWidget(self.custom_commands_edit)
+        scroll_layout.addWidget(custom_commands_group)
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
+
+    def adjust_text_height(self, text_edit, min_lines, max_lines):
+        """Adjust QTextEdit height dynamically based on content."""
+        doc = text_edit.document()
+        # Ensure layout is up to date
+        doc.adjustSize()
+        layout = doc.documentLayout()
         
-        # Connect neighbor setting checkboxes to their corresponding fields for graying out
-        self.enable_neighbor_distance.stateChanged.connect(
-            lambda state: self.toggle_field_enabled(self.neighbor_distance, state)
-        )
-        self.enable_neigh_modify_every.stateChanged.connect(
-            lambda state: self.toggle_field_enabled(self.neigh_modify_every, state)
-        )
-        self.enable_neigh_modify_delay.stateChanged.connect(
-            lambda state: self.toggle_field_enabled(self.neigh_modify_delay, state)
-        )
-        self.enable_neigh_modify_check.stateChanged.connect(
-            lambda state: self.toggle_field_enabled(self.neigh_modify_check_combo, state)
-        )
-        self.enable_neigh_modify_one.stateChanged.connect(
-            lambda state: self.toggle_field_enabled(self.neigh_modify_one, state)
-        )
+        # Calculate line height based on font metrics
+        font_metrics = text_edit.fontMetrics()
+        line_height = font_metrics.lineSpacing()
+        
+        # Calculate content height using document size
+        content_height = layout.documentSize().height()
+        
+        # Consistent padding matching graph_widgets.py (12px covers margins + frame)
+        padding = 12
+        
+        min_h = int(min_lines * line_height + padding)
+        max_h = int(max_lines * line_height + padding)
+        
+        # Determine new height
+        new_height = int(content_height + padding)
+        
+        # Clamp
+        if new_height < min_h:
+            new_height = min_h
+        if new_height > max_h:
+            new_height = max_h
+            
+        text_edit.setFixedHeight(new_height)
+
+    def set_precise_height(self, text_edit, num_lines):
+        """Set a precise fixed height based on line count."""
+        font_metrics = text_edit.fontMetrics()
+        line_height = font_metrics.lineSpacing()
+        padding = 12 # Consistent padding
+        height = int(num_lines * line_height + padding)
+        text_edit.setFixedHeight(height)
+        
+
+
+    def toggle_potential_settings(self, state):
+        """Toggle potential definition widgets."""
+        enabled = (state == Qt.CheckState.Checked.value)
+        self.potential_source_combo.setEnabled(enabled)
+        self.potential_pos_combo.setEnabled(enabled)
+        
+        # Also toggle current visible mode widget
+        self.update_potential_visibility(self.potential_source_combo.currentText())
+
+    def update_potential_visibility(self, source_text):
+        """Show/Hide potential widgets based on source selection."""
+        is_enabled = self.use_potential_file.isChecked()
+        
+        if source_text == "file":
+            self.potential_file_widget.setVisible(True)
+            self.potential_text_edit.setVisible(False)
+            self.potential_file_widget.setEnabled(is_enabled)
+        else:
+            self.potential_file_widget.setVisible(False)
+            self.potential_text_edit.setVisible(True)
+            self.potential_text_edit.setEnabled(is_enabled)
 
     def _add_chip(self, text, layout, remove_slot):
         chip = Chip(text)
@@ -804,10 +771,37 @@ class LammpsGui(QMainWindow):
     def add_averaged_quantity_chip(self, index):
         """Add a chip for the selected averaged quantity."""
         self._add_item_chip(index, self.averaged_quantities_combo, self.avg_chips_layout, self.remove_averaged_quantity_chip)
+        self._update_averaging_spinboxes_state()
 
     def remove_averaged_quantity_chip(self, text):
         """Remove an averaged quantity chip and add the option back to the combo box."""
         self._re_add_item_to_combo(text, self.averaged_quantities_combo, self.all_avg_quantities)
+        # Schedule update after event loop to ensure chip is removed
+        QTimer.singleShot(0, self._update_averaging_spinboxes_state)
+
+    def _update_averaging_spinboxes_state(self):
+        """Enable/disable averaging spinboxes based on whether chips exist."""
+        has_chips = self.avg_chips_layout.count() > 0
+        
+        self.avg_nevery_spinbox.setEnabled(has_chips)
+        self.avg_nrepeat_spinbox.setEnabled(has_chips)
+        
+        color = "black" if has_chips else "gray"
+        style = f"color: {color};"
+        
+        if hasattr(self, 'avg_label_every'):
+            self.avg_label_every.setStyleSheet(style)
+        if hasattr(self, 'avg_label_timesteps'):
+            self.avg_label_timesteps.setStyleSheet(style)
+        if hasattr(self, 'avg_label_values'):
+            self.avg_label_values.setStyleSheet(style)
+        
+        if not has_chips:
+             self.avg_nevery_spinbox.setStyleSheet("color: gray;")
+             self.avg_nrepeat_spinbox.setStyleSheet("color: gray;")
+        else:
+             self.avg_nevery_spinbox.setStyleSheet("")
+             self.avg_nrepeat_spinbox.setStyleSheet("")
 
     def add_eng_strain_chip(self, index):
         """Add a chip for the selected engineering strain."""
@@ -884,72 +878,7 @@ class LammpsGui(QMainWindow):
             self.avg_nrepeat_spinbox.setValue(max_nrepeat)
             self.avg_nrepeat_spinbox.blockSignals(False)
 
-    def create_fixes_tab(self):
-        """Create the fixes tab"""
-        self.fixes_tab = QWidget()
-        self.tab_widget.addTab(self.fixes_tab, "Fixes && Computes")
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
-        scroll.setWidget(scroll_widget)
-
-        fixes_layout = QVBoxLayout(self.fixes_tab)
-        fixes_layout.addWidget(scroll)
-
-        # Custom fixes
-        custom_fixes_group = InfoGroupBox("Custom Fixes", "fix")
-        custom_fixes_layout = QVBoxLayout()
-
-        self.enable_custom_fixes = QCheckBox("Enable Custom Fixes")
-        self.enable_custom_fixes.setChecked(False)
-        self.enable_custom_fixes.setToolTip("Enable custom fix commands")
-        self.enable_custom_fixes.stateChanged.connect(self.toggle_custom_fixes)
-
-        self.custom_fixes_text = QTextEdit()
-        self.custom_fixes_text.setPlaceholderText("Enter custom fix commands here...")
-        self.custom_fixes_text.setMaximumHeight(150)  # Significantly reduce height
-        self.custom_fixes_text.setEnabled(False)
-        self.custom_fixes_text.setToolTip("Custom LAMMPS fix commands")
-
-        custom_fixes_layout.addWidget(self.enable_custom_fixes)
-        custom_fixes_layout.addWidget(self.custom_fixes_text)
-        custom_fixes_group.setLayout(custom_fixes_layout)
-        scroll_layout.addWidget(custom_fixes_group)
-
-        # Custom computes
-        custom_computes_group = InfoGroupBox("Custom Computes", "compute")
-        custom_computes_layout = QVBoxLayout()
-
-        self.enable_custom_computes = QCheckBox("Enable Custom Computes")
-        self.enable_custom_computes.setChecked(False)
-        self.enable_custom_computes.setToolTip("Enable custom compute commands")
-        self.enable_custom_computes.stateChanged.connect(self.toggle_custom_computes)
-
-        # Add compute commands button - place it on the same line as the checkbox
-        top_layout = QHBoxLayout()
-        top_layout.addWidget(self.enable_custom_computes)
-        top_layout.addStretch()
-
-        self.compute_commands_button = QPushButton("Add Compute Command")
-        self.compute_commands_button.clicked.connect(self.show_compute_commands_dialog)
-        self.compute_commands_button.setMaximumWidth(180)  # Limit button width
-        top_layout.addWidget(self.compute_commands_button)
-
-        self.custom_computes_text = QTextEdit()
-        self.custom_computes_text.setPlaceholderText("Enter custom compute commands here...")
-        self.custom_computes_text.setMaximumHeight(150)
-        self.custom_computes_text.setEnabled(False)
-        self.custom_computes_text.setToolTip("Custom LAMMPS compute commands")
-
-        custom_computes_layout.addLayout(top_layout)
-        custom_computes_layout.addWidget(self.custom_computes_text)
-        custom_computes_group.setLayout(custom_computes_layout)
-        scroll_layout.addWidget(custom_computes_group)
-
-        scroll_layout.addStretch()
-        
     def toggle_velocity_settings(self, state):
         """Toggle velocity initialization fields based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
@@ -1540,11 +1469,14 @@ class LammpsGui(QMainWindow):
         time_averaged_layout.addLayout(self.avg_chips_layout)
         time_averaged_layout.addWidget(self.averaged_quantities_combo, 1)
         time_averaged_layout.addStretch(0)
-        time_averaged_layout.addWidget(QLabel("every"))
+        self.avg_label_every = QLabel("every")
+        time_averaged_layout.addWidget(self.avg_label_every)
         time_averaged_layout.addWidget(self.avg_nevery_spinbox)
-        time_averaged_layout.addWidget(QLabel("timesteps and consider"))
+        self.avg_label_timesteps = QLabel("timesteps and consider")
+        time_averaged_layout.addWidget(self.avg_label_timesteps)
         time_averaged_layout.addWidget(self.avg_nrepeat_spinbox)
-        time_averaged_layout.addWidget(QLabel("values before thermo ouput"))
+        self.avg_label_values = QLabel("values before thermo ouput")
+        time_averaged_layout.addWidget(self.avg_label_values)
         
         avg_time_url = QUrl("https://docs.lammps.org/fix_ave_time.html")
         avg_time_tooltip = "Click to open LAMMPS documentation for fix ave/time"
@@ -1562,6 +1494,7 @@ class LammpsGui(QMainWindow):
         thermo_layout.addLayout(time_averaged_layout)
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
+        self._update_averaging_spinboxes_state()
 
         # Trajectory output settings
         traj_group = InfoGroupBox("Trajectory Output Settings", "dump")
@@ -1684,6 +1617,13 @@ class LammpsGui(QMainWindow):
         self.log_file_name.setPlaceholderText("job.log")
         self.log_file_name.setToolTip("Name of the log file for LAMMPS output. If empty, no log file will be created.")
         local_layout.addRow(self.log_file_name_label, self.log_file_name)
+        
+        # OS Selection
+        self.os_selection_label = QLabel("Operating System:")
+        self.os_selection_combo = QComboBox()
+        self.os_selection_combo.addItems(["Auto-detect", "Windows", "Unix/Linux"])
+        self.os_selection_combo.setToolTip("Select the operating system for local execution script generation")
+        local_layout.addRow(self.os_selection_label, self.os_selection_combo)
 
         local_group.setLayout(local_layout)
         scroll_layout.addWidget(local_group)
@@ -1752,7 +1692,7 @@ class LammpsGui(QMainWindow):
         restart_options_layout.setContentsMargins(0, 0, 0, 0)
 
         self.restart_freq_spinbox = QSpinBox()
-        self.restart_freq_spinbox.setRange(10, 1000000000000000)
+        self.restart_freq_spinbox.setRange(10, 2147483647)
         self.restart_freq_spinbox.setValue(100000)
         self.restart_freq_spinbox.setSingleStep(100)
         self.restart_freq_spinbox.setToolTip("Frequency (in MD steps) to write a restart file. For example, a value of 1000 will save the simulation state every 1000 steps.")
@@ -1999,73 +1939,14 @@ class LammpsGui(QMainWindow):
         enabled = state == Qt.CheckState.Checked.value
         # Stress calculations don't have additional settings currently, but added for consistency
     
-    def toggle_custom_computes(self, state):
-        """Toggle custom computes settings based on checkbox state"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.custom_computes_text.setEnabled(enabled)
-        
-    def show_compute_commands_dialog(self):
-        """Show dialog with common compute commands"""
-        commands = [
-            "compute ke all ke/atom",
-            "compute pe all pe/atom",
-            "compute stress all stress/atom NULL",
-            "compute temp all temp",
-            "compute pressure all pressure",
-            "compute msd all msd"
-        ]
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Select Compute Command")
-        dialog.setMinimumSize(300, 200)
-        
-        layout = QVBoxLayout()
-        
-        list_widget = QListWidget()
-        list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)  # Allow only single selection
-        for command in commands:
-            list_widget.addItem(command)
-        
-        button_box = QDialogButtonBox()
-        add_button = QPushButton("Add")
-        button_box.addButton(add_button, QDialogButtonBox.ButtonRole.AcceptRole)
-        button_box.addButton(QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(lambda: self._add_selected_compute_command(list_widget, dialog))
-        button_box.rejected.connect(dialog.reject)
-        
-        layout.addWidget(list_widget)
-        layout.addWidget(button_box)
-        
-        dialog.setLayout(layout)
-        
-        dialog.exec()
-        
-    def _add_selected_compute_command(self, list_widget, dialog):
-        """Add selected compute command to the text field"""
-        selected_items = list_widget.selectedItems()
-        if selected_items:
-            command = selected_items[0].text()
-            # Enable the custom computes checkbox if it's not already enabled
-            if not self.enable_custom_computes.isChecked():
-                self.enable_custom_computes.setChecked(True)
-            
-            # Add the command to the text field
-            current_text = self.custom_computes_text.toPlainText()
-            if current_text:
-                self.custom_computes_text.setPlainText(current_text + "\n" + command)
-            else:
-                self.custom_computes_text.setPlainText(command)
-        dialog.accept()
-    
+
+
+
     def toggle_custom_dumps(self, state):
         """Toggle custom dumps settings based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         self.custom_dumps_text.setEnabled(enabled)
 
-    def toggle_custom_fixes(self, state):
-        """Toggle custom fixes settings based on checkbox state"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.custom_fixes_text.setEnabled(enabled)
 
     def toggle_field_enabled(self, field_widget, state):
         """Toggle field enabled state and appearance based on checkbox state"""
@@ -2333,7 +2214,7 @@ class LammpsGui(QMainWindow):
             color: #666666;
         }
         
-        QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+        QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
             border: 1px solid #cccccc;
             border-radius: 3px;
             padding: 2px;
@@ -2341,9 +2222,27 @@ class LammpsGui(QMainWindow):
             font-size: 12px;
             min-height: 16px;
         }
+
+        QComboBox {
+            border: 1px solid #cccccc;
+            border-radius: 3px;
+            padding: 2px;
+            background-color: white;
+            font-size: 12px;
+            min-height: 16px;
+            combobox-popup: 0;
+        }
         
         QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
             border: 1px solid #007acc;
+        }
+
+        QComboBox QAbstractItemView {
+            background-color: white;
+            selection-background-color: #007acc;
+            selection-color: white;
+            border: 1px solid #cccccc;
+            outline: none;
         }
         
         /* QCheckBox styling removed to revert to native look for visibility fix */
@@ -2417,6 +2316,10 @@ class LammpsGui(QMainWindow):
 
                 "use_potential_file": self.use_potential_file.isChecked(),
                 "potential_file": self.potential_path_edit.text(),
+                "potential_source": self.potential_source_combo.currentText(),
+                "potential_position": self.potential_pos_combo.currentText(),
+                "potential_content": self.potential_text_edit.toPlainText(),
+                
                 "atom_style": self.atom_style_combo.currentText(),
                 "units": self.units_combo.currentText(),
                 "boundary_x": self.boundary_x_combo.currentText(),
@@ -2425,22 +2328,11 @@ class LammpsGui(QMainWindow):
                 "enable_velocity": self.enable_velocity.isChecked(),
                 "initial_velocity_seed": self.initial_velocity_seed.value(),
                 "damping_factor": self.damping_factor.value(),
-                "neighbor_distance": self.neighbor_distance.value(),
-                "enable_neighbor_distance": self.enable_neighbor_distance.isChecked(),
-                "neigh_modify_every": self.neigh_modify_every.value(),
-                "enable_neigh_modify_every": self.enable_neigh_modify_every.isChecked(),
-                "neigh_modify_delay": self.neigh_modify_delay.value(),
-                "enable_neigh_modify_delay": self.enable_neigh_modify_delay.isChecked(),
-                "neigh_modify_check": self.neigh_modify_check_combo.currentText(),
-                "enable_neigh_modify_check": self.enable_neigh_modify_check.isChecked(),
-                "neigh_modify_one": self.neigh_modify_one.value(),
-                "enable_neigh_modify_one": self.enable_neigh_modify_one.isChecked(),
+                
+                "custom_commands": self.custom_commands_edit.toPlainText(),
                 "timestep": self.timestep.value()
             },
-            "fixes": {
-                "enable_custom_fixes": self.enable_custom_fixes.isChecked(),
-                "custom_fixes": self.custom_fixes_text.toPlainText()
-            },
+
             "output": {
                 "output_path": self.output_path_edit.text(),
                 "enable_trajectory": self.enable_trajectory.isChecked(),
@@ -2456,8 +2348,7 @@ class LammpsGui(QMainWindow):
                 "avg_nevery": self.avg_nevery_spinbox.value(),
                 "avg_nrepeat": self.avg_nrepeat_spinbox.value(),
                 "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
-                "enable_custom_computes": self.enable_custom_computes.isChecked(),
-                "custom_computes": self.custom_computes_text.toPlainText(),
+
                 "custom_dumps": self.custom_dumps_text.toPlainText(),
                 "write_data_option": self.write_data_combo.currentText(),
             },
@@ -2471,6 +2362,7 @@ class LammpsGui(QMainWindow):
                 "local_processors": self.local_processors_spinbox.value(),
                 "local_lammps_executable": self.local_lammps_executable.text() or "lmp_mpi",
                 "log_file_name": self.log_file_name.text() or "job.log",
+                "os_type": self.os_selection_combo.currentText(),
                 "cluster_lammps_cmd": self.cluster_lammps_cmd.text() or "lmp",
                 "srun_cmd": self.srun_cmd.text() or "srun",
                 "sbatch_cmd": self.sbatch_cmd.text() or "sbatch",
@@ -2558,9 +2450,10 @@ class LammpsGui(QMainWindow):
 
             
             self.use_potential_file.setChecked(self.settings.value("system/use_potential_file", False, type=bool))
-            potential_file = self.settings.value("system/potential_file", "")
-            if potential_file:
-                self.potential_path_edit.setText(potential_file)
+            self.potential_path_edit.setText(self.settings.value("system/potential_file", ""))
+            self.potential_source_combo.setCurrentText(self.settings.value("system/potential_source", "file"))
+            self.potential_pos_combo.setCurrentText(self.settings.value("system/potential_position", "after"))
+            self.potential_text_edit.setPlainText(self.settings.value("system/potential_content", ""))
             
             self.atom_style_combo.setCurrentText(self.settings.value("system/atom_style", "atomic"))
             self.units_combo.setCurrentText(self.settings.value("system/units", "metal"))
@@ -2570,21 +2463,13 @@ class LammpsGui(QMainWindow):
             self.enable_velocity.setChecked(self.settings.value("system/enable_velocity", True, type=bool))
             self.initial_velocity_seed.setValue(self.settings.value("system/initial_velocity_seed", 12345, type=int))
             self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
-            self.neighbor_distance.setValue(self.settings.value("system/neighbor_distance", 0.3, type=float))
-            self.enable_neighbor_distance.setChecked(self.settings.value("system/enable_neighbor_distance", True, type=bool))
-            self.neigh_modify_every.setValue(self.settings.value("system/neigh_modify_every", 1, type=int))
-            self.enable_neigh_modify_every.setChecked(self.settings.value("system/enable_neigh_modify_every", True, type=bool))
-            self.neigh_modify_delay.setValue(self.settings.value("system/neigh_modify_delay", 10, type=int))
-            self.enable_neigh_modify_delay.setChecked(self.settings.value("system/enable_neigh_modify_delay", True, type=bool))
-            self.neigh_modify_check_combo.setCurrentText(self.settings.value("system/neigh_modify_check", "yes"))
-            self.enable_neigh_modify_check.setChecked(self.settings.value("system/enable_neigh_modify_check", True, type=bool))
-            self.neigh_modify_one.setValue(self.settings.value("system/neigh_modify_one", 0, type=int))
-            self.enable_neigh_modify_one.setChecked(self.settings.value("system/enable_neigh_modify_one", False, type=bool))
+            
+            self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
+            
+            self.custom_commands_edit.setPlainText(self.settings.value("system/custom_commands", ""))
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
             
-            # Fixes settings
-            self.enable_custom_fixes.setChecked(self.settings.value("fixes/enable_custom_fixes", False, type=bool))
-            self.custom_fixes_text.setPlainText(self.settings.value("fixes/custom_fixes", ""))
+
             
             # Output settings
             self.output_path_edit.setText(self.settings.value("output/output_path", ""))
@@ -2600,13 +2485,13 @@ class LammpsGui(QMainWindow):
             self.apply_chips_from_settings('output/eng_strains', self.eng_strains_chips_layout, self.all_eng_strains, self.eng_strains_combo, self.remove_eng_strain_chip)
             self.apply_chips_from_settings('output/cauchy_stresses', self.cauchy_stresses_chips_layout, self.all_cauchy_stresses, self.cauchy_stresses_combo, self.remove_cauchy_stress_chip)
             self.apply_chips_from_settings('output/averaged_quantities', self.avg_chips_layout, self.all_avg_quantities, self.averaged_quantities_combo, self.remove_averaged_quantity_chip)
+            self._update_averaging_spinboxes_state()
 
             self.avg_nevery_spinbox.setValue(self.settings.value('output/avg_nevery', 10, type=int))
             self.avg_nrepeat_spinbox.setValue(self.settings.value('output/avg_nrepeat', 100, type=int))
 
             self.add_target_to_thermo_check.setChecked(self.settings.value("output/add_target_to_thermo", False, type=bool))
-            self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
-            self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
+
 
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
             # For backward compatibility, handle the old boolean setting
@@ -2622,6 +2507,7 @@ class LammpsGui(QMainWindow):
             self.local_multiprocessor_check.setChecked(self.settings.value("job_submission/local_multiprocessor", False, type=bool))
             self.local_processors_spinbox.setValue(self.settings.value("job_submission/local_processors", 4, type=int))
             self.local_lammps_executable.setText(self.settings.value("job_submission/local_lammps_executable", "lmp_mpi"))
+            self.os_selection_combo.setCurrentText(self.settings.value("job_submission/os_type", "Auto-detect"))
             self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
             self.log_file_name.setText(self.settings.value("job_submission/log_file_name", "job.log"))
             self.cluster_lammps_cmd.setText(self.settings.value("job_submission/cluster_lammps_cmd", ""))
@@ -2745,6 +2631,10 @@ class LammpsGui(QMainWindow):
 
             self.settings.setValue("system/use_potential_file", config["system"]["use_potential_file"])
             self.settings.setValue("system/potential_file", config["system"]["potential_file"])
+            self.settings.setValue("system/potential_source", config["system"]["potential_source"])
+            self.settings.setValue("system/potential_position", config["system"]["potential_position"])
+            self.settings.setValue("system/potential_content", config["system"]["potential_content"])
+            
             self.settings.setValue("system/atom_style", config["system"]["atom_style"])
             self.settings.setValue("system/units", config["system"]["units"])
             self.settings.setValue("system/boundary_x", config["system"]["boundary_x"])
@@ -2753,21 +2643,11 @@ class LammpsGui(QMainWindow):
             self.settings.setValue("system/enable_velocity", config["system"]["enable_velocity"])
             self.settings.setValue("system/initial_velocity_seed", config["system"]["initial_velocity_seed"])
             self.settings.setValue("system/damping_factor", config["system"]["damping_factor"])
-            self.settings.setValue("system/neighbor_distance", config["system"]["neighbor_distance"])
-            self.settings.setValue("system/enable_neighbor_distance", config["system"]["enable_neighbor_distance"])
-            self.settings.setValue("system/neigh_modify_every", config["system"]["neigh_modify_every"])
-            self.settings.setValue("system/enable_neigh_modify_every", config["system"]["enable_neigh_modify_every"])
-            self.settings.setValue("system/neigh_modify_delay", config["system"]["neigh_modify_delay"])
-            self.settings.setValue("system/enable_neigh_modify_delay", config["system"]["enable_neigh_modify_delay"])
-            self.settings.setValue("system/neigh_modify_check", config["system"]["neigh_modify_check"])
-            self.settings.setValue("system/enable_neigh_modify_check", config["system"]["enable_neigh_modify_check"])
-            self.settings.setValue("system/neigh_modify_one", config["system"]["neigh_modify_one"])
-            self.settings.setValue("system/enable_neigh_modify_one", config["system"]["enable_neigh_modify_one"])
+            
+            self.settings.setValue("system/custom_commands", config["system"]["custom_commands"])
             self.settings.setValue("system/timestep", config["system"]["timestep"])
             
-            # Save fixes settings
-            for key, value in config["fixes"].items():
-                self.settings.setValue(f"fixes/{key}", value)
+
             
             # Save output settings
             for key, value in config["output"].items():
@@ -3054,6 +2934,10 @@ class LammpsGui(QMainWindow):
 
                 self.use_potential_file.setChecked(system.get("use_potential_file", False))
                 self.potential_path_edit.setText(system.get("potential_file", ""))
+                self.potential_source_combo.setCurrentText(system.get("potential_source", "file"))
+                self.potential_pos_combo.setCurrentText(system.get("potential_position", "after"))
+                self.potential_text_edit.setPlainText(system.get("potential_content", ""))
+                
                 self.atom_style_combo.setCurrentText(system.get("atom_style", "atomic"))
                 self.units_combo.setCurrentText(system.get("units", "metal"))
                 self.boundary_x_combo.setCurrentText(system.get("boundary_x", "p"))
@@ -3062,23 +2946,11 @@ class LammpsGui(QMainWindow):
                 self.enable_velocity.setChecked(system.get("enable_velocity", True))
                 self.initial_velocity_seed.setValue(system.get("initial_velocity_seed", 12345))
                 self.damping_factor.setValue(system.get("damping_factor", 100.0))
-                self.neighbor_distance.setValue(system.get("neighbor_distance", 0.3))
-                self.enable_neighbor_distance.setChecked(system.get("enable_neighbor_distance", True))
-                self.neigh_modify_every.setValue(system.get("neigh_modify_every", 1))
-                self.enable_neigh_modify_every.setChecked(system.get("enable_neigh_modify_every", True))
-                self.neigh_modify_delay.setValue(system.get("neigh_modify_delay", 10))
-                self.enable_neigh_modify_delay.setChecked(system.get("enable_neigh_modify_delay", True))
-                self.neigh_modify_check_combo.setCurrentText(system.get("neigh_modify_check", "yes"))
-                self.enable_neigh_modify_check.setChecked(system.get("enable_neigh_modify_check", True))
-                self.neigh_modify_one.setValue(system.get("neigh_modify_one", 0))
-                self.enable_neigh_modify_one.setChecked(system.get("enable_neigh_modify_one", False))
+                
+                self.custom_commands_edit.setPlainText(system.get("custom_commands", ""))
                 self.timestep.setValue(system.get("timestep", 0.001))
 
-            # Fixes configuration
-            if "fixes" in config:
-                fixes = config["fixes"]
-                self.enable_custom_fixes.setChecked(fixes.get("enable_custom_fixes", False))
-                self.custom_fixes_text.setPlainText(fixes.get("custom_fixes", ""))
+
 
             # Output configuration
             if "output" in config:
@@ -3099,8 +2971,7 @@ class LammpsGui(QMainWindow):
                 self.avg_nevery_spinbox.setValue(output.get('avg_nevery', 10))
                 self.avg_nrepeat_spinbox.setValue(output.get('avg_nrepeat', 100))
                 self.add_target_to_thermo_check.setChecked(output.get("add_target_to_thermo", False))
-                self.enable_custom_computes.setChecked(output.get("enable_custom_computes", False))
-                self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
+
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
                 # For backward compatibility, handle the old boolean setting
                 if "write_data_option" in output:
@@ -3119,6 +2990,7 @@ class LammpsGui(QMainWindow):
                 self.local_lammps_executable.setText(job_submission.get("local_lammps_executable", "lmp_mpi"))
                 self.local_lammps_cmd.setText(job_submission.get("local_lammps_cmd", "lmp"))
                 self.log_file_name.setText(job_submission.get("log_file_name", "job.log"))
+                self.os_selection_combo.setCurrentText(job_submission.get("os_type", "Auto-detect"))
                 self.cluster_lammps_cmd.setText(job_submission.get("cluster_lammps_cmd", "lmp"))
                 self.srun_cmd.setText(job_submission.get("srun_cmd", "srun"))
                 self.sbatch_cmd.setText(job_submission.get("sbatch_cmd", "sbatch"))
