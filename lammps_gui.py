@@ -603,7 +603,10 @@ class LammpsScriptGenerator(QMainWindow):
 
         # Custom fixes
         custom_fixes_group = InfoGroupBox("Custom Fixes", "fix")
+        custom_fixes_group.setFixedHeight(120)  # Set fixed height for the entire group box
         custom_fixes_layout = QVBoxLayout()
+        custom_fixes_layout.setSpacing(2)  # Reduce spacing between elements
+        custom_fixes_layout.setContentsMargins(5, 5, 5, 5)  # Reduce margins
 
         self.enable_custom_fixes = QCheckBox("Enable Custom Fixes")
         self.enable_custom_fixes.setChecked(False)
@@ -612,7 +615,8 @@ class LammpsScriptGenerator(QMainWindow):
 
         self.custom_fixes_text = QTextEdit()
         self.custom_fixes_text.setPlaceholderText("Enter custom fix commands here...")
-        self.custom_fixes_text.setMaximumHeight(80)  # Reduce height to match other custom sections
+        self.custom_fixes_text.setMaximumHeight(60)  # Significantly reduce height
+        self.custom_fixes_text.setMinimumHeight(60)  # Set minimum height too
         self.custom_fixes_text.setEnabled(False)
         self.custom_fixes_text.setToolTip("Custom LAMMPS fix commands")
 
