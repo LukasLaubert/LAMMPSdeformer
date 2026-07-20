@@ -1661,18 +1661,19 @@ class LammpsScriptGenerator(QMainWindow):
                 "custom_dumps": self.custom_dumps_text.toPlainText()
             },
             "cluster": {
+                # Cluster configuration with default values since cluster tab was removed
                 # "execution_mode": self.execution_mode_combo.currentText(),  # Removed - no longer needed
-                "lammps_command": self.lammps_command_edit.text(),
-                "threads": self.threads_spin.value(),
-                "cluster_partition": self.cluster_partition.text(),
-                "cluster_nodes": self.cluster_nodes.value(),
-                "cluster_ntasks": self.cluster_ntasks.value(),
-                "cluster_time": self.cluster_time.text(),
-                "cluster_mail": self.cluster_mail.text(),
-                "cluster_mail_type": self.cluster_mail_type.currentText(),
-                "auto_submit": self.auto_submit.isChecked(),
-                "show_command": self.show_command.isChecked(),
-                "save_scripts_only": self.save_scripts_only.isChecked()
+                "lammps_command": "lmp",  # Default value
+                "threads": 4,  # Default value
+                "cluster_partition": "singlenode",  # Default value
+                "cluster_nodes": 1,  # Default value
+                "cluster_ntasks": 72,  # Default value
+                "cluster_time": "24:00:00",  # Default value
+                "cluster_mail": "",  # Default value
+                "cluster_mail_type": "ALL",  # Default value
+                "auto_submit": False,  # Default value
+                "show_command": True,  # Default value
+                "save_scripts_only": False  # Default value
             },
             "multistudy": {
                 "deform_studies": []
@@ -1749,19 +1750,19 @@ class LammpsScriptGenerator(QMainWindow):
             self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
             
-            # Cluster settings (removed - no longer needed)
+            # Cluster settings (removed - no longer needed, widgets don't exist)
             # self.execution_mode_combo.setCurrentText(self.settings.value("cluster/execution_mode", "local"))
-            self.lammps_command_edit.setText(self.settings.value("cluster/lammps_command", "lmp"))
-            self.threads_spin.setValue(self.settings.value("cluster/threads", 4, type=int))
-            self.cluster_partition.setText(self.settings.value("cluster/cluster_partition", "singlenode"))
-            self.cluster_nodes.setValue(self.settings.value("cluster/cluster_nodes", 1, type=int))
-            self.cluster_ntasks.setValue(self.settings.value("cluster/cluster_ntasks", 72, type=int))
-            self.cluster_time.setText(self.settings.value("cluster/cluster_time", "24:00:00"))
-            self.cluster_mail.setText(self.settings.value("cluster/cluster_mail", ""))
-            self.cluster_mail_type.setCurrentText(self.settings.value("cluster/cluster_mail_type", "ALL"))
-            self.auto_submit.setChecked(self.settings.value("cluster/auto_submit", False, type=bool))
-            self.show_command.setChecked(self.settings.value("cluster/show_command", True, type=bool))
-            self.save_scripts_only.setChecked(self.settings.value("cluster/save_scripts_only", False, type=bool))
+            # self.lammps_command_edit.setText(self.settings.value("cluster/lammps_command", "lmp"))
+            # self.threads_spin.setValue(self.settings.value("cluster/threads", 4, type=int))
+            # self.cluster_partition.setText(self.settings.value("cluster/cluster_partition", "singlenode"))
+            # self.cluster_nodes.setValue(self.settings.value("cluster/cluster_nodes", 1, type=int))
+            # self.cluster_ntasks.setValue(self.settings.value("cluster/cluster_ntasks", 72, type=int))
+            # self.cluster_time.setText(self.settings.value("cluster/cluster_time", "24:00:00"))
+            # self.cluster_mail.setText(self.settings.value("cluster/cluster_mail", ""))
+            # self.cluster_mail_type.setCurrentText(self.settings.value("cluster/cluster_mail_type", "ALL"))
+            # self.auto_submit.setChecked(self.settings.value("cluster/auto_submit", False, type=bool))
+            # self.show_command.setChecked(self.settings.value("cluster/show_command", True, type=bool))
+            # self.save_scripts_only.setChecked(self.settings.value("cluster/save_scripts_only", False, type=bool))
             
             # Multi-study settings
             
@@ -1964,21 +1965,21 @@ class LammpsScriptGenerator(QMainWindow):
                 self.enable_custom_dumps.setChecked(output.get("enable_custom_dumps", False))
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
             
-            # Cluster configuration
+            # Cluster configuration (widgets removed, so skip loading)
             if "cluster" in config:
                 cluster = config["cluster"]
                 # self.execution_mode_combo.setCurrentText(cluster.get("execution_mode", "local"))  # Removed - no longer needed
-                self.lammps_command_edit.setText(cluster.get("lammps_command", "lmp"))
-                self.threads_spin.setValue(cluster.get("threads", 4))
-                self.cluster_partition.setText(cluster.get("cluster_partition", "singlenode"))
-                self.cluster_nodes.setValue(cluster.get("cluster_nodes", 1))
-                self.cluster_ntasks.setValue(cluster.get("cluster_ntasks", 72))
-                self.cluster_time.setText(cluster.get("cluster_time", "24:00:00"))
-                self.cluster_mail.setText(cluster.get("cluster_mail", ""))
-                self.cluster_mail_type.setCurrentText(cluster.get("cluster_mail_type", "ALL"))
-                self.auto_submit.setChecked(cluster.get("auto_submit", False))
-                self.show_command.setChecked(cluster.get("show_command", True))
-                self.save_scripts_only.setChecked(cluster.get("save_scripts_only", False))
+                # self.lammps_command_edit.setText(cluster.get("lammps_command", "lmp"))
+                # self.threads_spin.setValue(cluster.get("threads", 4))
+                # self.cluster_partition.setText(cluster.get("cluster_partition", "singlenode"))
+                # self.cluster_nodes.setValue(cluster.get("cluster_nodes", 1))
+                # self.cluster_ntasks.setValue(cluster.get("cluster_ntasks", 72))
+                # self.cluster_time.setText(cluster.get("cluster_time", "24:00:00"))
+                # self.cluster_mail.setText(cluster.get("cluster_mail", ""))
+                # self.cluster_mail_type.setCurrentText(cluster.get("cluster_mail_type", "ALL"))
+                # self.auto_submit.setChecked(cluster.get("auto_submit", False))
+                # self.show_command.setChecked(cluster.get("show_command", True))
+                # self.save_scripts_only.setChecked(cluster.get("save_scripts_only", False))
             
             # Multi-study configuration
             if "multistudy" in config:
