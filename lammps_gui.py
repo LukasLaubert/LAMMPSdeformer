@@ -1310,9 +1310,15 @@ class LAMMPSdeformerGui(QMainWindow):
         
         # Load saved settings
         self.load_settings()
+
+        # Connect main tab widget switch to handle dynamic resizing of system tab widget
+        self.tab_widget.currentChanged.connect(self._on_main_tab_changed)
         
         # Set up exception handling for crash recovery
         sys.excepthook = self.handle_exception
+        
+        # Trigger an initial height update for startup
+        self._update_system_tab_height()
         
     def handle_exception(self, exc_type, exc_value, exc_traceback):
         """Handle uncaught exceptions and save settings"""
@@ -1349,6 +1355,11 @@ class LAMMPSdeformerGui(QMainWindow):
         
         # Accept the close event
         event.accept()
+
+    def _on_main_tab_changed(self, index):
+        """Handle main window tab change to ensure system tab height is recalculated when it becomes active"""
+        if index == 0:
+            self._update_system_tab_height()
     
     def create_system_tab(self):
         """Create the system configuration tab"""
@@ -1590,7 +1601,7 @@ class LAMMPSdeformerGui(QMainWindow):
             widget = item.widget()
             
             # Sum up visible widgets, ignore spacers/stretch
-            if widget and widget.isVisible():
+            if widget and not widget.isHidden():
                 total_height += widget.sizeHint().height()
                 visible_count += 1
         
@@ -2519,7 +2530,7 @@ class LAMMPSdeformerGui(QMainWindow):
         write_data_group = InfoGroupBox("Write Atom Data", "write_data")
         write_data_layout = QVBoxLayout()
         self.write_data_combo = QComboBox()
-        self.write_data_combo.addItems(["Never", "After each deformation/temperature step", "At the end of the simulation"])
+        self.write_data_combo.addItems(["Never", "After each deformation/temperature step", "At the end of the simulation", "At Trajectory write frequency (see below)"])
         self.write_data_combo.setToolTip("Select when to write atom data.")
         write_data_layout.addWidget(self.write_data_combo)
         write_data_group.setLayout(write_data_layout)
@@ -2663,9 +2674,17 @@ class LAMMPSdeformerGui(QMainWindow):
         traj_format_layout = QHBoxLayout()
         traj_format_label = QLabel("Trajectory Format:")
         self.traj_format = QComboBox()
-        self.traj_format.addItems(["lammpstrj", "xyz", "dcd"])
+        self.traj_format.addItems(["lammpstrj", "xyz", "dcd", "data"])
         traj_format_layout.addWidget(traj_format_label)
         traj_format_layout.addWidget(self.traj_format)
+        
+        # New avoid coefficients checkbox
+        self.avoid_coefficients_checkbox = QCheckBox("avoid coefficients")
+        self.avoid_coefficients_checkbox.setToolTip("Skip writing potential/force field coefficients at the top of the data files (uses the 'nocoeff' keyword).")
+        self.avoid_coefficients_checkbox.setChecked(True)
+        self.avoid_coefficients_checkbox.setVisible(False)
+        traj_format_layout.addWidget(self.avoid_coefficients_checkbox)
+        
         traj_format_layout.addStretch()
         traj_top_layout.addLayout(traj_format_layout, 2)
         traj_layout.addLayout(traj_top_layout)
@@ -2699,8 +2718,31 @@ class LAMMPSdeformerGui(QMainWindow):
         custom_dumps_group.setMaximumHeight(112)
         scroll_layout.addWidget(custom_dumps_group)
         
+        self._prev_write_data_value = "Never"
+        self.write_data_combo.currentTextChanged.connect(self._on_write_data_changed)
+        self.traj_format.currentTextChanged.connect(self._on_traj_format_changed)
+        self.enable_trajectory.stateChanged.connect(self._on_enable_trajectory_changed)
+        
         scroll_layout.addStretch()
         
+    def _on_write_data_changed(self, text):
+        if text == "At Trajectory write frequency (see below)":
+            self.enable_trajectory.setChecked(True)
+            self.traj_format.setCurrentText("data")
+        else:
+            self._prev_write_data_value = text
+
+    def _on_traj_format_changed(self, text):
+        is_data = (text == "data")
+        self.avoid_coefficients_checkbox.setVisible(is_data)
+        if not is_data and self.write_data_combo.currentText() == "At Trajectory write frequency (see below)":
+            self.write_data_combo.setCurrentText(self._prev_write_data_value)
+
+    def _on_enable_trajectory_changed(self, state):
+        enabled = (state == Qt.CheckState.Checked.value or state == 2)
+        if not enabled and self.write_data_combo.currentText() == "At Trajectory write frequency (see below)":
+            self.write_data_combo.setCurrentText(self._prev_write_data_value)
+
     def create_job_submission_tab(self):
         """Create the job submission tab"""
         self.job_submission_tab = QWidget()
@@ -3392,6 +3434,7 @@ class LAMMPSdeformerGui(QMainWindow):
                 "enable_trajectory": self.enable_trajectory.isChecked(),
                 "traj_freq": self.traj_freq_spinbox.value(),
                 "traj_format": self.traj_format.currentText(),
+                "avoid_coefficients": self.avoid_coefficients_checkbox.isChecked(),
                 "trj_output_items": traj_items_str,
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_freq": self.thermo_freq_spinbox.value(),
@@ -3537,6 +3580,7 @@ class LAMMPSdeformerGui(QMainWindow):
             self.enable_trajectory.setChecked(self.settings.value("output/enable_trajectory", True, type=bool))
             self.traj_freq_spinbox.setValue(self.settings.value("output/traj_freq", 100, type=int))
             self.traj_format.setCurrentText(self.settings.value("output/traj_format", "lammpstrj"))
+            self.avoid_coefficients_checkbox.setChecked(self.settings.value("output/avoid_coefficients", True, type=bool))
             
             # Trajectory Items
             trj_items_str = self.settings.value("output/trj_output_items", "id type x y z vx vy vz")
@@ -4031,6 +4075,7 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.enable_trajectory.setChecked(output.get("enable_trajectory", True))
                 self.traj_freq_spinbox.setValue(output.get("traj_freq", 100))
                 self.traj_format.setCurrentText(output.get("traj_format", "lammpstrj"))
+                self.avoid_coefficients_checkbox.setChecked(output.get("avoid_coefficients", True))
                 
                 # Trajectory Items
                 trj_items_str = output.get("trj_output_items", "id type x y z vx vy vz")

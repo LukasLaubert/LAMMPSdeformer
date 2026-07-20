@@ -3006,7 +3006,7 @@ class StudyWidget(QWidget):
         
         self.deform_axis_label = QLabel("<b>Deform Direction:</b>")
         self.deform_axis_combo = QComboBox()
-        self.deform_axis_combo.addItems(["x", "y", "z", "xy", "xz", "yz"])
+        self.deform_axis_combo.addItems(["x", "y", "z", "vol", "xy", "xz", "yz"])
         self.deform_axis_combo.setMinimumWidth(40)
         self.deform_axis_combo.setMaximumWidth(50)
         self.deform_axis_combo.setStyleSheet("""
@@ -3609,7 +3609,7 @@ class StudyWidget(QWidget):
         npt_val = ensemble_state.get('npt_aniso', 'iso')
         self.npt_aniso_combo.setCurrentText(npt_val)
         # Update cache if loaded state is valid for tensile
-        if self.mode == 'Deformation' and len(self.deform_axis_combo.currentText()) == 1:
+        if self.mode == 'Deformation' and self.deform_axis_combo.currentText() not in ["xy", "xz", "yz"]:
              if npt_val in ["aniso", "tri"]:
                  self._tensile_npt_aniso_cache = npt_val
 
@@ -3815,7 +3815,7 @@ class StudyWidget(QWidget):
 
         has_free_npt = any(w.currentText() == "free (NPT)" for w in self.lateral_widgets.values())
         deform_axis = self.deform_axis_combo.currentText()
-        is_shear = len(deform_axis) > 1
+        is_shear = deform_axis in ["xy", "xz", "yz"]
 
         # NPT Aniso dropdown appears if at least one axis is free
         # BUT if it's shear, we hide it (implicitly tri) per requirements
@@ -3844,7 +3844,7 @@ class StudyWidget(QWidget):
         # Update cache if currently tensile and valid
         if self.mode == 'Deformation':
              deform_axis = self.deform_axis_combo.currentText()
-             is_shear = len(deform_axis) > 1
+             is_shear = deform_axis in ["xy", "xz", "yz"]
              if not is_shear and self.npt_aniso_combo.isVisible():
                  current = self.npt_aniso_combo.currentText()
                  if current in ["aniso", "tri"]:

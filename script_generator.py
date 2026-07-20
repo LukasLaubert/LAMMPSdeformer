@@ -580,7 +580,7 @@ class LAMMPSdeformerGenerator:
                         "variable chunk_start_time timer"
                     ])
                     
-                script_lines.extend(self._generate_chunk_block(block, deform_study))
+                script_lines.extend(self._generate_chunk_block(block, deform_study, model_name))
                 
                 if write_data_option == "After each deformation/temperature step":
                     if block['end_step'] in user_handle_steps:
@@ -701,21 +701,37 @@ class LAMMPSdeformerGenerator:
                 phase = self._format_float(segment_info.get('phase_shift_steps', 0))
                 ashift = self._format_float(segment_info.get('ashift_factor', 0))
                 
-                shear_dim_map = {'xy': 'y', 'xz': 'z', 'yz': 'z'}
-                ref_len_var = f"v_L0{shear_dim_map[deform_axis]}" if is_shear else f"v_L0{deform_axis}"
-                
-                lines.append(f"variable A equal {amp}*{ref_len_var}")
-                lines.append(f"variable Sp equal {period}")
-                lines.append(f"variable phaseShift equal {phase}")
-                lines.append(f"variable Ashift equal {ashift}*v_A")
-                
-                # Dynamic wave offset guarantees smooth resumption regardless of chunk step
-                lines.append(f"variable current_wave_val equal \"v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift\"")
-                lines.append(f"variable wave_offset equal ${{current_wave_val}}")
-                lines.append(f"variable displace equal \"v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift - v_wave_offset\"")
-                lines.append(f"variable rate equal \"2*PI/v_Sp * v_A * cos(2*PI * (step-v_phaseShift)/v_Sp)\"")
-                
-                lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap {remap_val} flip no")
+                if deform_axis == "vol":
+                    lines.append(f"variable Sp equal {period}")
+                    lines.append(f"variable phaseShift equal {phase}")
+                    deform_parts = []
+                    for ax in ['x', 'y', 'z']:
+                        lines.extend([
+                            f"variable A{ax} equal {amp}*v_L0{ax}",
+                            f"variable Ashift_{ax} equal {ashift}*v_A{ax}",
+                            f"variable current_wave_val_{ax} equal \"v_A{ax} * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift_{ax}\"",
+                            f"variable wave_offset_{ax} equal ${{current_wave_val_{ax}}}",
+                            f"variable displace_{ax} equal \"v_A{ax} * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift_{ax} - v_wave_offset_{ax}\"",
+                            f"variable rate_{ax} equal \"2*PI/v_Sp * v_A{ax} * cos(2*PI * (step-v_phaseShift)/v_Sp)\""
+                        ])
+                        deform_parts.append(f"{ax} variable v_displace_{ax} v_rate_{ax}")
+                    lines.append(f"fix deform all deform 1 {' '.join(deform_parts)} units box remap {remap_val} flip no")
+                else:
+                    shear_dim_map = {'xy': 'y', 'xz': 'z', 'yz': 'z'}
+                    ref_len_var = f"v_L0{shear_dim_map[deform_axis]}" if is_shear else f"v_L0{deform_axis}"
+                    
+                    lines.append(f"variable A equal {amp}*{ref_len_var}")
+                    lines.append(f"variable Sp equal {period}")
+                    lines.append(f"variable phaseShift equal {phase}")
+                    lines.append(f"variable Ashift equal {ashift}*v_A")
+                    
+                    # Dynamic wave offset guarantees smooth resumption regardless of chunk step
+                    lines.append(f"variable current_wave_val equal \"v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift\"")
+                    lines.append(f"variable wave_offset equal ${{current_wave_val}}")
+                    lines.append(f"variable displace equal \"v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift - v_wave_offset\"")
+                    lines.append(f"variable rate equal \"2*PI/v_Sp * v_A * cos(2*PI * (step-v_phaseShift)/v_Sp)\"")
+                    
+                    lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap {remap_val} flip no")
                 
             else: 
                 final_target_y = self._format_float(phase_end_y)
@@ -724,13 +740,34 @@ class LAMMPSdeformerGenerator:
                     lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box remap {remap_val} flip no")
                 else:
                     deform_scenario = deform_study.get("deform_scenario", "symmetric")
-                    if deform_scenario == "shift hi, fix lo":
-                        lines.extend([f'variable {deform_axis}lo_target equal v_{deform_axis}lo0', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y})"'])
-                    elif deform_scenario == "shift lo, fix hi":
-                        lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y})"', f"variable {deform_axis}hi_target equal v_{deform_axis}hi0"])
-                    else: 
-                        lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y}) / 2"', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y}) / 2"'])
-                    lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap {remap_val} flip no")
+                    if deform_axis == "vol":
+                        deform_parts = []
+                        for ax in ['x', 'y', 'z']:
+                            if deform_scenario == "shift hi, fix lo":
+                                lines.extend([
+                                    f'variable {ax}lo_target equal v_{ax}lo0',
+                                    f'variable {ax}hi_target equal "v_{ax}hi0 + (v_L0{ax} * {final_target_y})"'
+                                ])
+                            elif deform_scenario == "shift lo, fix hi":
+                                lines.extend([
+                                    f'variable {ax}lo_target equal "v_{ax}lo0 - (v_L0{ax} * {final_target_y})"',
+                                    f'variable {ax}hi_target equal v_{ax}hi0'
+                                ])
+                            else: 
+                                lines.extend([
+                                    f'variable {ax}lo_target equal "v_{ax}lo0 - (v_L0{ax} * {final_target_y}) / 2"',
+                                    f'variable {ax}hi_target equal "v_{ax}hi0 + (v_L0{ax} * {final_target_y}) / 2"'
+                                ])
+                            deform_parts.append(f"{ax} final ${{{ax}lo_target}} ${{{ax}hi_target}}")
+                        lines.append(f"fix deform all deform 1 {' '.join(deform_parts)} units box remap {remap_val} flip no")
+                    else:
+                        if deform_scenario == "shift hi, fix lo":
+                            lines.extend([f'variable {deform_axis}lo_target equal v_{deform_axis}lo0', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y})"'])
+                        elif deform_scenario == "shift lo, fix hi":
+                            lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y})"', f"variable {deform_axis}hi_target equal v_{deform_axis}hi0"])
+                        else: 
+                            lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y}) / 2"', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y}) / 2"'])
+                        lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap {remap_val} flip no")
 
         # --- Ensemble Setup ---
         study_lateral_settings = ensemble_config.get("lateral_contraction", {})
@@ -743,11 +780,14 @@ class LAMMPSdeformerGenerator:
             if is_strain_recovery:
                 npt_parts = []
                 target_p = "0.0" if is_shear else pressure
-                npt_parts.append(f"{deform_axis} {target_p} {target_p} $({1000}*dt)")
-
-                for ax in['x', 'y', 'z']:
-                    if ax != deform_axis and effective_lateral_settings.get(ax) == "free (NPT)":
-                        npt_parts.append(f"{ax} {pressure} {pressure} $({1000}*dt)")
+                if deform_axis == "vol":
+                    for ax in ['x', 'y', 'z']:
+                        npt_parts.append(f"{ax} {target_p} {target_p} $({1000}*dt)")
+                else:
+                    npt_parts.append(f"{deform_axis} {target_p} {target_p} $({1000}*dt)")
+                    for ax in ['x', 'y', 'z']:
+                        if ax != deform_axis and effective_lateral_settings.get(ax) == "free (NPT)":
+                            npt_parts.append(f"{ax} {pressure} {pressure} $({1000}*dt)")
                 
                 npt_aniso_effective = "tri" if is_shear else ensemble_config.get("npt_aniso", "aniso")
 
@@ -783,7 +823,7 @@ class LAMMPSdeformerGenerator:
         lines.append(f"jump SELF ${{resume_label}}")
         return lines
 
-    def _generate_chunk_block(self, block_info, deform_study):
+    def _generate_chunk_block(self, block_info, deform_study, model_name="model"):
         """Generates the execution chunk. Interpolation handled natively via start/stop."""
         lines = []
         uid = block_info['user_segment_id']
@@ -807,10 +847,20 @@ class LAMMPSdeformerGenerator:
 
         # --- Run logic (Native Interpolation) ---
         if duration > 0:
+            output_config = self.config.get("output", {})
+            traj_format = output_config.get('traj_format', 'lammpstrj')
+            enable_trajectory = output_config.get('enable_trajectory', True)
+            traj_freq = int(output_config.get('traj_freq', 100))
+            
+            every_clause = ""
+            if traj_format == "data" and enable_trajectory and traj_freq > 0:
+                nocoeff_str = " nocoeff" if output_config.get("avoid_coefficients", True) else ""
+                every_clause = f' every {traj_freq} "write_data {model_name}_*.data{nocoeff_str}"'
+                
             if phase_end_step > phase_start_step:
-                lines.append(f"run {int(duration)} start {phase_start_step} stop {phase_end_step}")
+                lines.append(f"run {int(duration)} start {phase_start_step} stop {phase_end_step}{every_clause}")
             else:
-                lines.append(f"run {int(duration)}")
+                lines.append(f"run {int(duration)}{every_clause}")
 
         # --- Phase Teardown ---
         if end_step == phase_end_step:
@@ -835,14 +885,20 @@ class LAMMPSdeformerGenerator:
         if mode == "Deformation":
             for strain in output_config.get("eng_strains", []):
                 if strain in ['strain deformation direction', 'deformation direction']:
-                    axis_suffix = deform_axis if is_shear else deform_axis * 2
+                    if deform_axis == "vol":
+                        axis_suffix = "xx"
+                    else:
+                        axis_suffix = deform_axis if is_shear else deform_axis * 2
                     thermo_style_parts.append(f"v_strain_{axis_suffix}")
                 elif strain in strain_map:
                     thermo_style_parts.append(f"v_{strain_map[strain]}")
             
             for stress in output_config.get("cauchy_stresses", []):
                 if stress in ['stress deformation direction', 'deformation direction']:
-                     axis_suffix = deform_axis if is_shear else deform_axis * 2
+                     if deform_axis == "vol":
+                         axis_suffix = "xx"
+                     else:
+                         axis_suffix = deform_axis if is_shear else deform_axis * 2
                      thermo_style_parts.append(f"v_cauchy_{axis_suffix}")
                 elif stress in stress_map:
                     thermo_style_parts.append(f"v_{stress_map[stress]}")
@@ -906,11 +962,17 @@ class LAMMPSdeformerGenerator:
                 
                 if item in ['strain deformation direction', 'deformation direction']:
                     if mode == "Deformation":
-                        axis_suffix = deform_axis if is_shear else deform_axis * 2
+                        if deform_axis == "vol":
+                            axis_suffix = "xx"
+                        else:
+                            axis_suffix = deform_axis if is_shear else deform_axis * 2
                         var_name = f"strain_{axis_suffix}"
                 elif item == 'stress deformation direction':
                     if mode == "Deformation":
-                        axis_suffix = deform_axis if is_shear else deform_axis * 2
+                        if deform_axis == "vol":
+                            axis_suffix = "xx"
+                        else:
+                            axis_suffix = deform_axis if is_shear else deform_axis * 2
                         var_name = f"cauchy_{axis_suffix}"
                 elif item in strain_map:
                     if mode == "Deformation": var_name = strain_map[item]
@@ -969,11 +1031,32 @@ class LAMMPSdeformerGenerator:
                 "thermo_modify lost warn flush yes", ""
             ])
         if config.get("enable_trajectory", True):
-            lines.extend([
-                f"dump trajectory all custom {config.get('traj_freq', 100)} {model_name}.{config.get('traj_format', 'lammpstrj')} {config.get('trj_output_items', 'id type x y z')}",
-                "dump_modify trajectory append yes",
-                ""
-            ])
+            traj_format = config.get('traj_format', 'lammpstrj')
+            if traj_format == "xyz":
+                lines.extend([
+                    f"dump trajectory all xyz {config.get('traj_freq', 100)} {model_name}.xyz",
+                    "dump_modify trajectory append yes",
+                    ""
+                ])
+            elif traj_format == "dcd":
+                lines.extend([
+                    f"dump trajectory all dcd {config.get('traj_freq', 100)} {model_name}.dcd",
+                    "dump_modify trajectory append yes",
+                    ""
+                ])
+            elif traj_format == "data":
+                nocoeff_str = " nocoeff" if config.get("avoid_coefficients", True) else ""
+                lines.extend([
+                    "# Trajectory output configured as periodic data files via write_data in the main execution runs.",
+                    f"if \"${{curstep}} == 0\" then \"write_data {model_name}_0.data{nocoeff_str}\"",
+                    ""
+                ])
+            else:
+                lines.extend([
+                    f"dump trajectory all custom {config.get('traj_freq', 100)} {model_name}.{traj_format} {config.get('trj_output_items', 'id type x y z')}",
+                    "dump_modify trajectory append yes",
+                    ""
+                ])
         if config.get("custom_dumps", ""):
             lines.extend(["# Custom Dumps", config.get("custom_dumps", ""), ""])
         return lines
