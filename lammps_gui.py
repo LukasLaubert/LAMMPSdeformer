@@ -27,7 +27,7 @@ try:
                                 QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
                                 QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
                                 QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate,
-                                QListWidget)
+                                QListWidget, QStyle)
     from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF
     from PyQt6.QtGui import QIcon, QDesktopServices, QCursor, QPalette, QColor
     
@@ -72,6 +72,47 @@ try:
     from graph_widgets import DeformationTab
 except ImportError as e:
     DeformationTab = None
+
+class Chip(QFrame):
+    """A custom chip widget to display a removable item."""
+    removed = pyqtSignal(str)
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.setLayout(QHBoxLayout())
+        self.layout().setContentsMargins(2, 0, 2, 0)
+        self.layout().setSpacing(2)
+        self.layout().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(18)
+
+        self.label = QLabel(text)
+        self.label.setStyleSheet("font-size: 9px;")
+        self.layout().addWidget(self.label)
+
+        self.remove_button = QPushButton()
+        close_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
+        self.remove_button.setIcon(close_icon)
+        self.remove_button.setIconSize(QSize(9, 9))
+        self.remove_button.setFixedSize(12, 12)
+        self.remove_button.setStyleSheet("""
+            QPushButton {
+                border: none; 
+                background-color: transparent;
+            }
+            QPushButton:hover {
+                background-color: #d3d3d3;
+                border-radius: 6px;
+            }
+        """)
+        self.remove_button.clicked.connect(self.on_remove)
+        self.layout().addWidget(self.remove_button)
+
+        self.setStyleSheet("background-color: #e0e0e0; border-radius: 8px;")
+
+    def on_remove(self):
+        self.removed.emit(self.text)
+        self.deleteLater()
 
 class InfoGroupBox(QGroupBox):
     def __init__(self, title, doc_link, parent=None, is_external=False):
@@ -156,6 +197,10 @@ class LammpsScriptGenerator(QMainWindow):
         # Track groupbox documentation links
         self.groupbox_doc_links = {}
         
+        # Custom data file extensions
+        self.data_file_extensions = [".data"]
+        self.potential_file_extensions = [".in", ".pot", ".potential"]
+        
         # Create main widget and layout
         self.main_widget = QWidget()
         self.setCentralWidget(self.main_widget)
@@ -237,8 +282,41 @@ class LammpsScriptGenerator(QMainWindow):
         system_group = InfoGroupBox("System Selection", "")
         system_layout_main = QVBoxLayout()
         
+        # Lower part of the system selection group
+        lower_layout = QHBoxLayout()
+
+        # File extensions for data files
+        extensions_group = QWidget()
+        extensions_layout = QHBoxLayout(extensions_group)
+        extensions_layout.setContentsMargins(0,0,0,0)
+        extensions_label = QLabel("File Extensions:")
+        self.extensions_input = QLineEdit()
+        self.extensions_input.setPlaceholderText("Add, e.g., .data, .txt, .atom")
+        self.extensions_input.returnPressed.connect(self._add_data_extension_chip)
+        self.extensions_input.editingFinished.connect(self._add_data_extension_chip)
+        self.extensions_input.installEventFilter(self)
+
+        self.chips_layout = QHBoxLayout()
+        self._add_chip(".data", self.chips_layout, self._remove_data_extension_chip)
+
+        extensions_layout.addWidget(extensions_label)
+        extensions_layout.addLayout(self.chips_layout)
+        extensions_layout.addWidget(self.extensions_input, 1)
+        
+        lower_layout.addWidget(extensions_group, 1)
+
+        # System type display
+        self.system_type_label = QLabel("System Type: Not selected")
+        self.system_type_label.setStyleSheet("font-weight: bold;")
+        lower_layout.addWidget(self.system_type_label)
+
+        system_layout_main.addLayout(lower_layout)
+
         # Single field for file/directory selection
         selection_layout = QHBoxLayout()
+        
+        system_path_label = QLabel("System File Path:")
+        selection_layout.addWidget(system_path_label)
         
         self.system_path_edit = QLineEdit()
         self.system_path_edit.setPlaceholderText("Select data file or directory containing data files")
@@ -253,11 +331,6 @@ class LammpsScriptGenerator(QMainWindow):
         
         system_layout_main.addLayout(selection_layout)
         
-        # System type display
-        self.system_type_label = QLabel("System Type: Not selected")
-        self.system_type_label.setStyleSheet("font-weight: bold;")
-        system_layout_main.addWidget(self.system_type_label)
-        
         # Update system type when path changes
         self.system_path_edit.textChanged.connect(self.update_system_type)
         
@@ -266,33 +339,49 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Potential file selection
         potential_group = InfoGroupBox("Potential File Selection", "include")
-        potential_layout = QFormLayout()
-        
+        potential_layout = QVBoxLayout(potential_group)
+
         self.use_potential_file = QCheckBox("Use separate potential file")
         self.use_potential_file.stateChanged.connect(self.toggle_potential_file)
         self.use_potential_file.setToolTip("Enable to use a separate potential file instead of inline potentials")
-        
+        potential_layout.addWidget(self.use_potential_file)
+
+        # Potential extensions
+        potential_extensions_layout = QHBoxLayout()
+        potential_extensions_label = QLabel("File Extensions:")
+        self.potential_extensions_input = QLineEdit()
+        self.potential_extensions_input.setPlaceholderText("Add, e.g., .in, .pot")
+        self.potential_extensions_input.returnPressed.connect(self._add_potential_extension_chip)
+        self.potential_extensions_input.editingFinished.connect(self._add_potential_extension_chip)
+        self.potential_extensions_input.installEventFilter(self)
+
+        self.potential_chips_layout = QHBoxLayout()
+        potential_extensions_layout.addWidget(potential_extensions_label)
+        potential_extensions_layout.addLayout(self.potential_chips_layout)
+        potential_extensions_layout.addWidget(self.potential_extensions_input, 1)
+        potential_layout.addLayout(potential_extensions_layout)
+
+        for ext in self.potential_file_extensions:
+            self._add_chip(ext, self.potential_chips_layout, self._remove_potential_extension_chip)
+
+        # Potential path
+        potential_path_layout = QHBoxLayout()
+        potential_path_label = QLabel("Potential File Path:")
+        potential_path_layout.addWidget(potential_path_label)
         self.potential_path_edit = QLineEdit()
         self.potential_path_edit.setEnabled(False)
         self.potential_path_browse = QPushButton("Browse...")
-        # Browse button should always be enabled to allow browsing and auto-checking the checkbox
         self.potential_path_browse.clicked.connect(self.browse_potential_file)
-        
-        # Add tooltips
         self.potential_path_edit.setToolTip("Path to the potential file containing force field parameters")
         self.potential_path_browse.setToolTip("Browse for potential file")
-        
-        potential_path_layout = QHBoxLayout()
         potential_path_layout.addWidget(self.potential_path_edit)
         potential_path_layout.addWidget(self.potential_path_browse)
-        
-        potential_label = QLabel("Potential File Path:")
-        potential_label.setToolTip("Click to open LAMMPS include documentation")
-        
-        potential_layout.addRow(self.use_potential_file)
-        potential_layout.addRow(potential_label, potential_path_layout)
-        potential_group.setLayout(potential_layout)
+        potential_layout.addLayout(potential_path_layout)
+
         scroll_layout.addWidget(potential_group)
+        
+        # Create a horizontal layout for the three widgets
+        settings_layout = QHBoxLayout()
         
         # Basic LAMMPS settings
         basic_group = InfoGroupBox("Basic LAMMPS Settings", "atom_style")
@@ -306,7 +395,7 @@ class LammpsScriptGenerator(QMainWindow):
         
         basic_layout.addRow(atom_style_label, self.atom_style_combo)
         basic_group.setLayout(basic_layout)
-        scroll_layout.addWidget(basic_group)
+        basic_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
         # Units selection (moved here from top)
         units_group = InfoGroupBox("Units Selection", "units")
@@ -327,7 +416,7 @@ class LammpsScriptGenerator(QMainWindow):
         units_layout.addStretch()
         
         units_group.setLayout(units_layout)
-        scroll_layout.addWidget(units_group)
+        units_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         # Timestep settings
         timestep_group = InfoGroupBox("Timestep Settings", "timestep")
@@ -351,7 +440,15 @@ class LammpsScriptGenerator(QMainWindow):
         timestep_layout.addWidget(self.timestep_unit_label)
         timestep_layout.addStretch()
         timestep_group.setLayout(timestep_layout)
-        scroll_layout.addWidget(timestep_group)
+        timestep_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        # Add all three widgets to the horizontal layout
+        settings_layout.addWidget(basic_group)
+        settings_layout.addWidget(units_group)
+        settings_layout.addWidget(timestep_group)
+        
+        # Add the horizontal layout to the scroll layout
+        scroll_layout.addLayout(settings_layout)
 
         # Boundary conditions
         boundary_group = InfoGroupBox("Boundary Conditions", "boundary")
@@ -478,6 +575,60 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
+
+    def _add_chip(self, text, layout, remove_slot):
+        chip = Chip(text)
+        chip.removed.connect(remove_slot)
+        layout.addWidget(chip)
+
+    def _add_data_extension_chip(self):
+        self._add_extension_chip(self.extensions_input, self.data_file_extensions, self.chips_layout, self._remove_data_extension_chip)
+
+    def _add_potential_extension_chip(self):
+        self._add_extension_chip(self.potential_extensions_input, self.potential_file_extensions, self.potential_chips_layout, self._remove_potential_extension_chip)
+
+    def _add_extension_chip(self, input_widget, extensions_list, chips_layout, remove_slot):
+        text = input_widget.text().strip()
+        delimiters = [',', ';', ':', ' ']
+        for delimiter in delimiters:
+            if delimiter in text:
+                extensions = [ext.strip() for ext in text.split(delimiter)]
+                for ext in extensions:
+                    if ext:
+                        self._add_single_extension(ext, extensions_list, chips_layout, remove_slot)
+                input_widget.clear()
+                return
+
+        if text:
+            self._add_single_extension(text, extensions_list, chips_layout, remove_slot)
+            input_widget.clear()
+
+    def _add_single_extension(self, text, extensions_list, chips_layout, remove_slot):
+        if not text.startswith('.'):
+            text = '.' + text
+        if text not in extensions_list:
+            extensions_list.append(text)
+            self._add_chip(text, chips_layout, remove_slot)
+            # Refresh the system type display if a path is entered
+            self.update_system_type()
+
+    def _remove_data_extension_chip(self, text):
+        self._remove_extension_chip(text, self.data_file_extensions, self.chips_layout)
+
+    def _remove_potential_extension_chip(self, text):
+        self._remove_extension_chip(text, self.potential_file_extensions, self.potential_chips_layout)
+
+    def _remove_extension_chip(self, text, extensions_list, chips_layout):
+        if text in extensions_list:
+            extensions_list.remove(text)
+        # Find and remove the chip widget
+        for i in range(chips_layout.count()):
+            widget = chips_layout.itemAt(i).widget()
+            if isinstance(widget, Chip) and widget.text == text:
+                widget.deleteLater()
+                break
+        # Refresh the system type display if a path is entered
+        self.update_system_type()
         
     def create_fixes_tab(self):
         """Create the fixes tab"""
@@ -574,22 +725,24 @@ class LammpsScriptGenerator(QMainWindow):
             return
             
         if os.path.isfile(path):
-            if path.endswith('.data'):
+            if any(path.endswith(ext) for ext in self.data_file_extensions):
                 self.system_type_label.setText("System Type: Single file")
                 # Auto-detect units and atom style from .data file
                 self.auto_detect_from_data_file(path)
             else:
-                self.system_type_label.setText("System Type: Single file (not .data)")
+                self.system_type_label.setText("System Type: Single file")
         elif os.path.isdir(path):
-            # Count .data files in directory
-            data_files = glob.glob(os.path.join(path, "*.data"))
+            # Count data files in directory
+            data_files = []
+            for ext in self.data_file_extensions:
+                data_files.extend(glob.glob(os.path.join(path, f"*{ext}")))
             count = len(data_files)
             if count > 0:
-                self.system_type_label.setText(f"System Type: Multiple files ({count} .data files found)")
+                self.system_type_label.setText(f"System Type: Multiple files ({count} files found)")
                 # Auto-detect units and atom style from first .data file
                 self.auto_detect_from_data_file(data_files[0])
             else:
-                self.system_type_label.setText("System Type: Directory (no .data files found)")
+                self.system_type_label.setText("System Type: Directory (no files found)")
         else:
             self.system_type_label.setText("System Type: Path does not exist")
     
@@ -1218,7 +1371,8 @@ class LammpsScriptGenerator(QMainWindow):
         
         def select_file_path():
             nonlocal selected_path, select_file
-            file_path, _ = QFileDialog.getOpenFileName(dialog, "Select Data File", "", "Data Files (*.data);;All Files (*)")
+            extensions = " ".join([f"*{ext}" for ext in self.data_file_extensions])
+            file_path, _ = QFileDialog.getOpenFileName(dialog, "Select Data File", "", f"Data Files ({extensions});;All Files (*)")
             if file_path:
                 selected_path = file_path
                 select_file = True
@@ -1240,7 +1394,8 @@ class LammpsScriptGenerator(QMainWindow):
     
     def browse_potential_file(self):
         """Browse for potential file"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "Potential files (*.pot *.potential);;All files (*)")
+        extensions = " ".join([f"*{ext}" for ext in self.potential_file_extensions])
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", f"Potential Files ({extensions});;All files (*)")
         if file_path:
             self.potential_path_edit.setText(file_path)
             # Automatically check the "Use separate potential file" checkbox
@@ -1265,7 +1420,16 @@ class LammpsScriptGenerator(QMainWindow):
         QDesktopServices.openUrl(url)
     
     def eventFilter(self, obj, event):
-        """Event filter to handle clicks on groupbox titles"""
+        """Event filter to handle key presses for extension input and clicks on groupbox titles"""
+        if event.type() == event.Type.KeyPress:
+            if obj == self.extensions_input and event.key() in [Qt.Key.Key_Comma, Qt.Key.Key_Space, Qt.Key.Key_Semicolon, Qt.Key.Key_Colon]:
+                self._add_data_extension_chip()
+                return True # Eat the event
+            
+            if hasattr(self, 'potential_extensions_input') and obj == self.potential_extensions_input and event.key() in [Qt.Key.Key_Comma, Qt.Key.Key_Space, Qt.Key.Key_Semicolon, Qt.Key.Key_Colon]:
+                self._add_potential_extension_chip()
+                return True # Eat the event
+
         if event.type() == event.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             for widget, doc_command in self.groupbox_doc_links.items():
                 if obj == getattr(self, widget, None):
@@ -1655,6 +1819,8 @@ class LammpsScriptGenerator(QMainWindow):
         config = {
             "system": {
                 "system_path": self.system_path_edit.text(),
+                "data_file_extensions": self.data_file_extensions,
+                "potential_file_extensions": self.potential_file_extensions,
                 "use_potential_file": self.use_potential_file.isChecked(),
                 "potential_file": self.potential_path_edit.text(),
                 "atom_style": self.atom_style_combo.currentText(),
@@ -1734,6 +1900,37 @@ class LammpsScriptGenerator(QMainWindow):
             system_path = self.settings.value("system/system_path", "")
             if system_path:
                 self.system_path_edit.setText(system_path)
+
+            # Load custom extensions
+            extensions = self.settings.value("system/data_file_extensions", [".data"])
+            if isinstance(extensions, str): # QSettings might return a string
+                extensions = extensions.split(',')
+
+            self.data_file_extensions = []
+            # Clear existing chips
+            for i in reversed(range(self.chips_layout.count())):
+                widget = self.chips_layout.itemAt(i).widget()
+                if widget is not None:
+                    widget.setParent(None)
+            for ext in extensions:
+                if ext and ext not in self.data_file_extensions:
+                    self.data_file_extensions.append(ext)
+                    self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
+
+            potential_extensions = self.settings.value("system/potential_file_extensions", [".in", ".pot", ".potential"])
+            if isinstance(potential_extensions, str): # QSettings might return a string
+                potential_extensions = potential_extensions.split(',')
+
+            self.potential_file_extensions = []
+            # Clear existing chips
+            for i in reversed(range(self.potential_chips_layout.count())):
+                widget = self.potential_chips_layout.itemAt(i).widget()
+                if widget is not None:
+                    widget.setParent(None)
+            for ext in potential_extensions:
+                if ext and ext not in self.potential_file_extensions:
+                    self.potential_file_extensions.append(ext)
+                    self._add_chip(ext, self.potential_chips_layout, self._remove_potential_extension_chip)
             
             self.use_potential_file.setChecked(self.settings.value("system/use_potential_file", False, type=bool))
             potential_file = self.settings.value("system/potential_file", "")
@@ -1827,8 +2024,24 @@ class LammpsScriptGenerator(QMainWindow):
             config = self.collect_config()
             
             # Save system settings
-            for key, value in config["system"].items():
-                self.settings.setValue(f"system/{key}", value)
+            self.settings.setValue("system/system_path", config["system"]["system_path"])
+            self.settings.setValue("system/data_file_extensions", ",".join(config["system"]["data_file_extensions"]))
+            self.settings.setValue("system/potential_file_extensions", ",".join(config["system"]["potential_file_extensions"]))
+            self.settings.setValue("system/use_potential_file", config["system"]["use_potential_file"])
+            self.settings.setValue("system/potential_file", config["system"]["potential_file"])
+            self.settings.setValue("system/atom_style", config["system"]["atom_style"])
+            self.settings.setValue("system/units", config["system"]["units"])
+            self.settings.setValue("system/boundary_x", config["system"]["boundary_x"])
+            self.settings.setValue("system/boundary_y", config["system"]["boundary_y"])
+            self.settings.setValue("system/boundary_z", config["system"]["boundary_z"])
+            self.settings.setValue("system/enable_velocity", config["system"]["enable_velocity"])
+            self.settings.setValue("system/initial_velocity_seed", config["system"]["initial_velocity_seed"])
+            self.settings.setValue("system/damping_factor", config["system"]["damping_factor"])
+            self.settings.setValue("system/neighbor_distance", config["system"]["neighbor_distance"])
+            self.settings.setValue("system/neigh_modify_every", config["system"]["neigh_modify_every"])
+            self.settings.setValue("system/neigh_modify_delay", config["system"]["neigh_modify_delay"])
+            self.settings.setValue("system/neigh_modify_check", config["system"]["neigh_modify_check"])
+            self.settings.setValue("system/timestep", config["system"]["timestep"])
             
             # Save fixes settings
             for key, value in config["fixes"].items():
@@ -1996,6 +2209,28 @@ class LammpsScriptGenerator(QMainWindow):
             if "system" in config:
                 system = config["system"]
                 self.system_path_edit.setText(system.get("system_path", ""))
+
+                # Load custom extensions
+                extensions = system.get("data_file_extensions", [".data"])
+                self.data_file_extensions = []
+                # Clear existing chips
+                for i in reversed(range(self.chips_layout.count())):
+                    self.chips_layout.itemAt(i).widget().setParent(None)
+                for ext in extensions:
+                    if ext not in self.data_file_extensions:
+                        self.data_file_extensions.append(ext)
+                        self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
+
+                potential_extensions = system.get("potential_file_extensions", [".in", ".pot", ".potential"])
+                self.potential_file_extensions = []
+                # Clear existing chips
+                for i in reversed(range(self.potential_chips_layout.count())):
+                    self.potential_chips_layout.itemAt(i).widget().setParent(None)
+                for ext in potential_extensions:
+                    if ext not in self.potential_file_extensions:
+                        self.potential_file_extensions.append(ext)
+                        self._add_chip(ext, self.potential_chips_layout, self._remove_potential_extension_chip)
+
                 self.use_potential_file.setChecked(system.get("use_potential_file", False))
                 self.potential_path_edit.setText(system.get("potential_file", ""))
                 self.atom_style_combo.setCurrentText(system.get("atom_style", "atomic"))
