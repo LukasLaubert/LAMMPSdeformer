@@ -279,7 +279,7 @@ class LammpsScriptGenerator:
                 script_lines.extend([
                     "# Conditional read based on restart flag",
                     f"if \"${{restart}}==TRUE\" then &",
-                    f"    \"read_restart restart_files/{model_name}.restart.*\" &",
+                    f"    \"read_restart restart_files/{model_name}.restart\" &",
                     f"else &",
                     f"    \"read_data ../../{data_file}\"",
                     ""
@@ -364,7 +364,7 @@ class LammpsScriptGenerator:
 
             # Additional output settings specific to this study
             thermo_output_freq = output_config.get("thermo_freq", 100)
-            trj_output_freq = thermo_output_freq  # Use the same frequency for trajectory
+            trj_output_freq = output_config.get("traj_freq", 100)
 
             output_lines = []
             
@@ -398,9 +398,8 @@ class LammpsScriptGenerator:
                     ])
 
             # Custom dumps
-            if output_config.get("enable_custom_dumps", False):
-                custom_dumps = output_config.get("custom_dumps", "")
-                if custom_dumps:
+            custom_dumps = output_config.get("custom_dumps", "")
+            if custom_dumps:
                     output_lines.extend([
                         "# Custom dumps",
                         custom_dumps,
@@ -607,10 +606,7 @@ class LammpsScriptGenerator:
             else:
                 full_local_cmd = local_lammps_cmd
             
-            # Check if restart functionality is enabled
-            enable_restart = job_submission_config.get("enable_restart", False)
-            
-            # Local execution with restart support
+            # Local execution should not have restart logic.
             for study in deform_studies:
                 study_name = study.get("name", "study")
                 
@@ -622,62 +618,25 @@ class LammpsScriptGenerator:
                     script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
                     sim_directory = f"{study_name}/{system_name}"
                     
-                    if enable_restart:
-                        # Get max time buffer from configuration
-                        max_time_buffer = job_submission_config.get("max_time_buffer", 600)  # Default 10 minutes
-                        # Calculate MAXTIME (24 hours - buffer in seconds)
-                        max_time = 24*3600 - max_time_buffer
-                        
-                        # Local execution with restart support - change to simulation directory and run in new terminal
-                        if current_os in ['linux', 'darwin']:
-                            script_lines.extend([
-                                f"echo 'Running simulation: {model_name}'",
-                                f"cd {sim_directory}",
-                                "# Check if restart files exist for this model",
-                                f"if [ -f \"restart_files/{model_name}.restart\" ]; then",
-                                f"  echo \"Found restart file: restart_files/{model_name}.restart\"",
-                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
-                                "else",
-                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
-                                "fi",
-                                f"echo 'Started simulation in new terminal: {model_name}'",
-                                f"cd ../../",  # Go back to root directory
-                                ""
-                            ])
-                        else:  # Windows
-                            script_lines.extend([
-                                f"echo 'Running simulation: {model_name}'",
-                                f"cd {sim_directory}",
-                                "REM Check if restart files exist for this model",
-                                f"if exist \"restart_files\\{model_name}.restart\" (",
-                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
-                                ") else (",
-                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
-                                ")",
-                                f"echo 'Started simulation in new terminal: {model_name}'",
-                                f"cd ../../",  # Go back to root directory
-                                ""
-                            ])
-                    else:
-                        # Local execution without restart - change to simulation directory and run in new terminal
-                        if current_os in ['linux', 'darwin']:
-                            script_lines.extend([
-                                f"echo 'Running simulation: {model_name}'",
-                                f"cd {sim_directory}",
-                                f"{command_prefix}{full_local_cmd} -in {model_name}.in{command_suffix}",
-                                f"echo 'Started simulation in new terminal: {model_name}'",
-                                f"cd ../../",  # Go back to root directory
-                                ""
-                            ])
-                        else:  # Windows
-                            script_lines.extend([
-                                f"echo 'Running simulation: {model_name}'",
-                                f"cd {sim_directory}",
-                                f"{command_prefix}{full_local_cmd} -in {model_name}.in{command_suffix}",
-                                f"echo 'Started simulation in new terminal: {model_name}'",
-                                f"cd ../../",  # Go back to root directory
-                                ""
-                            ])
+                    # Local execution without restart - change to simulation directory and run in new terminal
+                    if current_os in ['linux', 'darwin']:
+                        script_lines.extend([
+                            f"echo 'Running simulation: {model_name}'",
+                            f"cd {sim_directory}",
+                            f"{command_prefix}{full_local_cmd} -in {model_name}.in{command_suffix}",
+                            f"echo 'Started simulation in new terminal: {model_name}'",
+                            f"cd ../../",  # Go back to root directory
+                            ""
+                        ])
+                    else:  # Windows
+                        script_lines.extend([
+                            f"echo 'Running simulation: {model_name}'",
+                            f"cd {sim_directory}",
+                            f"{command_prefix}{full_local_cmd} -in {model_name}.in{command_suffix}",
+                            f"echo 'Started simulation in new terminal: {model_name}'",
+                            f"cd ../../",  # Go back to root directory
+                            ""
+                        ])
             
             if current_os in ['linux', 'darwin']:
                 script_lines.extend([

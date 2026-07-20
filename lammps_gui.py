@@ -254,7 +254,7 @@ class LammpsGui(QMainWindow):
         
         # Custom data file extensions
         self.data_file_extensions = [".data"]
-        self.potential_file_extensions = ["*"]  # Allow any file extension for potential files
+
         
         # Create main widget and layout
         self.main_widget = QWidget()
@@ -401,23 +401,7 @@ class LammpsGui(QMainWindow):
         self.use_potential_file.setToolTip("Enable to use a separate potential file instead of inline potentials")
         potential_layout.addWidget(self.use_potential_file)
 
-        # Potential extensions
-        potential_extensions_layout = QHBoxLayout()
-        potential_extensions_label = QLabel("File Extensions:")
-        self.potential_extensions_input = QLineEdit()
-        self.potential_extensions_input.setPlaceholderText("Add, e.g., .in, .pot")
-        self.potential_extensions_input.returnPressed.connect(self._add_potential_extension_chip)
-        self.potential_extensions_input.editingFinished.connect(self._add_potential_extension_chip)
-        self.potential_extensions_input.installEventFilter(self)
-
-        self.potential_chips_layout = QHBoxLayout()
-        potential_extensions_layout.addWidget(potential_extensions_label)
-        potential_extensions_layout.addLayout(self.potential_chips_layout)
-        potential_extensions_layout.addWidget(self.potential_extensions_input, 1)
-        potential_layout.addLayout(potential_extensions_layout)
-
-        for ext in self.potential_file_extensions:
-            self._add_chip(ext, self.potential_chips_layout, self._remove_potential_extension_chip)
+        # Potential extensions (UI removed by user request)
 
         # Potential path
         potential_path_layout = QHBoxLayout()
@@ -747,8 +731,7 @@ class LammpsGui(QMainWindow):
     def _add_data_extension_chip(self):
         self._add_extension_chip(self.extensions_input, self.data_file_extensions, self.chips_layout, self._remove_data_extension_chip)
 
-    def _add_potential_extension_chip(self):
-        self._add_extension_chip(self.potential_extensions_input, self.potential_file_extensions, self.potential_chips_layout, self._remove_potential_extension_chip)
+
 
     def _add_extension_chip(self, input_widget, extensions_list, chips_layout, remove_slot):
         text = input_widget.text().strip()
@@ -778,8 +761,7 @@ class LammpsGui(QMainWindow):
     def _remove_data_extension_chip(self, text):
         self._remove_extension_chip(text, self.data_file_extensions, self.chips_layout)
 
-    def _remove_potential_extension_chip(self, text):
-        self._remove_extension_chip(text, self.potential_file_extensions, self.potential_chips_layout)
+
 
     def _remove_extension_chip(self, text, extensions_list, chips_layout):
         if text in extensions_list:
@@ -1333,92 +1315,117 @@ class LammpsGui(QMainWindow):
         write_data_group.setLayout(write_data_layout)
         scroll_layout.addWidget(write_data_group)
         
-        # Trajectory output settings
-        traj_group = InfoGroupBox("Trajectory Output Settings", "dump")
-        traj_layout = QVBoxLayout()
-        
-        self.enable_trajectory = QCheckBox("Enable Trajectory Output")
-        self.enable_trajectory.setChecked(True)
-        self.enable_trajectory.setToolTip("Enable trajectory file output")
-        self.enable_trajectory.stateChanged.connect(self.toggle_trajectory_settings)
-        
-        traj_form_layout = QFormLayout()
-        
-        self.traj_format = QComboBox()
-        self.traj_format.addItems(["lammpstrj", "xyz", "dcd"])
-        self.traj_format.setToolTip("Format for trajectory files")
-        
-        self.trj_output_items = QTextEdit()
-        self.trj_output_items.setPlainText("id type x y z fx fy fz")
-        self.trj_output_items.setMaximumHeight(60)  # Reduced height (about 3 lines)
-        self.trj_output_items.setToolTip("Items to include in trajectory output")
-        
-        traj_form_layout.addRow("Trajectory Format:", self.traj_format)
-        traj_form_layout.addRow("Output Items:", self.trj_output_items)
-        
-        traj_layout.addWidget(self.enable_trajectory)
-        traj_layout.addLayout(traj_form_layout)
-        traj_group.setLayout(traj_layout)
-        scroll_layout.addWidget(traj_group)
-        
         # Thermo output settings
         thermo_group = InfoGroupBox("Thermo Output Settings", "thermo_style")
         thermo_layout = QVBoxLayout()
-        
+
+        # Top row layout
+        thermo_top_layout = QHBoxLayout()
+
         self.enable_thermo = QCheckBox("Enable Thermo Output")
         self.enable_thermo.setChecked(True)
         self.enable_thermo.setToolTip("Enable thermodynamic output")
         self.enable_thermo.stateChanged.connect(self.toggle_thermo_settings)
-        
-        thermo_form_layout = QFormLayout()
-        
-        # Add Thermo Freq field
+        thermo_top_layout.addWidget(self.enable_thermo, 1)
+
+        thermo_freq_layout = QHBoxLayout()
+        thermo_freq_label = QLabel("Thermo Freq:")
         self.thermo_freq_spinbox = QSpinBox()
-        self.thermo_freq_spinbox.setRange(1, 1000000)
+        self.thermo_freq_spinbox.setRange(1, 999999999)
         self.thermo_freq_spinbox.setValue(100)
         self.thermo_freq_spinbox.setSingleStep(100)
         self.thermo_freq_spinbox.setToolTip("Frequency of thermodynamic output")
-        thermo_form_layout.addRow("Thermo Freq:", self.thermo_freq_spinbox)
-        
+        self.thermo_freq_spinbox.setMinimumWidth(150)
+        thermo_freq_layout.addWidget(thermo_freq_label)
+        thermo_freq_layout.addWidget(self.thermo_freq_spinbox)
+        thermo_freq_layout.addStretch()
+        thermo_top_layout.addLayout(thermo_freq_layout, 4)
+
+        thermo_layout.addLayout(thermo_top_layout)
+
+        # Thermo Style
+        thermo_form_layout = QFormLayout()
         self.thermo_style = QTextEdit()
         self.thermo_style.setPlainText("step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
         self.thermo_style.setMaximumHeight(60)  # Reduced height (about 3 lines)
         self.thermo_style.setToolTip("Thermo style specification")
-        
         thermo_form_layout.addRow("Thermo Style:", self.thermo_style)
         
-        thermo_layout.addWidget(self.enable_thermo)
         thermo_layout.addLayout(thermo_form_layout)
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
+
+        # Trajectory output settings
+        traj_group = InfoGroupBox("Trajectory Output Settings", "dump")
+        traj_layout = QVBoxLayout()
+
+        # Top row layout
+        traj_top_layout = QHBoxLayout()
+
+        self.enable_trajectory = QCheckBox("Enable Trajectory Output")
+        self.enable_trajectory.setChecked(True)
+        self.enable_trajectory.setToolTip("Enable trajectory file output")
+        self.enable_trajectory.stateChanged.connect(self.toggle_trajectory_settings)
+        traj_top_layout.addWidget(self.enable_trajectory, 1) # 1/5
+
+        # Trajectory Freq
+        traj_freq_layout = QHBoxLayout()
+        traj_freq_label = QLabel("Trajectory Freq:")
+        self.traj_freq_spinbox = QSpinBox()
+        self.traj_freq_spinbox.setRange(1, 999999999)
+        self.traj_freq_spinbox.setValue(100)
+        self.traj_freq_spinbox.setSingleStep(100)
+        self.traj_freq_spinbox.setToolTip("Frequency of trajectory output")
+        self.traj_freq_spinbox.setMinimumWidth(150)
+        traj_freq_layout.addWidget(traj_freq_label)
+        traj_freq_layout.addWidget(self.traj_freq_spinbox)
+        traj_freq_layout.addStretch()
+        traj_top_layout.addLayout(traj_freq_layout, 2) # 2/5
+
+        # Trajectory Format
+        traj_format_layout = QHBoxLayout()
+        traj_format_label = QLabel("Trajectory Format:")
+        self.traj_format = QComboBox()
+        self.traj_format.addItems(["lammpstrj", "xyz", "dcd"])
+        self.traj_format.setToolTip("Format for trajectory files")
+        self.traj_format.setMinimumWidth(150)
+        traj_format_layout.addWidget(traj_format_label)
+        traj_format_layout.addWidget(self.traj_format)
+        traj_format_layout.addStretch()
+        traj_top_layout.addLayout(traj_format_layout, 2) # 2/5
+
+        traj_layout.addLayout(traj_top_layout)
+
+        # Output Items
+        traj_form_layout = QFormLayout()
+        self.trj_output_items = QTextEdit()
+        self.trj_output_items.setPlainText("id type x y z fx fy fz")
+        self.trj_output_items.setMaximumHeight(60)  # Reduced height (about 3 lines)
+        self.trj_output_items.setToolTip("Items to include in trajectory output")
+        traj_form_layout.addRow("Output Items:", self.trj_output_items)
+        
+        traj_layout.addLayout(traj_form_layout)
+        traj_group.setLayout(traj_layout)
+        scroll_layout.addWidget(traj_group)
         
         # Custom dumps
         custom_dumps_group = InfoGroupBox("Custom Dumps", "dump")
         custom_dumps_layout = QVBoxLayout()
         
-        self.enable_custom_dumps = QCheckBox("Enable Custom Dumps")
-        self.enable_custom_dumps.setChecked(False)
-        self.enable_custom_dumps.setToolTip("Enable custom dump commands")
-        self.enable_custom_dumps.stateChanged.connect(self.toggle_custom_dumps)
-        
         self.custom_dumps_text = QTextEdit()
         self.custom_dumps_text.setPlaceholderText("Enter custom dump commands here...")
-        self.custom_dumps_text.setMaximumHeight(60)  # Reduced height (about 3 lines)
-        self.custom_dumps_text.setEnabled(False)
+        self.custom_dumps_text.setMaximumHeight(100)  # Reduced height (about 4 lines)
         self.custom_dumps_text.setToolTip("Custom LAMMPS dump commands")
         
-        custom_dumps_layout.addWidget(self.enable_custom_dumps)
         custom_dumps_layout.addWidget(self.custom_dumps_text)
         custom_dumps_group.setLayout(custom_dumps_layout)
+        custom_dumps_group.setMaximumHeight(112)
         scroll_layout.addWidget(custom_dumps_group)
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
-    def toggle_custom_dumps(self, state):
-        """Toggle custom dumps text box based on checkbox state"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.custom_dumps_text.setEnabled(enabled)
+
 
     def create_job_submission_tab(self):
         """Create the job submission tab"""
@@ -1662,12 +1669,7 @@ class LammpsGui(QMainWindow):
     
     def browse_potential_file(self):
         """Browse for potential file"""
-        # Allow any file when potential_file_extensions is ["*"]
-        if self.potential_file_extensions == ["*"]:
-            file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "All Files (*)")
-        else:
-            extensions = " ".join([f"*{ext}" for ext in self.potential_file_extensions])
-            file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", f"Potential Files ({extensions});;All files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "All Files (*)")
         if file_path:
             self.potential_path_edit.setText(file_path)
             # Automatically check the "Use separate potential file" checkbox
@@ -1698,9 +1700,7 @@ class LammpsGui(QMainWindow):
                 self._add_data_extension_chip()
                 return True # Eat the event
             
-            if hasattr(self, 'potential_extensions_input') and obj == self.potential_extensions_input and event.key() in [Qt.Key.Key_Comma, Qt.Key.Key_Space, Qt.Key.Key_Semicolon, Qt.Key.Key_Colon]:
-                self._add_potential_extension_chip()
-                return True # Eat the event
+
 
         if event.type() == event.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             for widget, doc_command in self.groupbox_doc_links.items():
@@ -1716,12 +1716,14 @@ class LammpsGui(QMainWindow):
     def toggle_trajectory_settings(self, state):
         """Toggle trajectory settings based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
+        self.traj_freq_spinbox.setEnabled(enabled)
         self.traj_format.setEnabled(enabled)
         self.trj_output_items.setEnabled(enabled)
     
     def toggle_thermo_settings(self, state):
         """Toggle thermo settings based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
+        self.thermo_freq_spinbox.setEnabled(enabled)
         self.thermo_style.setEnabled(enabled)
     
     def toggle_stress_settings(self, state):
@@ -2144,7 +2146,7 @@ class LammpsGui(QMainWindow):
             "system": {
                 "system_path": self.system_path_edit.text(),
                 "data_file_extensions": self.data_file_extensions,
-                "potential_file_extensions": self.potential_file_extensions,
+
                 "use_potential_file": self.use_potential_file.isChecked(),
                 "potential_file": self.potential_path_edit.text(),
                 "atom_style": self.atom_style_combo.currentText(),
@@ -2174,6 +2176,7 @@ class LammpsGui(QMainWindow):
             "output": {
                 "output_path": self.output_path_edit.text(),
                 "enable_trajectory": self.enable_trajectory.isChecked(),
+                "traj_freq": self.traj_freq_spinbox.value(),
                 "traj_format": self.traj_format.currentText(),
                 "trj_output_items": self.trj_output_items.toPlainText(),
                 "enable_thermo": self.enable_thermo.isChecked(),
@@ -2181,7 +2184,7 @@ class LammpsGui(QMainWindow):
                 "thermo_style": self.thermo_style.toPlainText(),
                 "enable_custom_computes": self.enable_custom_computes.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
-                "enable_custom_dumps": self.enable_custom_dumps.isChecked(),
+
                 "custom_dumps": self.custom_dumps_text.toPlainText(),
                     "write_data_option": self.write_data_combo.currentText(),
             },
@@ -2255,20 +2258,7 @@ class LammpsGui(QMainWindow):
                     self.data_file_extensions.append(ext)
                     self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
 
-            potential_extensions = self.settings.value("system/potential_file_extensions", [".in", ".pot", ".potential"])
-            if isinstance(potential_extensions, str): # QSettings might return a string
-                potential_extensions = potential_extensions.split(',')
 
-            self.potential_file_extensions = []
-            # Clear existing chips
-            for i in reversed(range(self.potential_chips_layout.count())):
-                widget = self.potential_chips_layout.itemAt(i).widget()
-                if widget is not None:
-                    widget.setParent(None)
-            for ext in potential_extensions:
-                if ext and ext not in self.potential_file_extensions:
-                    self.potential_file_extensions.append(ext)
-                    self._add_chip(ext, self.potential_chips_layout, self._remove_potential_extension_chip)
             
             self.use_potential_file.setChecked(self.settings.value("system/use_potential_file", False, type=bool))
             potential_file = self.settings.value("system/potential_file", "")
@@ -2302,6 +2292,7 @@ class LammpsGui(QMainWindow):
             # Output settings
             self.output_path_edit.setText(self.settings.value("output/output_path", ""))
             self.enable_trajectory.setChecked(self.settings.value("output/enable_trajectory", True, type=bool))
+            self.traj_freq_spinbox.setValue(self.settings.value("output/traj_freq", 100, type=int))
             self.traj_format.setCurrentText(self.settings.value("output/traj_format", "lammpstrj"))
             self.trj_output_items.setPlainText(self.settings.value("output/trj_output_items", "id type x y z fx fy fz"))
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
@@ -2309,7 +2300,7 @@ class LammpsGui(QMainWindow):
             self.thermo_style.setPlainText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
             self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
-            self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
+
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
             # For backward compatibility, handle the old boolean setting
             if self.settings.contains("output/write_data_option"):
@@ -2389,7 +2380,7 @@ class LammpsGui(QMainWindow):
             # Save system settings
             self.settings.setValue("system/system_path", config["system"]["system_path"])
             self.settings.setValue("system/data_file_extensions", ",".join(config["system"]["data_file_extensions"]))
-            self.settings.setValue("system/potential_file_extensions", ",".join(config["system"]["potential_file_extensions"]))
+
             self.settings.setValue("system/use_potential_file", config["system"]["use_potential_file"])
             self.settings.setValue("system/potential_file", config["system"]["potential_file"])
             self.settings.setValue("system/atom_style", config["system"]["atom_style"])
@@ -2590,15 +2581,7 @@ class LammpsGui(QMainWindow):
                         self.data_file_extensions.append(ext)
                         self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
 
-                potential_extensions = system.get("potential_file_extensions", [".in", ".pot", ".potential"])
-                self.potential_file_extensions = []
-                # Clear existing chips
-                for i in reversed(range(self.potential_chips_layout.count())):
-                    self.potential_chips_layout.itemAt(i).widget().setParent(None)
-                for ext in potential_extensions:
-                    if ext not in self.potential_file_extensions:
-                        self.potential_file_extensions.append(ext)
-                        self._add_chip(ext, self.potential_chips_layout, self._remove_potential_extension_chip)
+
 
                 self.use_potential_file.setChecked(system.get("use_potential_file", False))
                 self.potential_path_edit.setText(system.get("potential_file", ""))
@@ -2633,13 +2616,14 @@ class LammpsGui(QMainWindow):
                 output = config["output"]
                 self.output_path_edit.setText(output.get("output_path", ""))
                 self.enable_trajectory.setChecked(output.get("enable_trajectory", True))
+                self.traj_freq_spinbox.setValue(output.get("traj_freq", 100))
                 self.traj_format.setCurrentText(output.get("traj_format", "lammpstrj"))
                 self.trj_output_items.setPlainText(output.get("trj_output_items", "id type x y z fx fy fz"))
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_style.setPlainText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
                 self.enable_custom_computes.setChecked(output.get("enable_custom_computes", False))
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
-                self.enable_custom_dumps.setChecked(output.get("enable_custom_dumps", False))
+
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
                 # For backward compatibility, handle the old boolean setting
                 if "write_data_option" in output:
