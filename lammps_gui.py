@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LAMMPS Input Script Generator GUI
+LAMMPS Input Script Generator GUI - Enhanced Version
 
 A graphical user interface for creating LAMMPS input scripts for particle-based deformation simulations.
 Supports both local execution and cluster job submission.
@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVB
                             QDialogButtonBox, QToolTip, QFrame, QSizePolicy)
 from PyQt5.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize
 from PyQt5.QtGui import QFont, QIcon, QDesktopServices, QCursor, QPalette, QColor
-from script_generator import LammpsScriptGenerator
+from script_generator import LammpsScriptGenerator as ScriptGen
 
 class LammpsScriptGenerator(QMainWindow):
     """Main application window for LAMMPS script generation"""
@@ -49,6 +49,9 @@ class LammpsScriptGenerator(QMainWindow):
         self.setCentralWidget(self.main_widget)
         self.main_layout = QVBoxLayout(self.main_widget)
         
+        # Add units selection at the top
+        self.create_units_selector()
+        
         # Create tab widget
         self.tab_widget = QTabWidget()
         self.main_layout.addWidget(self.tab_widget)
@@ -58,7 +61,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.create_deformation_tab()
         self.create_output_tab()
         self.create_cluster_tab()
-        self.create_multistudy_tab()
+        self.create_multisystem_tab()
         
         # Create bottom buttons
         self.create_bottom_buttons()
@@ -93,6 +96,78 @@ class LammpsScriptGenerator(QMainWindow):
         except Exception as e:
             print(f"Emergency save failed: {e}")
     
+    def create_units_selector(self):
+        """Create units selection at the top of the GUI"""
+        units_group = QGroupBox("Units Selection")
+        units_layout = QHBoxLayout()
+        
+        units_label = QLabel("Units:")
+        units_label.setStyleSheet("color: blue; text-decoration: underline;")
+        units_label.setCursor(QCursor(Qt.PointingHandCursor))
+        units_label.mousePressEvent = lambda e: self.open_lammps_doc("units")
+        units_label.setToolTip("Click to open LAMMPS units documentation")
+        
+        self.units_combo = QComboBox()
+        self.units_combo.addItems(["lj", "real", "metal", "si", "cgs", "electron", "micro", "nano"])
+        self.units_combo.setCurrentText("metal")
+        self.units_combo.setToolTip("Select the unit system for the simulation")
+        
+        self.timestep_display = QLabel("Timestep: 0.001 ps")
+        self.timestep_display.setToolTip("Current timestep value in the selected units")
+        
+        # Update timestep display when units change
+        self.units_combo.currentTextChanged.connect(self.update_timestep_display)
+        
+        units_layout.addWidget(units_label)
+        units_layout.addWidget(self.units_combo)
+        units_layout.addWidget(self.timestep_display)
+        units_layout.addStretch()
+        
+        units_group.setLayout(units_layout)
+        self.main_layout.addWidget(units_group)
+        
+    def update_timestep_display(self, units):
+        """Update timestep display based on selected units"""
+        # Default timestep values from LAMMPS documentation
+        default_timesteps = {
+            "lj": "0.005",
+            "real": "1.0 fs",
+            "metal": "0.001 ps", 
+            "si": "1.0e-8 s (10 ns)",
+            "cgs": "1.0e-8 s (10 ns)",
+            "electron": "0.001 fs",
+            "micro": "2.0",
+            "nano": "0.00045 ns"
+        }
+        
+        default_timestep = default_timesteps.get(units, "0.001")
+        self.timestep_display.setText(f"Timestep: {default_timestep}")
+        
+        # Update the actual timestep value
+        if units == "lj":
+            self.timestep.setValue(0.005)
+        elif units == "real":
+            self.timestep.setValue(1.0)
+            self.timestep_units.setCurrentText("fs")
+        elif units == "metal":
+            self.timestep.setValue(0.001)
+            self.timestep_units.setCurrentText("ps")
+        elif units == "si":
+            self.timestep.setValue(1.0e-8)
+            self.timestep_units.setCurrentText("s")
+        elif units == "cgs":
+            self.timestep.setValue(1.0e-8)
+            self.timestep_units.setCurrentText("s")
+        elif units == "electron":
+            self.timestep.setValue(0.001)
+            self.timestep_units.setCurrentText("fs")
+        elif units == "micro":
+            self.timestep.setValue(2.0)
+            self.timestep_units.setCurrentText("s")
+        elif units == "nano":
+            self.timestep.setValue(0.00045)
+            self.timestep_units.setCurrentText("ns")
+        
     def create_system_tab(self):
         """Create the system configuration tab"""
         self.system_tab = QWidget()
@@ -138,25 +213,6 @@ class LammpsScriptGenerator(QMainWindow):
         data_layout.addRow(data_label, data_path_layout)
         data_group.setLayout(data_layout)
         scroll_layout.addWidget(data_group)
-        
-        # Coordinate direction field
-        coord_group = QGroupBox("Coordinate Settings")
-        coord_layout = QFormLayout()
-        
-        self.coord_direction = QComboBox()
-        self.coord_direction.addItems(["x", "y", "z", "xy", "xz", "yz", "xyz"])
-        self.coord_direction.setCurrentText("xyz")
-        self.coord_direction.setToolTip("Specify coordinate directions for loading and processing")
-        
-        coord_label = QLabel("Coordinate Direction:")
-        coord_label.setStyleSheet("color: blue; text-decoration: underline;")
-        coord_label.setCursor(QCursor(Qt.PointingHandCursor))
-        coord_label.mousePressEvent = lambda e: self.open_lammps_doc("dimension")
-        coord_label.setToolTip("Click to open LAMMPS dimension documentation")
-        
-        coord_layout.addRow(coord_label, self.coord_direction)
-        coord_group.setLayout(coord_layout)
-        scroll_layout.addWidget(coord_group)
         
         # Potential file selection
         potential_group = QGroupBox("Potential File Selection")
@@ -276,7 +332,7 @@ class LammpsScriptGenerator(QMainWindow):
         ensemble_label = QLabel("Ensemble:")
         ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
         ensemble_label.setCursor(QCursor(Qt.PointingHandCursor))
-        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nvt")
+        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
         ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
         
         ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
@@ -340,7 +396,7 @@ class LammpsScriptGenerator(QMainWindow):
         
         self.timestep_units = QComboBox()
         self.timestep_units.addItems(["fs", "ps", "ns"])
-        self.timestep_units.setCurrentText("fs")
+        self.timestep_units.setCurrentText("ps")
         self.timestep_units.setToolTip("Units for the timestep value")
         
         timestep_label = QLabel("Timestep:")
@@ -362,7 +418,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.pressure.setEnabled(ensemble == "NPT")
         
     def create_deformation_tab(self):
-        """Create the deformation settings tab"""
+        """Create the deformation settings tab with multi-deformation support"""
         self.deformation_tab = QWidget()
         self.tab_widget.addTab(self.deformation_tab, "Deformation Settings")
         
@@ -376,6 +432,10 @@ class LammpsScriptGenerator(QMainWindow):
         # Main layout for deformation tab
         deformation_layout = QVBoxLayout(self.deformation_tab)
         deformation_layout.addWidget(scroll)
+        
+        # Single deformation settings
+        single_group = QGroupBox("Single Deformation Settings")
+        single_layout = QVBoxLayout()
         
         # Deformation method selection
         method_group = QGroupBox("Deformation Method")
@@ -398,18 +458,52 @@ class LammpsScriptGenerator(QMainWindow):
         method_layout.addWidget(self.fix_deform_radio)
         method_layout.addWidget(self.wall_movement_radio)
         method_group.setLayout(method_layout)
-        scroll_layout.addWidget(method_group)
+        single_layout.addWidget(method_group)
+        
+        # Strain input options
+        strain_group = QGroupBox("Strain Options")
+        strain_layout = QVBoxLayout()
+        
+        self.use_strain_rate = QRadioButton("Use Strain Rate")
+        self.use_engineering_strain = QRadioButton("Use Engineering Strain")
+        self.use_strain_rate.setChecked(True)
+        
+        self.use_strain_rate.setToolTip("Use strain rate (traditional approach)")
+        self.use_engineering_strain.setToolTip("Use target engineering strain and max strain")
+        
+        strain_layout.addWidget(self.use_strain_rate)
+        strain_layout.addWidget(self.use_engineering_strain)
+        strain_group.setLayout(strain_layout)
+        single_layout.addWidget(strain_group)
         
         # Fix deform settings
         self.fix_deform_group = QGroupBox("Fix Deform Settings")
         fix_deform_layout = QFormLayout()
         
+        # Strain rate inputs
         self.deform_rate = QDoubleSpinBox()
         self.deform_rate.setRange(-1000, 1000)
         self.deform_rate.setValue(0.001)
         self.deform_rate.setSingleStep(0.0001)
         self.deform_rate.setDecimals(6)
         self.deform_rate.setToolTip("Rate of deformation for the selected axis")
+        
+        # Engineering strain inputs
+        self.engineering_strain = QDoubleSpinBox()
+        self.engineering_strain.setRange(-1, 1)
+        self.engineering_strain.setValue(0.1)
+        self.engineering_strain.setSingleStep(0.01)
+        self.engineering_strain.setDecimals(4)
+        self.engineering_strain.setEnabled(False)
+        self.engineering_strain.setToolTip("Target engineering strain to achieve")
+        
+        self.max_strain = QDoubleSpinBox()
+        self.max_strain.setRange(-1, 1)
+        self.max_strain.setValue(0.5)
+        self.max_strain.setSingleStep(0.01)
+        self.max_strain.setDecimals(4)
+        self.max_strain.setEnabled(False)
+        self.max_strain.setToolTip("Maximum strain limit")
         
         self.deform_axis = QComboBox()
         self.deform_axis.addItems(["x", "y", "z"])
@@ -426,15 +520,18 @@ class LammpsScriptGenerator(QMainWindow):
         deform_label.setToolTip("Click to open LAMMPS fix_deform documentation")
         
         fix_deform_layout.addRow("Deformation Rate:", self.deform_rate)
+        fix_deform_layout.addRow("Engineering Strain:", self.engineering_strain)
+        fix_deform_layout.addRow("Max Strain:", self.max_strain)
         fix_deform_layout.addRow("Deformation Axis:", self.deform_axis)
         fix_deform_layout.addRow("Deformation Style:", self.deform_style)
         self.fix_deform_group.setLayout(fix_deform_layout)
-        scroll_layout.addWidget(self.fix_deform_group)
+        single_layout.addWidget(self.fix_deform_group)
         
         # Wall movement settings
         self.wall_movement_group = QGroupBox("Wall Movement Settings")
         wall_movement_layout = QFormLayout()
         
+        # Wall velocity inputs
         self.wall_velocity = QDoubleSpinBox()
         self.wall_velocity.setRange(-1000, 1000)
         self.wall_velocity.setValue(0.01)
@@ -442,13 +539,30 @@ class LammpsScriptGenerator(QMainWindow):
         self.wall_velocity.setDecimals(6)
         self.wall_velocity.setToolTip("Velocity of the moving wall")
         
+        # Engineering strain inputs for walls
+        self.wall_engineering_strain = QDoubleSpinBox()
+        self.wall_engineering_strain.setRange(-1, 1)
+        self.wall_engineering_strain.setValue(0.1)
+        self.wall_engineering_strain.setSingleStep(0.01)
+        self.wall_engineering_strain.setDecimals(4)
+        self.wall_engineering_strain.setEnabled(False)
+        self.wall_engineering_strain.setToolTip("Target engineering strain to achieve with walls")
+        
+        self.wall_max_strain = QDoubleSpinBox()
+        self.wall_max_strain.setRange(-1, 1)
+        self.wall_max_strain.setValue(0.5)
+        self.wall_max_strain.setSingleStep(0.01)
+        self.wall_max_strain.setDecimals(4)
+        self.wall_max_strain.setEnabled(False)
+        self.wall_max_strain.setToolTip("Maximum strain limit for walls")
+        
         self.wall_axis = QComboBox()
         self.wall_axis.addItems(["x", "y", "z"])
         self.wall_axis.setToolTip("Axis along which the wall moves")
         
         self.wall_direction = QComboBox()
-        self.wall_direction.addItems(["positive", "negative"])
-        self.wall_direction.setToolTip("Direction of wall movement")
+        self.wall_direction.addItems(["positive", "negative", "symmetric"])
+        self.wall_direction.setToolTip("Direction of wall movement (symmetric moves both walls)")
         
         wall_label = QLabel("Wall Settings:")
         wall_label.setStyleSheet("color: blue; text-decoration: underline;")
@@ -457,15 +571,13 @@ class LammpsScriptGenerator(QMainWindow):
         wall_label.setToolTip("Click to open LAMMPS fix_wall documentation")
         
         wall_movement_layout.addRow("Wall Velocity:", self.wall_velocity)
+        wall_movement_layout.addRow("Engineering Strain:", self.wall_engineering_strain)
+        wall_movement_layout.addRow("Max Strain:", self.wall_max_strain)
         wall_movement_layout.addRow("Wall Axis:", self.wall_axis)
         wall_movement_layout.addRow("Wall Direction:", self.wall_direction)
         self.wall_movement_group.setLayout(wall_movement_layout)
         self.wall_movement_group.setEnabled(False)
-        scroll_layout.addWidget(self.wall_movement_group)
-        
-        # Connect deformation method signals
-        self.fix_deform_radio.toggled.connect(lambda: self.toggle_deformation_method(0))
-        self.wall_movement_radio.toggled.connect(lambda: self.toggle_deformation_method(1))
+        single_layout.addWidget(self.wall_movement_group)
         
         # Simulation settings
         sim_group = QGroupBox("Simulation Settings")
@@ -502,11 +614,99 @@ class LammpsScriptGenerator(QMainWindow):
         sim_layout.addRow("Thermo Output Frequency:", self.thermo_output_freq)
         sim_layout.addRow("Trajectory Output Frequency:", self.trj_output_freq)
         sim_group.setLayout(sim_layout)
-        scroll_layout.addWidget(sim_group)
+        single_layout.addWidget(sim_group)
+        
+        single_group.setLayout(single_layout)
+        scroll_layout.addWidget(single_group)
+        
+        # Multi-deformation processing
+        multi_group = QGroupBox("Multi-Deformation Processing")
+        multi_layout = QVBoxLayout()
+        
+        self.enable_multi_deform = QCheckBox("Enable Multi-Deformation Processing")
+        self.enable_multi_deform.setChecked(False)
+        self.enable_multi_deform.setToolTip("Process multiple deformation studies")
+        
+        # Deformation studies table
+        studies_layout = QVBoxLayout()
+        
+        self.studies_table = QTableWidget()
+        self.studies_table.setColumnCount(7)
+        self.studies_table.setHorizontalHeaderLabels(["Name", "Method", "Rate/Strain", "Axis", "Style/Direction", "Steps", "Thermo Freq"])
+        self.studies_table.horizontalHeader().setStretchLastSection(True)
+        self.studies_table.setMaximumHeight(200)
+        self.studies_table.setToolTip("Table of deformation studies to process")
+        
+        # Add sample data
+        self.studies_table.setRowCount(2)
+        self.studies_table.setItem(0, 0, QTableWidgetItem("study1"))
+        self.studies_table.setItem(0, 1, QTableWidgetItem("fix_deform"))
+        self.studies_table.setItem(0, 2, QTableWidgetItem("0.001"))
+        self.studies_table.setItem(0, 3, QTableWidgetItem("x"))
+        self.studies_table.setItem(0, 4, QTableWidgetItem("final"))
+        self.studies_table.setItem(0, 5, QTableWidgetItem("10000"))
+        self.studies_table.setItem(0, 6, QTableWidgetItem("100"))
+        self.studies_table.setItem(1, 0, QTableWidgetItem("study2"))
+        self.studies_table.setItem(1, 1, QTableWidgetItem("wall_movement"))
+        self.studies_table.setItem(1, 2, QTableWidgetItem("0.01"))
+        self.studies_table.setItem(1, 3, QTableWidgetItem("y"))
+        self.studies_table.setItem(1, 4, QTableWidgetItem("positive"))
+        self.studies_table.setItem(1, 5, QTableWidgetItem("20000"))
+        self.studies_table.setItem(1, 6, QTableWidgetItem("200"))
+        
+        studies_buttons_layout = QHBoxLayout()
+        
+        self.add_study_button = QPushButton("Add Study")
+        self.add_study_button.clicked.connect(self.add_deformation_study)
+        self.add_study_button.setToolTip("Add a new deformation study")
+        
+        self.remove_study_button = QPushButton("Remove Study")
+        self.remove_study_button.clicked.connect(self.remove_deformation_study)
+        self.remove_study_button.setToolTip("Remove selected deformation study")
+        
+        studies_buttons_layout.addWidget(self.add_study_button)
+        studies_buttons_layout.addWidget(self.remove_study_button)
+        
+        studies_layout.addWidget(self.studies_table)
+        studies_layout.addLayout(studies_buttons_layout)
+        
+        multi_layout.addWidget(self.enable_multi_deform)
+        multi_layout.addLayout(studies_layout)
+        multi_group.setLayout(multi_layout)
+        scroll_layout.addWidget(multi_group)
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
+        # Connect signals
+        self.fix_deform_radio.toggled.connect(lambda: self.toggle_deformation_method(0))
+        self.wall_movement_radio.toggled.connect(lambda: self.toggle_deformation_method(1))
+        self.use_strain_rate.toggled.connect(self.toggle_strain_input_type)
+        self.use_engineering_strain.toggled.connect(self.toggle_strain_input_type)
+        
+    def toggle_strain_input_type(self):
+        """Toggle between strain rate and engineering strain inputs"""
+        use_rate = self.use_strain_rate.isChecked()
+        
+        # Enable/disable strain rate inputs
+        self.deform_rate.setEnabled(use_rate)
+        self.wall_velocity.setEnabled(use_rate)
+        
+        # Enable/disable engineering strain inputs
+        self.engineering_strain.setEnabled(not use_rate)
+        self.max_strain.setEnabled(not use_rate)
+        self.wall_engineering_strain.setEnabled(not use_rate)
+        self.wall_max_strain.setEnabled(not use_rate)
+        
+    def toggle_deformation_method(self, method):
+        """Toggle deformation method controls"""
+        if method == 0:  # Fix deform
+            self.fix_deform_group.setEnabled(True)
+            self.wall_movement_group.setEnabled(False)
+        else:  # Wall movement
+            self.fix_deform_group.setEnabled(False)
+            self.wall_movement_group.setEnabled(True)
+            
     def create_output_tab(self):
         """Create the output options tab"""
         self.output_tab = QWidget()
@@ -767,10 +967,10 @@ class LammpsScriptGenerator(QMainWindow):
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
-    def create_multistudy_tab(self):
-        """Create the multi-study configuration tab"""
-        self.multistudy_tab = QWidget()
-        self.tab_widget.addTab(self.multistudy_tab, "Multi-Study Configuration")
+    def create_multisystem_tab(self):
+        """Create the multi-system configuration tab"""
+        self.multisystem_tab = QWidget()
+        self.tab_widget.addTab(self.multisystem_tab, "Multi-System Configuration")
         
         # Create scroll area
         scroll = QScrollArea()
@@ -779,147 +979,142 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_widget)
         scroll.setWidget(scroll_widget)
         
-        # Main layout for multistudy tab
-        multistudy_layout = QVBoxLayout(self.multistudy_tab)
-        multistudy_layout.addWidget(scroll)
+        # Main layout for multisystem tab
+        multisystem_layout = QVBoxLayout(self.multisystem_tab)
+        multisystem_layout.addWidget(scroll)
         
-        # Multi-system processing
-        multi_system_group = QGroupBox("Multi-System Processing")
-        multi_system_layout = QVBoxLayout()
+        # System selection mode
+        mode_group = QGroupBox("System Selection Mode")
+        mode_layout = QVBoxLayout()
+        
+        self.single_file_radio = QRadioButton("Single File")
+        self.multi_file_radio = QRadioButton("Multiple Files (Directory)")
+        
+        self.single_file_radio.setChecked(True)
+        self.single_file_radio.setToolTip("Process a single data file")
+        self.multi_file_radio.setToolTip("Process multiple data files from a directory")
+        
+        mode_layout.addWidget(self.single_file_radio)
+        mode_layout.addWidget(self.multi_file_radio)
+        mode_group.setLayout(mode_layout)
+        scroll_layout.addWidget(mode_group)
+        
+        # Single file selection
+        self.single_file_group = QGroupBox("Single File Selection")
+        single_file_layout = QFormLayout()
+        
+        self.single_data_path_edit = QLineEdit()
+        self.single_data_path_browse = QPushButton("Browse...")
+        self.single_data_path_browse.clicked.connect(self.browse_single_data_file)
+        
+        single_data_path_layout = QHBoxLayout()
+        single_data_path_layout.addWidget(self.single_data_path_edit)
+        single_data_path_layout.addWidget(self.single_data_path_browse)
+        
+        single_file_layout.addRow("Data File:", single_data_path_layout)
+        self.single_file_group.setLayout(single_file_layout)
+        scroll_layout.addWidget(self.single_file_group)
+        
+        # Multiple files selection
+        self.multi_file_group = QGroupBox("Multiple Files Selection")
+        multi_file_layout = QFormLayout()
+        
+        self.multi_system_path_edit = QLineEdit()
+        self.multi_system_path_edit.setPlaceholderText("Enter directory path containing data files")
+        self.multi_system_path_edit.setToolTip("Directory containing multiple data files")
+        
+        self.multi_system_path_browse = QPushButton("Browse...")
+        self.multi_system_path_browse.clicked.connect(self.browse_multi_system_path)
+        self.multi_system_path_browse.setToolTip("Browse for directory containing data files")
+        
+        self.multi_system_pattern = QLineEdit()
+        self.multi_system_pattern.setText("*.data")
+        self.multi_system_pattern.setToolTip("Pattern to match data files (e.g., *.data)")
+        
+        multi_system_path_layout = QHBoxLayout()
+        multi_system_path_layout.addWidget(self.multi_system_path_edit)
+        multi_system_path_layout.addWidget(self.multi_system_path_browse)
+        
+        # Add to widget references for focus jumping
+        self.widget_references['system_path'] = self.multi_system_path_edit
+        
+        multi_file_layout.addRow("System Directory:", multi_system_path_layout)
+        multi_file_layout.addRow("File Pattern:", self.multi_system_pattern)
+        self.multi_file_group.setLayout(multi_file_layout)
+        self.multi_file_group.setEnabled(False)
+        scroll_layout.addWidget(self.multi_file_group)
+        
+        # Potential file selection (common for all systems)
+        potential_group = QGroupBox("Potential File Selection")
+        potential_layout = QFormLayout()
+        
+        self.multi_use_potential_file = QCheckBox("Use separate potential file")
+        self.multi_use_potential_file.stateChanged.connect(self.toggle_multi_potential_file)
+        self.multi_use_potential_file.setToolTip("Enable to use a separate potential file instead of inline potentials")
+        
+        self.multi_potential_path_edit = QLineEdit()
+        self.multi_potential_path_edit.setEnabled(False)
+        self.multi_potential_path_browse = QPushButton("Browse...")
+        self.multi_potential_path_browse.setEnabled(False)
+        self.multi_potential_path_browse.clicked.connect(self.browse_multi_potential_file)
+        
+        # Add tooltips
+        self.multi_potential_path_edit.setToolTip("Path to the potential file containing force field parameters")
+        self.multi_potential_path_browse.setToolTip("Browse for potential file")
+        
+        potential_path_layout = QHBoxLayout()
+        potential_path_layout.addWidget(self.multi_potential_path_edit)
+        potential_path_layout.addWidget(self.multi_potential_path_browse)
+        
+        potential_label = QLabel("Potential File Path:")
+        potential_label.setStyleSheet("color: blue; text-decoration: underline;")
+        potential_label.setCursor(QCursor(Qt.PointingHandCursor))
+        potential_label.mousePressEvent = lambda e: self.open_lammps_doc("include")
+        potential_label.setToolTip("Click to open LAMMPS include documentation")
+        
+        potential_layout.addRow(self.multi_use_potential_file)
+        potential_layout.addRow(potential_label, potential_path_layout)
+        potential_group.setLayout(potential_layout)
+        scroll_layout.addWidget(potential_group)
+        
+        # Multi-system processing settings
+        processing_group = QGroupBox("Multi-System Processing")
+        processing_layout = QVBoxLayout()
         
         self.enable_multi_system = QCheckBox("Enable Multi-System Processing")
         self.enable_multi_system.setChecked(False)
         self.enable_multi_system.setToolTip("Process multiple data files automatically")
         
-        system_form_layout = QFormLayout()
-        
-        self.system_path_edit = QLineEdit()
-        self.system_path_edit.setPlaceholderText("Enter directory path containing data files")
-        self.system_path_edit.setToolTip("Directory containing multiple data files")
-        
-        self.system_path_browse = QPushButton("Browse...")
-        self.system_path_browse.clicked.connect(self.browse_system_path)
-        self.system_path_browse.setToolTip("Browse for directory containing data files")
-        
-        self.system_pattern = QLineEdit()
-        self.system_pattern.setText("*.data")
-        self.system_pattern.setToolTip("Pattern to match data files (e.g., *.data)")
-        
-        system_path_layout = QHBoxLayout()
-        system_path_layout.addWidget(self.system_path_edit)
-        system_path_layout.addWidget(self.system_path_browse)
-        
-        # Add to widget references for focus jumping
-        self.widget_references['system_path'] = self.system_path_edit
-        
-        system_form_layout.addRow("System Directory:", system_path_layout)
-        system_form_layout.addRow("File Pattern:", self.system_pattern)
-        
-        multi_system_layout.addWidget(self.enable_multi_system)
-        multi_system_layout.addLayout(system_form_layout)
-        multi_system_group.setLayout(multi_system_layout)
-        scroll_layout.addWidget(multi_system_group)
-        
-        # Multi-deformation processing
-        multi_deform_group = QGroupBox("Multi-Deformation Processing")
-        multi_deform_layout = QVBoxLayout()
-        
-        self.enable_multi_deform = QCheckBox("Enable Multi-Deformation Processing")
-        self.enable_multi_deform.setChecked(False)
-        self.enable_multi_deform.setToolTip("Process multiple deformation studies")
-        
-        # Deformation studies table
-        studies_layout = QVBoxLayout()
-        
-        self.studies_table = QTableWidget()
-        self.studies_table.setColumnCount(4)
-        self.studies_table.setHorizontalHeaderLabels(["Name", "Rate", "Axis", "Style"])
-        self.studies_table.horizontalHeader().setStretchLastSection(True)
-        self.studies_table.setMaximumHeight(200)
-        self.studies_table.setToolTip("Table of deformation studies to process")
-        
-        # Add sample data
-        self.studies_table.setRowCount(2)
-        self.studies_table.setItem(0, 0, QTableWidgetItem("study1"))
-        self.studies_table.setItem(0, 1, QTableWidgetItem("0.001"))
-        self.studies_table.setItem(0, 2, QTableWidgetItem("x"))
-        self.studies_table.setItem(0, 3, QTableWidgetItem("final"))
-        self.studies_table.setItem(1, 0, QTableWidgetItem("study2"))
-        self.studies_table.setItem(1, 1, QTableWidgetItem("0.002"))
-        self.studies_table.setItem(1, 2, QTableWidgetItem("y"))
-        self.studies_table.setItem(1, 3, QTableWidgetItem("erate"))
-        
-        studies_buttons_layout = QHBoxLayout()
-        
-        self.add_study_button = QPushButton("Add Study")
-        self.add_study_button.clicked.connect(self.add_deformation_study)
-        self.add_study_button.setToolTip("Add a new deformation study")
-        
-        self.remove_study_button = QPushButton("Remove Study")
-        self.remove_study_button.clicked.connect(self.remove_deformation_study)
-        self.remove_study_button.setToolTip("Remove selected deformation study")
-        
-        studies_buttons_layout.addWidget(self.add_study_button)
-        studies_buttons_layout.addWidget(self.remove_study_button)
-        
-        studies_layout.addWidget(self.studies_table)
-        studies_layout.addLayout(studies_buttons_layout)
-        
-        multi_deform_layout.addWidget(self.enable_multi_deform)
-        multi_deform_layout.addLayout(studies_layout)
-        multi_deform_group.setLayout(multi_deform_layout)
-        scroll_layout.addWidget(multi_deform_group)
+        processing_layout.addWidget(self.enable_multi_system)
+        processing_group.setLayout(processing_layout)
+        scroll_layout.addWidget(processing_group)
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
-    def create_bottom_buttons(self):
-        """Create bottom buttons"""
-        button_layout = QHBoxLayout()
+        # Connect signals
+        self.single_file_radio.toggled.connect(self.toggle_system_selection_mode)
+        self.multi_file_radio.toggled.connect(self.toggle_system_selection_mode)
         
-        self.save_config_button = QPushButton("Save Configuration")
-        self.save_config_button.clicked.connect(self.save_configuration)
-        self.save_config_button.setToolTip("Save current configuration to file")
+    def toggle_system_selection_mode(self):
+        """Toggle between single and multiple file selection"""
+        single_mode = self.single_file_radio.isChecked()
         
-        self.load_config_button = QPushButton("Load Configuration")
-        self.load_config_button.clicked.connect(self.load_configuration)
-        self.load_config_button.setToolTip("Load configuration from file")
+        self.single_file_group.setEnabled(single_mode)
+        self.multi_file_group.setEnabled(not single_mode)
         
-        self.generate_button = QPushButton("Generate Scripts")
-        self.generate_button.clicked.connect(self.generate_scripts)
-        self.generate_button.setToolTip("Generate LAMMPS input scripts and job files")
-        
-        self.show_files_button = QPushButton("Show Used Files")
-        self.show_files_button.clicked.connect(self.show_used_files)
-        self.show_files_button.setToolTip("Show files used by this program")
-        
-        self.cleanup_button = QPushButton("Cleanup Files")
-        self.cleanup_button.clicked.connect(self.cleanup_files)
-        self.cleanup_button.setToolTip("Remove unnecessary files from the directory")
-        
-        button_layout.addWidget(self.save_config_button)
-        button_layout.addWidget(self.load_config_button)
-        button_layout.addWidget(self.generate_button)
-        button_layout.addWidget(self.show_files_button)
-        button_layout.addWidget(self.cleanup_button)
-        
-        self.main_layout.addLayout(button_layout)
-        
-    def toggle_potential_file(self, state):
-        """Toggle potential file controls"""
-        enabled = state == Qt.Checked
-        self.potential_path_edit.setEnabled(enabled)
-        self.potential_path_browse.setEnabled(enabled)
-        
-    def toggle_deformation_method(self, method):
-        """Toggle deformation method controls"""
-        if method == 0:  # Fix deform
-            self.fix_deform_group.setEnabled(True)
-            self.wall_movement_group.setEnabled(False)
-        else:  # Wall movement
-            self.fix_deform_group.setEnabled(False)
-            self.wall_movement_group.setEnabled(True)
+        # Update enable multi-system checkbox
+        if not single_mode:
+            self.enable_multi_system.setChecked(True)
+        else:
+            self.enable_multi_system.setChecked(False)
             
+    def toggle_multi_potential_file(self, state):
+        """Toggle potential file controls for multi-system"""
+        enabled = state == Qt.Checked
+        self.multi_potential_path_edit.setEnabled(enabled)
+        self.multi_potential_path_browse.setEnabled(enabled)
+        
     def toggle_execution_mode(self, mode):
         """Toggle execution mode controls"""
         if mode == 0:  # Local
@@ -957,40 +1152,35 @@ class LammpsScriptGenerator(QMainWindow):
         except Exception as e:
             print(f"Warning: Could not read atom style from data file: {str(e)}")
             
+    def browse_single_data_file(self):
+        """Browse for single data file in multi-system tab"""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Data File", "", "Data Files (*.data);;All Files (*)")
+        if file_path:
+            self.single_data_path_edit.setText(file_path)
+            
+    def browse_multi_system_path(self):
+        """Browse for multi-system path"""
+        dir_path = QFileDialog.getExistingDirectory(self, "Select System Directory")
+        if dir_path:
+            self.multi_system_path_edit.setText(dir_path)
+            
     def browse_potential_file(self):
         """Browse for potential file"""
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "Potential Files (*.in *.pot);;All Files (*)")
         if file_path:
             self.potential_path_edit.setText(file_path)
             
+    def browse_multi_potential_file(self):
+        """Browse for potential file in multi-system tab"""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "Potential Files (*.in *.pot);;All Files (*)")
+        if file_path:
+            self.multi_potential_path_edit.setText(file_path)
+            
     def browse_output_path(self):
         """Browse for output path"""
         dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if dir_path:
             self.output_path_edit.setText(dir_path)
-            
-    def browse_system_path(self):
-        """Browse for system path"""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select System Directory")
-        if dir_path:
-            self.system_path_edit.setText(dir_path)
-            
-    def scan_systems(self):
-        """Scan for system files in the specified directory"""
-        system_path = self.system_path_edit.text()
-        pattern = self.system_pattern.text()
-        
-        if not system_path:
-            QMessageBox.warning(self, "Warning", "Please specify a system path.")
-            return
-            
-        search_pattern = os.path.join(system_path, pattern)
-        files = glob.glob(search_pattern)
-        
-        if files:
-            QMessageBox.information(self, "System Files Found", f"Found {len(files)} system files:\n" + "\n".join(files[:10]))
-        else:
-            QMessageBox.warning(self, "No Files Found", f"No files found matching pattern: {search_pattern}")
             
     def add_deformation_study(self):
         """Add a new deformation study to the table"""
@@ -999,9 +1189,12 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Set default values
         self.studies_table.setItem(row_count, 0, QTableWidgetItem(f"study{row_count + 1}"))
-        self.studies_table.setItem(row_count, 1, QTableWidgetItem("0.001"))
-        self.studies_table.setItem(row_count, 2, QTableWidgetItem("x"))
-        self.studies_table.setItem(row_count, 3, QTableWidgetItem("final"))
+        self.studies_table.setItem(row_count, 1, QTableWidgetItem("fix_deform"))
+        self.studies_table.setItem(row_count, 2, QTableWidgetItem("0.001"))
+        self.studies_table.setItem(row_count, 3, QTableWidgetItem("x"))
+        self.studies_table.setItem(row_count, 4, QTableWidgetItem("final"))
+        self.studies_table.setItem(row_count, 5, QTableWidgetItem("10000"))
+        self.studies_table.setItem(row_count, 6, QTableWidgetItem("100"))
         
     def remove_deformation_study(self):
         """Remove selected deformation study from the table"""
@@ -1064,16 +1257,17 @@ class LammpsScriptGenerator(QMainWindow):
         self.neigh_modify_check.setChecked(system_config.get("neigh_modify_check", True))
         
         self.timestep.setValue(system_config.get("timestep", 0.001))
-        timestep_units = system_config.get("timestep_units", "fs")
+        timestep_units = system_config.get("timestep_units", "ps")
         index = self.timestep_units.findText(timestep_units)
         if index >= 0:
             self.timestep_units.setCurrentIndex(index)
             
-        # Coordinate direction
-        coord_direction = system_config.get("coord_direction", "xyz")
-        index = self.coord_direction.findText(coord_direction)
+        # Units setting
+        units = system_config.get("units", "metal")
+        index = self.units_combo.findText(units)
         if index >= 0:
-            self.coord_direction.setCurrentIndex(index)
+            self.units_combo.setCurrentIndex(index)
+            self.update_timestep_display(units)
         
         # Deformation configuration
         deform_config = config.get("deformation", {})
@@ -1084,10 +1278,14 @@ class LammpsScriptGenerator(QMainWindow):
             self.wall_movement_radio.setChecked(True)
             
         self.deform_rate.setValue(deform_config.get("deform_rate", 0.001))
+        self.engineering_strain.setValue(deform_config.get("engineering_strain", 0.1))
+        self.max_strain.setValue(deform_config.get("max_strain", 0.5))
         self.deform_axis.setCurrentText(deform_config.get("deform_axis", "x"))
         self.deform_style.setCurrentText(deform_config.get("deform_style", "final"))
         
         self.wall_velocity.setValue(deform_config.get("wall_velocity", 0.01))
+        self.wall_engineering_strain.setValue(deform_config.get("wall_engineering_strain", 0.1))
+        self.wall_max_strain.setValue(deform_config.get("wall_max_strain", 0.5))
         self.wall_axis.setCurrentText(deform_config.get("wall_axis", "x"))
         self.wall_direction.setCurrentText(deform_config.get("wall_direction", "positive"))
         
@@ -1131,10 +1329,6 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Multi-study configuration
         multistudy_config = config.get("multistudy", {})
-        self.enable_multi_system.setChecked(multistudy_config.get("enable_multi_system", False))
-        self.system_path_edit.setText(multistudy_config.get("system_path", ""))
-        self.system_pattern.setText(multistudy_config.get("system_pattern", "*.data"))
-        
         self.enable_multi_deform.setChecked(multistudy_config.get("enable_multi_deform", False))
         
         # Load deformation studies
@@ -1142,10 +1336,58 @@ class LammpsScriptGenerator(QMainWindow):
         self.studies_table.setRowCount(len(deform_studies))
         for i, study in enumerate(deform_studies):
             self.studies_table.setItem(i, 0, QTableWidgetItem(study.get("name", f"study{i+1}")))
-            self.studies_table.setItem(i, 1, QTableWidgetItem(str(study.get("rate", 0.001))))
-            self.studies_table.setItem(i, 2, QTableWidgetItem(study.get("axis", "x")))
-            self.studies_table.setItem(i, 3, QTableWidgetItem(study.get("style", "final")))
+            self.studies_table.setItem(i, 1, QTableWidgetItem(study.get("method", "fix_deform")))
+            self.studies_table.setItem(i, 2, QTableWidgetItem(str(study.get("rate", 0.001))))
+            self.studies_table.setItem(i, 3, QTableWidgetItem(study.get("axis", "x")))
+            self.studies_table.setItem(i, 4, QTableWidgetItem(study.get("style", "final")))
+            self.studies_table.setItem(i, 5, QTableWidgetItem(str(study.get("steps", 10000))))
+            self.studies_table.setItem(i, 6, QTableWidgetItem(str(study.get("thermo_freq", 100))))
             
+        # Multi-system configuration
+        multisystem_config = config.get("multisystem", {})
+        single_file = multisystem_config.get("single_file", False)
+        if single_file:
+            self.single_file_radio.setChecked(True)
+        else:
+            self.multi_file_radio.setChecked(True)
+            
+        self.single_data_path_edit.setText(multisystem_config.get("single_data_path", ""))
+        self.multi_system_path_edit.setText(multisystem_config.get("multi_system_path", ""))
+        self.multi_system_pattern.setText(multisystem_config.get("multi_system_pattern", "*.data"))
+        
+        self.multi_use_potential_file.setChecked(multisystem_config.get("multi_use_potential_file", False))
+        self.multi_potential_path_edit.setText(multisystem_config.get("multi_potential_path", ""))
+        
+        self.enable_multi_system.setChecked(multisystem_config.get("enable_multi_system", False))
+            
+    def create_bottom_buttons(self):
+        """Create bottom buttons"""
+        button_layout = QHBoxLayout()
+        
+        self.save_config_button = QPushButton("Save Configuration")
+        self.save_config_button.clicked.connect(self.save_configuration)
+        self.save_config_button.setToolTip("Save current configuration to file")
+        
+        self.load_config_button = QPushButton("Load Configuration")
+        self.load_config_button.clicked.connect(self.load_configuration)
+        self.load_config_button.setToolTip("Load configuration from file")
+        
+        self.generate_button = QPushButton("Generate Scripts")
+        self.generate_button.clicked.connect(self.generate_scripts)
+        self.generate_button.setToolTip("Generate LAMMPS input scripts and job files")
+        
+        button_layout.addWidget(self.save_config_button)
+        button_layout.addWidget(self.load_config_button)
+        button_layout.addWidget(self.generate_button)
+        
+        self.main_layout.addLayout(button_layout)
+        
+    def toggle_potential_file(self, state):
+        """Toggle potential file controls"""
+        enabled = state == Qt.Checked
+        self.potential_path_edit.setEnabled(enabled)
+        self.potential_path_browse.setEnabled(enabled)
+        
     def generate_scripts(self):
         """Generate LAMMPS input scripts and job files"""
         try:
@@ -1169,11 +1411,11 @@ class LammpsScriptGenerator(QMainWindow):
                         elif validation_result["field"] in ["cluster_mail"]:
                             self.tab_widget.setCurrentIndex(3)  # Cluster tab
                         elif validation_result["field"] in ["system_path"]:
-                            self.tab_widget.setCurrentIndex(4)  # Multi-study tab
+                            self.tab_widget.setCurrentIndex(4)  # Multi-system tab
                 return
                 
             # Create script generator
-            generator = LammpsScriptGenerator(config)
+            generator = ScriptGen(config)
             
             # Generate scripts
             result = generator.generate_all_scripts()
@@ -1214,16 +1456,21 @@ class LammpsScriptGenerator(QMainWindow):
             "neigh_modify_check": self.neigh_modify_check.isChecked(),
             "timestep": self.timestep.value(),
             "timestep_units": self.timestep_units.currentText(),
-            "coord_direction": self.coord_direction.currentText()
+            "units": self.units_combo.currentText()
         }
         
         # Deformation configuration
         config["deformation"] = {
             "method": "fix_deform" if self.fix_deform_radio.isChecked() else "wall_movement",
+            "use_strain_rate": self.use_strain_rate.isChecked(),
             "deform_rate": self.deform_rate.value(),
+            "engineering_strain": self.engineering_strain.value(),
+            "max_strain": self.max_strain.value(),
             "deform_axis": self.deform_axis.currentText(),
             "deform_style": self.deform_style.currentText(),
             "wall_velocity": self.wall_velocity.value(),
+            "wall_engineering_strain": self.wall_engineering_strain.value(),
+            "wall_max_strain": self.wall_max_strain.value(),
             "wall_axis": self.wall_axis.currentText(),
             "wall_direction": self.wall_direction.currentText(),
             "run_steps": self.run_steps.value(),
@@ -1259,9 +1506,6 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Multi-study configuration
         config["multistudy"] = {
-            "enable_multi_system": self.enable_multi_system.isChecked(),
-            "system_path": self.system_path_edit.text(),
-            "system_pattern": self.system_pattern.text(),
             "enable_multi_deform": self.enable_multi_deform.isChecked(),
             "deform_studies": []
         }
@@ -1269,31 +1513,58 @@ class LammpsScriptGenerator(QMainWindow):
         # Collect deformation studies
         for row in range(self.studies_table.rowCount()):
             name_item = self.studies_table.item(row, 0)
-            rate_item = self.studies_table.item(row, 1)
-            axis_item = self.studies_table.item(row, 2)
-            style_item = self.studies_table.item(row, 3)
+            method_item = self.studies_table.item(row, 1)
+            rate_item = self.studies_table.item(row, 2)
+            axis_item = self.studies_table.item(row, 3)
+            style_item = self.studies_table.item(row, 4)
+            steps_item = self.studies_table.item(row, 5)
+            thermo_item = self.studies_table.item(row, 6)
             
-            if name_item and rate_item and axis_item and style_item:
+            if name_item and method_item and rate_item and axis_item and style_item and steps_item and thermo_item:
                 try:
                     study = {
                         "name": name_item.text(),
+                        "method": method_item.text(),
                         "rate": float(rate_item.text()),
                         "axis": axis_item.text(),
-                        "style": style_item.text()
+                        "style": style_item.text(),
+                        "steps": int(steps_item.text()),
+                        "thermo_freq": int(thermo_item.text())
                     }
                     config["multistudy"]["deform_studies"].append(study)
                 except ValueError:
                     # Skip invalid rows
                     continue
+        
+        # Multi-system configuration
+        config["multisystem"] = {
+            "single_file": self.single_file_radio.isChecked(),
+            "single_data_path": self.single_data_path_edit.text(),
+            "multi_system_path": self.multi_system_path_edit.text(),
+            "multi_system_pattern": self.multi_system_pattern.text(),
+            "multi_use_potential_file": self.multi_use_potential_file.isChecked(),
+            "multi_potential_path": self.multi_potential_path_edit.text(),
+            "enable_multi_system": self.enable_multi_system.isChecked()
+        }
+        
+        # Determine which data file to use
+        if self.single_file_radio.isChecked():
+            config["system"]["data_file"] = self.single_data_path_edit.text()
+            config["system"]["use_potential_file"] = self.multi_use_potential_file.isChecked()
+            config["system"]["potential_file"] = self.multi_potential_path_edit.text()
+        else:
+            config["system"]["data_file"] = ""  # Will be determined by multi-system processing
+            config["system"]["use_potential_file"] = self.multi_use_potential_file.isChecked()
+            config["system"]["potential_file"] = self.multi_potential_path_edit.text()
                     
         return config
         
     def validate_config(self, config):
         """Validate the configuration and return field name for focus jumping"""
         # Check if multi-system processing is enabled
-        if config.get("multistudy", {}).get("enable_multi_system", False):
+        if config.get("multisystem", {}).get("enable_multi_system", False):
             # Check system path
-            system_path = config.get("multistudy", {}).get("system_path", "")
+            system_path = config.get("multisystem", {}).get("multi_system_path", "")
             if not system_path:
                 return {"valid": False, "message": "Please specify a system path for multi-system processing.", "field": "system_path"}
                 
@@ -1389,88 +1660,6 @@ class LammpsScriptGenerator(QMainWindow):
         dialog.setLayout(layout)
         dialog.exec_()
         
-    def show_used_files(self):
-        """Show files used by this program"""
-        used_files = [
-            "lammps_gui.py",
-            "script_generator.py", 
-            "example.data",
-            "example.pot",
-            "example_config.json",
-            "requirements.txt",
-            "run_gui.py"
-        ]
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Files Used by This Program")
-        dialog.setMinimumSize(500, 300)
-        
-        layout = QVBoxLayout()
-        
-        label = QLabel("The following files are used by this program:")
-        layout.addWidget(label)
-        
-        text_edit = QTextEdit()
-        text_edit.setPlainText("\n".join(used_files))
-        text_edit.setReadOnly(True)
-        layout.addWidget(text_edit)
-        
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(dialog.accept)
-        layout.addWidget(close_button)
-        
-        dialog.setLayout(layout)
-        dialog.exec_()
-        
-    def cleanup_files(self):
-        """Remove unnecessary files from the directory"""
-        # Files that should be kept
-        keep_files = {
-            "lammps_gui.py",
-            "script_generator.py", 
-            "example.data",
-            "example.pot",
-            "example_config.json",
-            "requirements.txt",
-            "run_gui.py",
-            "README.md",
-            "PROJECT_SUMMARY.md"
-        }
-        
-        # Get all files in current directory
-        current_dir = os.getcwd()
-        all_files = set(os.listdir(current_dir))
-        
-        # Files to remove
-        files_to_remove = all_files - keep_files
-        
-        if not files_to_remove:
-            QMessageBox.information(self, "Cleanup", "No unnecessary files found.")
-            return
-            
-        # Confirm cleanup
-        reply = QMessageBox.question(self, "Confirm Cleanup", 
-                                   f"Found {len(files_to_remove)} unnecessary files.\n"
-                                   f"Do you want to remove them?\n\n"
-                                   f"Files to remove:\n" + "\n".join(sorted(files_to_remove)),
-                                   QMessageBox.Yes | QMessageBox.No)
-        
-        if reply == QMessageBox.Yes:
-            removed_count = 0
-            for file_name in files_to_remove:
-                file_path = os.path.join(current_dir, file_name)
-                try:
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                        removed_count += 1
-                    elif os.path.isdir(file_path):
-                        os.rmdir(file_path)
-                        removed_count += 1
-                except Exception as e:
-                    print(f"Could not remove {file_name}: {e}")
-                    
-            QMessageBox.information(self, "Cleanup Complete", f"Removed {removed_count} files.")
-        
     def open_lammps_doc(self, command):
         """Open LAMMPS documentation for a specific command"""
         url = f"https://docs.lammps.org/{command}.html"
@@ -1510,23 +1699,28 @@ class LammpsScriptGenerator(QMainWindow):
             self.neigh_modify_check.setChecked(self.settings.value("neigh_modify_check", True, type=bool))
             
             self.timestep.setValue(float(self.settings.value("timestep", 0.001)))
-            timestep_units = self.settings.value("timestep_units", "fs")
+            timestep_units = self.settings.value("timestep_units", "ps")
             index = self.timestep_units.findText(timestep_units)
             if index >= 0:
                 self.timestep_units.setCurrentIndex(index)
                 
-            # Coordinate direction
-            coord_direction = self.settings.value("coord_direction", "xyz")
-            index = self.coord_direction.findText(coord_direction)
+            # Load units setting
+            units = self.settings.value("units", "metal")
+            index = self.units_combo.findText(units)
             if index >= 0:
-                self.coord_direction.setCurrentIndex(index)
-            
+                self.units_combo.setCurrentIndex(index)
+                self.update_timestep_display(units)
+                
             # Load deformation settings
             self.deform_rate.setValue(float(self.settings.value("deform_rate", 0.001)))
+            self.engineering_strain.setValue(float(self.settings.value("engineering_strain", 0.1)))
+            self.max_strain.setValue(float(self.settings.value("max_strain", 0.5)))
             self.deform_axis.setCurrentText(self.settings.value("deform_axis", "x"))
             self.deform_style.setCurrentText(self.settings.value("deform_style", "final"))
             
             self.wall_velocity.setValue(float(self.settings.value("wall_velocity", 0.01)))
+            self.wall_engineering_strain.setValue(float(self.settings.value("wall_engineering_strain", 0.1)))
+            self.wall_max_strain.setValue(float(self.settings.value("wall_max_strain", 0.5)))
             self.wall_axis.setCurrentText(self.settings.value("wall_axis", "x"))
             self.wall_direction.setCurrentText(self.settings.value("wall_direction", "positive"))
             
@@ -1561,27 +1755,35 @@ class LammpsScriptGenerator(QMainWindow):
             self.cluster_mail.setText(self.settings.value("cluster_mail", ""))
             
             # Load multistudy settings
-            self.enable_multi_system.setChecked(self.settings.value("enable_multi_system", False, type=bool))
-            self.system_path_edit.setText(self.settings.value("system_path", ""))
-            self.system_pattern.setText(self.settings.value("system_pattern", "*.data"))
-            
             self.enable_multi_deform.setChecked(self.settings.value("enable_multi_deform", False, type=bool))
             
-            # Check for emergency save file
+            # Load multisystem settings
+            single_file = self.settings.value("single_file", True, type=bool)
+            if single_file:
+                self.single_file_radio.setChecked(True)
+            else:
+                self.multi_file_radio.setChecked(True)
+                
+            self.single_data_path_edit.setText(self.settings.value("single_data_path", ""))
+            self.multi_system_path_edit.setText(self.settings.value("multi_system_path", ""))
+            self.multi_system_pattern.setText(self.settings.value("multi_system_pattern", "*.data"))
+            
+            self.multi_use_potential_file.setChecked(self.settings.value("multi_use_potential_file", False, type=bool))
+            self.multi_potential_path_edit.setText(self.settings.value("multi_potential_path", ""))
+            
+            self.enable_multi_system.setChecked(self.settings.value("enable_multi_system", False, type=bool))
+            
+            # Check for emergency save file and automatically recover
             emergency_file = os.path.join(tempfile.gettempdir(), "lammps_gui_emergency_save.json")
             if os.path.exists(emergency_file):
-                reply = QMessageBox.question(self, "Recover Settings", 
-                                           "Found emergency save file from previous session.\n"
-                                           "Do you want to recover your settings?",
-                                           QMessageBox.Yes | QMessageBox.No)
-                if reply == QMessageBox.Yes:
-                    try:
-                        with open(emergency_file, 'r') as f:
-                            emergency_config = json.load(f)
-                        self.apply_config(emergency_config)
-                        os.remove(emergency_file)
-                    except Exception as e:
-                        QMessageBox.warning(self, "Recovery Failed", f"Could not recover settings: {e}")
+                try:
+                    with open(emergency_file, 'r') as f:
+                        emergency_config = json.load(f)
+                    self.apply_config(emergency_config)
+                    os.remove(emergency_file)
+                    print("Emergency settings recovered successfully")
+                except Exception as e:
+                    print(f"Could not recover emergency settings: {e}")
                         
         except Exception as e:
             print(f"Error loading settings: {e}")
@@ -1608,13 +1810,17 @@ class LammpsScriptGenerator(QMainWindow):
             self.settings.setValue("neigh_modify_check", self.neigh_modify_check.isChecked())
             self.settings.setValue("timestep", self.timestep.value())
             self.settings.setValue("timestep_units", self.timestep_units.currentText())
-            self.settings.setValue("coord_direction", self.coord_direction.currentText())
+            self.settings.setValue("units", self.units_combo.currentText())
             
             # Save deformation settings
             self.settings.setValue("deform_rate", self.deform_rate.value())
+            self.settings.setValue("engineering_strain", self.engineering_strain.value())
+            self.settings.setValue("max_strain", self.max_strain.value())
             self.settings.setValue("deform_axis", self.deform_axis.currentText())
             self.settings.setValue("deform_style", self.deform_style.currentText())
             self.settings.setValue("wall_velocity", self.wall_velocity.value())
+            self.settings.setValue("wall_engineering_strain", self.wall_engineering_strain.value())
+            self.settings.setValue("wall_max_strain", self.wall_max_strain.value())
             self.settings.setValue("wall_axis", self.wall_axis.currentText())
             self.settings.setValue("wall_direction", self.wall_direction.currentText())
             self.settings.setValue("run_steps", self.run_steps.value())
@@ -1640,10 +1846,16 @@ class LammpsScriptGenerator(QMainWindow):
             self.settings.setValue("cluster_mail", self.cluster_mail.text())
             
             # Save multistudy settings
-            self.settings.setValue("enable_multi_system", self.enable_multi_system.isChecked())
-            self.settings.setValue("system_path", self.system_path_edit.text())
-            self.settings.setValue("system_pattern", self.system_pattern.text())
             self.settings.setValue("enable_multi_deform", self.enable_multi_deform.isChecked())
+            
+            # Save multisystem settings
+            self.settings.setValue("single_file", self.single_file_radio.isChecked())
+            self.settings.setValue("single_data_path", self.single_data_path_edit.text())
+            self.settings.setValue("multi_system_path", self.multi_system_path_edit.text())
+            self.settings.setValue("multi_system_pattern", self.multi_system_pattern.text())
+            self.settings.setValue("multi_use_potential_file", self.multi_use_potential_file.isChecked())
+            self.settings.setValue("multi_potential_path", self.multi_potential_path_edit.text())
+            self.settings.setValue("enable_multi_system", self.enable_multi_system.isChecked())
             
         except Exception as e:
             print(f"Error saving settings: {e}")
