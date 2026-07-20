@@ -276,7 +276,7 @@ class GraphWidget(QWidget):
             if 0 < idx < len(self.points_norm) - 1: menu.addAction("Delete Handle", lambda: self._delete_handle(idx))
             menu.exec(event.globalPos())
     def _handle_direct_edit(self, type, index):
-        if index == 0 and type in ["x_val", "y_val", "slope"]: return
+        if (index == 0 and type in ["x_val", "y_val"]): return
         p_data = self._norm_to_data(self.points_norm[index])
         if type == "y_val":
             new_val, ok = QInputDialog.getDouble(self, "Set Strain", "New Strain Value:", p_data.y(), self._min_strain, self._max_strain, 4, flags=Qt.WindowType.Dialog, step=max(0.001, abs(p_data.y())*0.02) if p_data.y() != 0 else 0.001)
@@ -303,7 +303,10 @@ class GraphWidget(QWidget):
 class StudyWidget(QWidget):
     dataChanged = pyqtSignal()
     def __init__(self, initial_state=None, parent=None):
-        super().__init__(parent); layout = QVBoxLayout(self); layout.setContentsMargins(0,5,0,0)
+        super().__init__(parent); 
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0,5,0,0)
+        layout.setSpacing(2)
         controls_layout = QHBoxLayout()
         self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100)
         self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-1e9, 0.0); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3)
@@ -318,19 +321,26 @@ class StudyWidget(QWidget):
 
         self.graph_widget = GraphWidget(self)
 
-        # Add Thermo Freq controls
-        thermo_freq_layout = QHBoxLayout()
+        # Add bottom controls
+        bottom_controls_layout = QHBoxLayout()
+        
+        self.deform_axis_combo = QComboBox()
+        self.deform_axis_combo.addItems(["x", "y", "z"])
+        bottom_controls_layout.addWidget(QLabel("Deformation Axis:"))
+        bottom_controls_layout.addWidget(self.deform_axis_combo)
+        
+        bottom_controls_layout.addStretch()
+
         self.thermo_freq_spinbox = QSpinBox()
         self.thermo_freq_spinbox.setPrefix("Thermo Freq: ")
         self.thermo_freq_spinbox.setRange(1, 1000000)
         self.thermo_freq_spinbox.setValue(100)
         self.thermo_freq_spinbox.setSingleStep(100)
-        thermo_freq_layout.addWidget(self.thermo_freq_spinbox)
-        thermo_freq_layout.addStretch()
+        bottom_controls_layout.addWidget(self.thermo_freq_spinbox)
 
         layout.addLayout(controls_layout)
         layout.addWidget(self.graph_widget)
-        layout.addLayout(thermo_freq_layout)
+        layout.addLayout(bottom_controls_layout)
 
         self._last_staircase_params = {'cycles': 5, 'factor': 1.0, 'direction': 'Tension'}
         self._last_cyclic_params = {'cycles': 3, 'relax_factor': 0.0, 'start_with': 'Tension'}
@@ -417,7 +427,7 @@ class StudyWidget(QWidget):
 
     def get_undo_state(self):
         return {
-            'points_norm': [QPointF(p.x(), p.y()) for p in self.graph_widget.points_norm],
+            'data_points': [QPointF(p.x(), p.y()) for p in self.graph_widget.get_data_points()],
             'max_steps': self.max_steps_spinbox.value(),
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
@@ -437,17 +447,18 @@ class StudyWidget(QWidget):
         self.max_strain_spinbox.blockSignals(False)
 
         self._update_graph_controls()
-        self.graph_widget.points_norm = state['points_norm']
+        self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in state['data_points']]
         self.graph_widget.update()
         self.dataChanged.emit()
 
     def get_state(self):
         return {
-            'points_norm': self.graph_widget.points_norm,
+            'data_points': [[p.x(), p.y()] for p in self.graph_widget.get_data_points()],
             'max_steps': self.max_steps_spinbox.value(),
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
-            'thermo_freq': self.thermo_freq_spinbox.value()
+            'thermo_freq': self.thermo_freq_spinbox.value(),
+            'deform_axis': self.deform_axis_combo.currentText()
         }
     def set_state(self, state):
         self.max_steps_spinbox.blockSignals(True); self.min_strain_spinbox.blockSignals(True); self.max_strain_spinbox.blockSignals(True); self.thermo_freq_spinbox.blockSignals(True)
@@ -455,9 +466,23 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.setValue(state.get('min_strain', 0.0))
         self.max_strain_spinbox.setValue(state.get('max_strain', 1.0))
         self.thermo_freq_spinbox.setValue(state.get('thermo_freq', 100))
+        self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
         self.max_steps_spinbox.blockSignals(False); self.min_strain_spinbox.blockSignals(False); self.max_strain_spinbox.blockSignals(False); self.thermo_freq_spinbox.blockSignals(False)
         self._update_graph_controls() # This now correctly sets the graph's axes
-        self.graph_widget.points_norm = [QPointF(p.x(), p.y()) for p in state.get('points_norm', [])] # Now we can copy the points
+        
+        data_points_list = state.get('data_points', [])
+        if not data_points_list and 'points' in state: # For backward compatibility with old save format
+            data_points_list = state.get('points', [])
+
+        # Handle old format where points_norm was saved
+        if not data_points_list and 'points_norm' in state:
+            points_norm = state.get('points_norm', [])
+            self.graph_widget.points_norm = [QPointF(p[0], p[1]) if isinstance(p, list) else QPointF(p.x(), p.y()) for p in points_norm]
+        else:
+            data_points = [QPointF(p[0], p[1]) for p in data_points_list]
+            if data_points:
+                self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in data_points]
+        
         self.graph_widget.update()
 
 class DeformationTab(QWidget):
@@ -467,13 +492,15 @@ class DeformationTab(QWidget):
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.tabBar().setMovable(True)
+        self.tab_widget.setStyleSheet("QTabBar::tab { height: 20px; }")
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
 
-        self.add_study_button = QPushButton("Add Study")
-        self.add_study_button.clicked.connect(self._add_study)
+        add_tab_button = QPushButton("+")
+        add_tab_button.setToolTip("Add a new study")
+        add_tab_button.clicked.connect(self._add_study)
+        self.tab_widget.setCornerWidget(add_tab_button, Qt.Corner.TopRightCorner)
 
         main_layout.addWidget(self.tab_widget)
-        main_layout.addWidget(self.add_study_button)
 
         self._create_summary_area(main_layout)
         self._add_study(is_first=True)
@@ -495,19 +522,29 @@ class DeformationTab(QWidget):
         new_study.graph_widget.set_time_unit(LAMMPS_UNITS[units])
 
         new_study.dataChanged.connect(self.update_summaries)
-        tab_name = f"Study_{self._get_next_default_study_number()}"
+        tab_name = f"Study{self._get_next_default_study_number():02d}"
         tab_index = self.tab_widget.addTab(new_study, tab_name); self.tab_widget.setCurrentIndex(tab_index)
         self.update_summaries()
 
     def _get_next_default_study_number(self):
         num = 1
-        while any(f"Study_{num}" == self.tab_widget.tabText(i) for i in range(self.tab_widget.count())): num += 1
+        while any(f"Study{num:02d}" == self.tab_widget.tabText(i) for i in range(self.tab_widget.count())): num += 1
         return num
 
     def _close_tab(self, index):
         if self.tab_widget.count() > 1:
             self.tab_widget.widget(index).deleteLater(); self.tab_widget.removeTab(index)
             self.update_summaries()
+        else:
+            # If it's the last tab, create a new default one
+            self.tab_widget.widget(index).deleteLater(); self.tab_widget.removeTab(index)
+            self._add_study(is_first=True)
+            # Reset to default values
+            new_widget = self.tab_widget.currentWidget()
+            new_widget.max_steps_spinbox.setValue(10000)
+            new_widget.min_strain_spinbox.setValue(0.0)
+            new_widget.max_strain_spinbox.setValue(1.0)
+            new_widget.graph_widget.reset_graph()
 
     def _rename_tab(self, index):
         current_name = self.tab_widget.tabText(index)
@@ -539,8 +576,8 @@ class DeformationTab(QWidget):
         default_study_counter = 1
         for i in range(self.tab_widget.count()):
             tab_text = self.tab_widget.tabText(i)
-            if re.match(r"^Study_\d+$", tab_text):
-                self.tab_widget.setTabText(i, f"Study {default_study_counter}"); default_study_counter += 1
+            if re.match(r"^Study\d+$", tab_text):
+                self.tab_widget.setTabText(i, f"Study{default_study_counter:02d}"); default_study_counter += 1
 
     def update_all_graphs(self, timestep, unit_key):
         for i in range(self.tab_widget.count()):
@@ -567,6 +604,8 @@ class DeformationTab(QWidget):
             study_widget = self.tab_widget.widget(i)
             self.summary_layout.addWidget(QLabel(f"<b>Summary for {self.tab_widget.tabText(i)}</b>"))
             summary_text = QTextEdit(readOnly=True, font=QFont("Courier New", 10))
+            summary_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            summary_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             points = study_widget.graph_widget.get_data_points()
             header = f"{'Segment':<10} | {'Time Step':<18} | {'Time':<18} | {'Strain':<18} | {'Slope (ε/step)':<20} | {'Strain Rate (ε/t)'}"
             lines = [header, "-" * (len(header)+2)]
@@ -583,6 +622,8 @@ class DeformationTab(QWidget):
                         break
                 lines.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
             summary_text.setText("\n".join(lines))
+            summary_text.document().adjustSize()
+            summary_text.setFixedHeight(int(summary_text.document().size().height() + 5))
             self.summary_layout.addWidget(summary_text)
         self.summary_layout.addStretch()
 

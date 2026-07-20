@@ -109,7 +109,7 @@ class LammpsScriptGenerator:
                 system_name = Path(system_file).stem
                 data_file_dest = os.path.join(data_files_folder, f"{system_name}.data")
                 shutil.copy2(system_file, data_file_dest)
-                data_file_dest_paths[system_file] = os.path.join("input_files", f"{system_name}.data")
+                data_file_dest_paths[system_file] = (Path("input_files") / f"{system_name}.data").as_posix()
                 
                 # Copy potential file if used
                 system_config = self.config.get("system", {})
@@ -272,8 +272,10 @@ class LammpsScriptGenerator:
             
             if system_config.get("use_potential_file", False):
                 potential_file = system_config.get("potential_file", "")
-                potential_name = Path(potential_file).name
-                script_lines.append(f"include ../../input_files/{potential_name}")
+                if potential_file:
+                    potential_name = Path(potential_file).name
+                    potential_path = (Path("input_files") / potential_name).as_posix()
+                    script_lines.append(f"include ../../{potential_path}")
             script_lines.append("")
             
             # Neighbor settings
@@ -327,9 +329,21 @@ class LammpsScriptGenerator:
             elif ensemble == "NPT":
                 pressure = system_config.get("pressure", 1.0)
                 damping_factor = system_config.get("damping_factor", 100.0)
+                deform_axis = deform_study.get("deform_axis", "x")
+
+                npt_keyword = ""
+                if deform_axis == 'x':
+                    npt_keyword = f"y {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
+                elif deform_axis == 'y':
+                    npt_keyword = f"x {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
+                elif deform_axis == 'z':
+                    npt_keyword = f"x {pressure} {pressure} $(1000*dt) y {pressure} {pressure} $(1000*dt)"
+                else:
+                    npt_keyword = f"iso {pressure} {pressure} $(1000*dt)"
+
                 script_lines.extend([
                     "# NPT ensemble",
-                    f"fix npt all npt temp {temp_init} {temp_end} $({damping_factor}*dt) iso {pressure} {pressure} 1.0",
+                    f"fix npt all npt temp {temp_init} {temp_end} $({damping_factor}*dt) {npt_keyword}",
                     ""
                 ])
 
@@ -432,11 +446,12 @@ class LammpsScriptGenerator:
                     strain_change = end_strain - start_strain
                     
                     strain_rate = strain_change / (duration * timestep) if (duration * timestep) > 0 else 0
+                    deform_axis = deform_study.get("deform_axis", "x")
 
                     script_lines.append(f"# --- Segment {i+1}: from step {start_step:.0f} to {end_step:.0f} ---")
 
                     if abs(strain_rate) > 1e-12:
-                        script_lines.append(f"fix deform all deform 1 x erate {strain_rate} remap x")
+                        script_lines.append(f"fix deform all deform 1 {deform_axis} erate {strain_rate} remap x")
                     
                     script_lines.append(f"run {int(duration)}")
                     

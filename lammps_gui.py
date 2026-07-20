@@ -320,6 +320,60 @@ class LammpsScriptGenerator(QMainWindow):
         
         units_group.setLayout(units_layout)
         scroll_layout.addWidget(units_group)
+
+        # Ensemble settings
+        ensemble_group = QGroupBox("Ensemble Settings")
+        ensemble_layout = QFormLayout()
+
+        self.ensemble_combo = QComboBox()
+        self.ensemble_combo.addItems(["NVT", "NPT"])
+        self.ensemble_combo.setCurrentText("NVT")
+        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
+
+        self.temp_init = QDoubleSpinBox()
+        self.temp_init.setRange(0, 10000)
+        self.temp_init.setValue(300.0)
+        self.temp_init.setSingleStep(10.0)
+        self.temp_init.setToolTip("Initial temperature for the simulation")
+
+        self.temp_end = QDoubleSpinBox()
+        self.temp_end.setRange(0, 10000)
+        self.temp_end.setValue(300.0)
+        self.temp_end.setSingleStep(10.0)
+        self.temp_end.setToolTip("Final temperature for the simulation")
+
+        self.pressure = QDoubleSpinBox()
+        self.pressure.setRange(-100000, 100000)
+        self.pressure.setValue(1.0)
+        self.pressure.setDecimals(4)
+        self.pressure.setEnabled(False)  # Only enabled for NPT
+        self.pressure.setToolTip("Target pressure for NPT ensemble")
+        self.pressure.setMinimumWidth(120)
+
+        self.pressure_unit_label = QLabel("atm")
+
+        pressure_layout = QHBoxLayout()
+        pressure_layout.addWidget(self.pressure)
+        pressure_layout.addWidget(self.pressure_unit_label)
+
+        ensemble_label = QLabel("Ensemble:")
+        ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
+        try:
+            ensemble_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        except AttributeError:
+            pass
+        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
+        ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
+
+        ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
+        ensemble_layout.addRow("Initial Temperature:", self.temp_init)
+        ensemble_layout.addRow("Final Temperature:", self.temp_end)
+        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
+        ensemble_group.setLayout(ensemble_layout)
+        scroll_layout.addWidget(ensemble_group)
+
+        # Connect ensemble combo box signal
+        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
         
         # Timestep settings
         timestep_group = QGroupBox("Timestep Settings")
@@ -395,11 +449,22 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(boundary_group)
         
         # Velocity initialization settings
-        velocity_group = QGroupBox("Velocity Initialization (LAMMPS velocity Documentation)")
-        velocity_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
-        velocity_group.installEventFilter(self)
-        self.groupbox_doc_links["velocity_group"] = "velocity"
+        velocity_group = QGroupBox("Velocity Initialization")
         velocity_layout = QVBoxLayout()
+
+        # Create a layout for the title and info icon
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Velocity Initialization")
+        info_label = QLabel("ℹ️")
+        info_label.setToolTip("Click to open LAMMPS velocity documentation")
+        info_label.setStyleSheet("color: blue; font-size: 14px;")
+        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        info_label.mousePressEvent = lambda e: self.open_lammps_doc("velocity")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(info_label)
+        velocity_group.setLayout(velocity_layout)
+        velocity_layout.addLayout(title_layout)
         
         self.enable_velocity = QCheckBox("Enable Velocity Initialization")
         self.enable_velocity.setChecked(True)
@@ -493,60 +558,6 @@ class LammpsScriptGenerator(QMainWindow):
         fixes_layout = QVBoxLayout(self.fixes_tab)
         fixes_layout.addWidget(scroll)
 
-        # Ensemble settings
-        ensemble_group = QGroupBox("Ensemble Settings")
-        ensemble_layout = QFormLayout()
-
-        self.ensemble_combo = QComboBox()
-        self.ensemble_combo.addItems(["NVT", "NPT"])
-        self.ensemble_combo.setCurrentText("NVT")
-        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
-
-        self.temp_init = QDoubleSpinBox()
-        self.temp_init.setRange(0, 10000)
-        self.temp_init.setValue(300.0)
-        self.temp_init.setSingleStep(10.0)
-        self.temp_init.setToolTip("Initial temperature for the simulation")
-
-        self.temp_end = QDoubleSpinBox()
-        self.temp_end.setRange(0, 10000)
-        self.temp_end.setValue(300.0)
-        self.temp_end.setSingleStep(10.0)
-        self.temp_end.setToolTip("Final temperature for the simulation")
-
-        self.pressure = QDoubleSpinBox()
-        self.pressure.setRange(-100000, 100000)
-        self.pressure.setValue(1.0)
-        self.pressure.setDecimals(4)
-        self.pressure.setEnabled(False)  # Only enabled for NPT
-        self.pressure.setToolTip("Target pressure for NPT ensemble")
-        self.pressure.setMinimumWidth(120)
-
-        self.pressure_unit_label = QLabel("atm")
-
-        pressure_layout = QHBoxLayout()
-        pressure_layout.addWidget(self.pressure)
-        pressure_layout.addWidget(self.pressure_unit_label)
-
-        ensemble_label = QLabel("Ensemble:")
-        ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            ensemble_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
-        ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
-
-        ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
-        ensemble_layout.addRow("Initial Temperature:", self.temp_init)
-        ensemble_layout.addRow("Final Temperature:", self.temp_end)
-        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
-        ensemble_group.setLayout(ensemble_layout)
-        scroll_layout.addWidget(ensemble_group)
-
-        # Connect ensemble combo box signal
-        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
-
         # Bond breakage settings
         bond_breakage_group = QGroupBox("Bond Breakage Settings")
         bond_breakage_layout = QVBoxLayout()
@@ -613,10 +624,20 @@ class LammpsScriptGenerator(QMainWindow):
 
         # Custom fixes
         custom_fixes_group = QGroupBox("Custom Fixes")
-        custom_fixes_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
-        custom_fixes_group.installEventFilter(self)
-        self.groupbox_doc_links["custom_fixes_group"] = "fix"
         custom_fixes_layout = QVBoxLayout()
+
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Custom Fixes")
+        info_label = QLabel("ℹ️")
+        info_label.setToolTip("Click to open LAMMPS fix documentation")
+        info_label.setStyleSheet("color: blue; font-size: 14px;")
+        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        info_label.mousePressEvent = lambda e: self.open_lammps_doc("fix")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(info_label)
+        custom_fixes_group.setLayout(custom_fixes_layout)
+        custom_fixes_layout.addLayout(title_layout)
 
         self.enable_custom_fixes = QCheckBox("Enable Custom Fixes")
         self.enable_custom_fixes.setChecked(False)
@@ -1091,13 +1112,21 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(path_group)
         
         # Trajectory output settings
-        traj_group = QGroupBox("Trajectory Output Settings (LAMMPS dump Documentation)")
-        traj_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
-        # Make the group box title clickable
-        traj_group.installEventFilter(self)
-        self.groupbox_doc_links["traj_group"] = "dump"
-        
+        traj_group = QGroupBox("Trajectory Output Settings")
         traj_layout = QVBoxLayout()
+
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Trajectory Output Settings")
+        info_label = QLabel("ℹ️")
+        info_label.setToolTip("Click to open LAMMPS dump documentation")
+        info_label.setStyleSheet("color: blue; font-size: 14px;")
+        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        info_label.mousePressEvent = lambda e: self.open_lammps_doc("dump")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(info_label)
+        traj_group.setLayout(traj_layout)
+        traj_layout.addLayout(title_layout)
         
         self.enable_trajectory = QCheckBox("Enable Trajectory Output")
         self.enable_trajectory.setChecked(True)
@@ -1124,12 +1153,21 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(traj_group)
         
         # Thermo output settings
-        thermo_group = QGroupBox("Thermo Output Settings (LAMMPS thermo_style Documentation)")
-        thermo_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
-        thermo_group.installEventFilter(self)
-        self.groupbox_doc_links["thermo_group"] = "thermo_style"
-        
+        thermo_group = QGroupBox("Thermo Output Settings")
         thermo_layout = QVBoxLayout()
+
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Thermo Output Settings")
+        info_label = QLabel("ℹ️")
+        info_label.setToolTip("Click to open LAMMPS thermo_style documentation")
+        info_label.setStyleSheet("color: blue; font-size: 14px;")
+        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        info_label.mousePressEvent = lambda e: self.open_lammps_doc("thermo_style")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(info_label)
+        thermo_group.setLayout(thermo_layout)
+        thermo_layout.addLayout(title_layout)
         
         self.enable_thermo = QCheckBox("Enable Thermo Output")
         self.enable_thermo.setChecked(True)
@@ -1151,12 +1189,21 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(thermo_group)
         
         # Stress calculations
-        stress_group = QGroupBox("Stress Calculations (LAMMPS compute stress/atom Documentation)")
-        stress_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
-        stress_group.installEventFilter(self)
-        self.groupbox_doc_links["stress_group"] = "compute_stress_atom"
-        
+        stress_group = QGroupBox("Stress Calculations")
         stress_layout = QVBoxLayout()
+
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Stress Calculations")
+        info_label = QLabel("ℹ️")
+        info_label.setToolTip("Click to open LAMMPS compute stress/atom documentation")
+        info_label.setStyleSheet("color: blue; font-size: 14px;")
+        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        info_label.mousePressEvent = lambda e: self.open_lammps_doc("compute_stress_atom")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(info_label)
+        stress_group.setLayout(stress_layout)
+        stress_layout.addLayout(title_layout)
         
         self.enable_stress = QCheckBox("Enable Stress Calculations")
         self.enable_stress.setChecked(True)
@@ -1169,10 +1216,20 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Custom computes
         custom_computes_group = QGroupBox("Custom Computes")
-        custom_computes_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
-        custom_computes_group.installEventFilter(self)
-        self.groupbox_doc_links["custom_computes_group"] = "compute"
         custom_computes_layout = QVBoxLayout()
+
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Custom Computes")
+        info_label = QLabel("ℹ️")
+        info_label.setToolTip("Click to open LAMMPS compute documentation")
+        info_label.setStyleSheet("color: blue; font-size: 14px;")
+        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        info_label.mousePressEvent = lambda e: self.open_lammps_doc("compute")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(info_label)
+        custom_computes_group.setLayout(custom_computes_layout)
+        custom_computes_layout.addLayout(title_layout)
         
         self.enable_custom_computes = QCheckBox("Enable Custom Computes")
         self.enable_custom_computes.setChecked(False)
@@ -1192,11 +1249,20 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Custom dumps
         custom_dumps_group = QGroupBox("Custom Dumps")
-        custom_dumps_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
-        custom_dumps_group.installEventFilter(self)
-        self.groupbox_doc_links["custom_dumps_group"] = "dump"
-        
         custom_dumps_layout = QVBoxLayout()
+
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Custom Dumps")
+        info_label = QLabel("ℹ️")
+        info_label.setToolTip("Click to open LAMMPS dump documentation")
+        info_label.setStyleSheet("color: blue; font-size: 14px;")
+        info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        info_label.mousePressEvent = lambda e: self.open_lammps_doc("dump")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(info_label)
+        custom_dumps_group.setLayout(custom_dumps_layout)
+        custom_dumps_layout.addLayout(title_layout)
         
         self.enable_custom_dumps = QCheckBox("Enable Custom Dumps")
         self.enable_custom_dumps.setChecked(False)
@@ -1742,18 +1808,14 @@ class LammpsScriptGenerator(QMainWindow):
                 study_name = self.deformation_tab_widget.tab_widget.tabText(i)
                 
                 # Get the points from the graph
-                points = study_widget.graph_widget.get_data_points()
-                
-                # Convert QPointF to a serializable format (list of lists)
-                serializable_points = [[p.x(), p.y()] for p in points]
-
                 study = {
                     "name": study_name,
-                    "points": serializable_points,
+                    "data_points": [[p.x(), p.y()] for p in study_widget.graph_widget.get_data_points()],
                     "max_steps": study_widget.max_steps_spinbox.value(),
                     "min_strain": study_widget.min_strain_spinbox.value(),
                     "max_strain": study_widget.max_strain_spinbox.value(),
-                    "thermo_freq": study_widget.thermo_freq_spinbox.value()
+                    "thermo_freq": study_widget.thermo_freq_spinbox.value(),
+                    "deform_axis": study_widget.deform_axis_combo.currentText()
                 }
                 config["multistudy"]["deform_studies"].append(study)
 
@@ -1855,11 +1917,12 @@ class LammpsScriptGenerator(QMainWindow):
 
                             # Restore the state of the study widget
                             state = {
-                                'points_norm': [QPointF(p[0], p[1]) for p in study.get("points", [])],
+                                'data_points': study.get("data_points", study.get("points", [])), # backward compatibility
                                 'max_steps': study.get("max_steps", 100),
                                 'min_strain': study.get("min_strain", 0.0),
                                 'max_strain': study.get("max_strain", 1.0),
-                                'thermo_freq': study.get("thermo_freq", 100)
+                                'thermo_freq': study.get("thermo_freq", 100),
+                                'deform_axis': study.get("deform_axis", "x")
                             }
                             study_widget.set_state(state)
                     except Exception as e:
