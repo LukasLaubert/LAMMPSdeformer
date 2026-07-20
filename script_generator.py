@@ -1057,6 +1057,17 @@ class LAMMPSdeformerGenerator:
                     "dump_modify trajectory append yes",
                     ""
                 ])
+                
+            if config.get("export_bonds", False) and traj_format != "data":
+                lines.extend([
+                    "# Dynamic Bond Topology Export",
+                    "compute bnd_info all property/local batom1 batom2 btype",
+                    f"dump dynamic_bonds all local {config.get('traj_freq', 100)} {model_name}_bonds.dump c_bnd_info[1] c_bnd_info[2] c_bnd_info[3]",
+                    "dump_modify dynamic_bonds colname c_bnd_info[1] batom1 colname c_bnd_info[2] batom2 colname c_bnd_info[3] btype",
+                    "dump_modify dynamic_bonds label BONDS",
+                    "dump_modify dynamic_bonds append yes",
+                    ""
+                ])
         if config.get("custom_dumps", ""):
             lines.extend(["# Custom Dumps", config.get("custom_dumps", ""), ""])
         return lines

@@ -2657,36 +2657,42 @@ class LAMMPSdeformerGui(QMainWindow):
         self.enable_trajectory = QCheckBox("Enable Trajectory Output")
         self.enable_trajectory.setChecked(True)
         self.enable_trajectory.stateChanged.connect(self.toggle_trajectory_settings)
-        traj_top_layout.addWidget(self.enable_trajectory, 1)
+        traj_top_layout.addWidget(self.enable_trajectory)
 
-        traj_freq_layout = QHBoxLayout()
+        traj_top_layout.addStretch(2)
+
         traj_freq_label = QLabel("Trajectory Write Frequency:")
         self.traj_freq_spinbox = QSpinBox()
         self.traj_freq_spinbox.setRange(1, 2147483647)
         self.traj_freq_spinbox.setValue(100)
         self.traj_freq_spinbox.setSingleStep(100)
-        self.traj_freq_spinbox.setMinimumWidth(150)
-        traj_freq_layout.addWidget(traj_freq_label)
-        traj_freq_layout.addWidget(self.traj_freq_spinbox)
-        traj_freq_layout.addStretch()
-        traj_top_layout.addLayout(traj_freq_layout, 2)
+        self.traj_freq_spinbox.setFixedWidth(100)  # Reduced by 20%
+        traj_top_layout.addWidget(traj_freq_label)
+        traj_top_layout.addWidget(self.traj_freq_spinbox)
 
-        traj_format_layout = QHBoxLayout()
+        traj_top_layout.addStretch(1)
+
         traj_format_label = QLabel("Trajectory Format:")
         self.traj_format = QComboBox()
         self.traj_format.addItems(["lammpstrj", "xyz", "dcd", "data"])
-        traj_format_layout.addWidget(traj_format_label)
-        traj_format_layout.addWidget(self.traj_format)
+        self.traj_format.setMinimumWidth(115)  # Added ~10% width
+        traj_top_layout.addWidget(traj_format_label)
+        traj_top_layout.addWidget(self.traj_format)
+        
+        traj_top_layout.addStretch(3)
         
         # New avoid coefficients checkbox
         self.avoid_coefficients_checkbox = QCheckBox("avoid coefficients")
         self.avoid_coefficients_checkbox.setToolTip("Skip writing potential/force field coefficients at the top of the data files (uses the 'nocoeff' keyword).")
         self.avoid_coefficients_checkbox.setChecked(True)
         self.avoid_coefficients_checkbox.setVisible(False)
-        traj_format_layout.addWidget(self.avoid_coefficients_checkbox)
-        
-        traj_format_layout.addStretch()
-        traj_top_layout.addLayout(traj_format_layout, 2)
+        traj_top_layout.addWidget(self.avoid_coefficients_checkbox)
+
+        # New export bonds checkbox
+        self.export_bonds_checkbox = QCheckBox("Export dynamic bonds")
+        self.export_bonds_checkbox.setToolTip("Periodically export dynamic bond topology using 'dump local' for OVITO. Recommended for dynamic topologies (e.g. fix bond/break).")
+        self.export_bonds_checkbox.setChecked(False)
+        traj_top_layout.addWidget(self.export_bonds_checkbox)
         traj_layout.addLayout(traj_top_layout)
 
         # Output Items Selector
@@ -3435,6 +3441,7 @@ class LAMMPSdeformerGui(QMainWindow):
                 "traj_freq": self.traj_freq_spinbox.value(),
                 "traj_format": self.traj_format.currentText(),
                 "avoid_coefficients": self.avoid_coefficients_checkbox.isChecked(),
+                "export_bonds": self.export_bonds_checkbox.isChecked(),
                 "trj_output_items": traj_items_str,
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_freq": self.thermo_freq_spinbox.value(),
@@ -3581,6 +3588,7 @@ class LAMMPSdeformerGui(QMainWindow):
             self.traj_freq_spinbox.setValue(self.settings.value("output/traj_freq", 100, type=int))
             self.traj_format.setCurrentText(self.settings.value("output/traj_format", "lammpstrj"))
             self.avoid_coefficients_checkbox.setChecked(self.settings.value("output/avoid_coefficients", True, type=bool))
+            self.export_bonds_checkbox.setChecked(self.settings.value("output/export_bonds", False, type=bool))
             
             # Trajectory Items
             trj_items_str = self.settings.value("output/trj_output_items", "id type x y z vx vy vz")
@@ -4076,6 +4084,7 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.traj_freq_spinbox.setValue(output.get("traj_freq", 100))
                 self.traj_format.setCurrentText(output.get("traj_format", "lammpstrj"))
                 self.avoid_coefficients_checkbox.setChecked(output.get("avoid_coefficients", True))
+                self.export_bonds_checkbox.setChecked(output.get("export_bonds", False))
                 
                 # Trajectory Items
                 trj_items_str = output.get("trj_output_items", "id type x y z vx vy vz")
