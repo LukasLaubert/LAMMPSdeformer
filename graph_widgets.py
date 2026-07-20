@@ -1731,7 +1731,7 @@ class DeformationTab(QWidget):
         font.setBold(True)
         self.mode_combo.setFont(font)
         self.mode_combo.setToolTip("Select the processing mode for this study")
-        self.mode_combo.setMinimumWidth(120)
+        self.mode_combo.setMinimumWidth(100)
         self.mode_combo.setStyleSheet(""" 
             QComboBox {
                 combobox-popup: 0;

@@ -1359,8 +1359,8 @@ class LammpsGui(QMainWindow):
         self.write_data_combo = QComboBox()
         self.write_data_combo.addItems([
             "Never",
-            "At the end of the simulation",
-            "After each deformation/temperature step"
+            "After each deformation/temperature step",
+            "At the end of the simulation"
         ])
         self.write_data_combo.setToolTip("Select when to write atom data.")
         
@@ -1609,18 +1609,13 @@ class LammpsGui(QMainWindow):
         cluster_layout.addRow("SLURM Header:", self.slurm_header_text)
 
         # Restart settings
-        self.enable_restart_checkbox = QCheckBox("Enable automatic restart (24h jobs)")
-        self.enable_restart_checkbox.setToolTip("Enable automatic job restart for long simulations on clusters. This will configure the simulation to save its state periodically and automatically resubmit the job before the 24-hour walltime limit is reached.")
+        self.enable_restart_checkbox = QCheckBox("Enable automatic restart")
+        self.enable_restart_checkbox.setToolTip("Enable automatic job restart for long simulations on clusters. This will configure the simulation to save its state periodically and automatically resubmit the job before the runtime threshold is reached.")
         
         restart_toggle_layout = QHBoxLayout()
         restart_toggle_layout.setContentsMargins(0,0,0,0)
         restart_toggle_layout.addWidget(self.enable_restart_checkbox)
         restart_toggle_layout.addStretch()
-        
-        hpc_restart_link = "https://doc.nhr.fau.de/apps/lammps/#setting-up-lammps-restart-jobs-and-resubmitting-automatically"
-        hpc_tooltip = "Click to open HPC documentation for automatic restart jobs"
-        hpc_info_label = create_info_icon_label(QUrl(hpc_restart_link), hpc_tooltip, "green")
-        restart_toggle_layout.addWidget(hpc_info_label)
 
         lammps_restart_link = "https://docs.lammps.org/restart.html"
         lammps_tooltip = "Click to open LAMMPS documentation for the restart command"
@@ -1637,23 +1632,51 @@ class LammpsGui(QMainWindow):
 
         self.restart_freq_spinbox = QSpinBox()
         self.restart_freq_spinbox.setRange(100, 100000)
-        self.restart_freq_spinbox.setValue(1000)
+        self.restart_freq_spinbox.setValue(100000)
         self.restart_freq_spinbox.setSingleStep(100)
         self.restart_freq_spinbox.setToolTip("Frequency (in MD steps) to write a restart file. For example, a value of 1000 will save the simulation state every 1000 steps.")
         restart_options_layout.addRow("Restart Write Frequency:", self.restart_freq_spinbox)
 
-        self.halt_freq_spinbox = QSpinBox()
-        self.halt_freq_spinbox.setRange(10, 1000)
-        self.halt_freq_spinbox.setValue(100)
-        self.halt_freq_spinbox.setToolTip("Frequency (in MD steps) for the 'fix halt' command to check if the elapsed time has exceeded the 'maxtime' variable. This ensures the simulation stops gracefully before the walltime limit.")
-        restart_options_layout.addRow("Halt Check Frequency:", self.halt_freq_spinbox)
+        # Runtime threshold with hours and minutes
+        runtime_threshold_layout = QHBoxLayout()
+        
+        # Hours
+        hours_label = QLabel("Hours:")
+        self.runtime_threshold_hours = QSpinBox()
+        self.runtime_threshold_hours.setRange(0, 999)
+        self.runtime_threshold_hours.setValue(23)
+        self.runtime_threshold_hours.setFixedWidth(80)  # Fixed width to match minutes field
+        self.runtime_threshold_hours.setToolTip("Hours portion of the runtime threshold")
+        
+        # Minutes
+        minutes_label = QLabel("Minutes:")
+        self.runtime_threshold_minutes = QSpinBox()
+        self.runtime_threshold_minutes.setRange(0, 59)
+        self.runtime_threshold_minutes.setValue(45)
+        self.runtime_threshold_minutes.setFixedWidth(80)  # Fixed width to match hours field
+        self.runtime_threshold_minutes.setToolTip("Minutes portion of the runtime threshold")
+        
+        runtime_threshold_layout.addWidget(hours_label)
+        runtime_threshold_layout.addWidget(self.runtime_threshold_hours)
+        runtime_threshold_layout.addSpacing(5)  # Small space between hours and minutes
+        runtime_threshold_layout.addWidget(minutes_label)
+        runtime_threshold_layout.addWidget(self.runtime_threshold_minutes)
+        runtime_threshold_layout.addStretch()
+        
+        # Create a container for the label and layout
+        runtime_container_layout = QHBoxLayout()
+        runtime_label = QLabel("Runtime threshold:")
+        runtime_label.setToolTip("If prediction scheme estimates that the next run will surpass this total job runtime, it will restart the job before starting with this run.")
+        runtime_container_layout.addWidget(runtime_label)
+        runtime_container_layout.addLayout(runtime_threshold_layout)
+        
+        restart_options_layout.addRow(runtime_container_layout)
 
-        self.max_time_buffer_spinbox = QSpinBox()
-        self.max_time_buffer_spinbox.setRange(60, 3600)
-        self.max_time_buffer_spinbox.setValue(600)
-        self.max_time_buffer_spinbox.setSingleStep(60)
-        self.max_time_buffer_spinbox.setToolTip("A buffer time in seconds to subtract from the 24-hour walltime. This value is used to calculate the 'maxtime' variable, ensuring LAMMPS has enough time to stop smoothly and save a restart file before the job is killed by the scheduler.")
-        restart_options_layout.addRow("Max Time Buffer (s):", self.max_time_buffer_spinbox)
+        # Delete restart files after successful simulation checkbox
+        self.delete_restart_files_checkbox = QCheckBox("Delete restart files after successful simulation")
+        self.delete_restart_files_checkbox.setToolTip("If checked, adds a command in the .job script to delete the restart_files folder inside each respective simulation folder after successful completion.")
+        restart_options_layout.addRow(self.delete_restart_files_checkbox)
+
 
         cluster_layout.addRow(self.restart_options_widget)
 
@@ -2307,8 +2330,9 @@ class LammpsGui(QMainWindow):
 #SBATCH --error=lammps_error_%j.txt''',
                 "enable_restart": self.enable_restart_checkbox.isChecked(),
                 "restart_freq": self.restart_freq_spinbox.value(),
-                "halt_freq": self.halt_freq_spinbox.value(),
-                "max_time_buffer": self.max_time_buffer_spinbox.value()
+                "runtime_threshold_hours": self.runtime_threshold_hours.value(),
+                "runtime_threshold_minutes": self.runtime_threshold_minutes.value(),
+                "delete_restart_files": self.delete_restart_files_checkbox.isChecked()
             }
         }
         
@@ -2446,9 +2470,10 @@ class LammpsGui(QMainWindow):
             enable_restart = self.settings.value("job_submission/enable_restart", False, type=bool)
             self.enable_restart_checkbox.setChecked(enable_restart)
             self.restart_options_widget.setVisible(enable_restart)
-            self.restart_freq_spinbox.setValue(self.settings.value("job_submission/restart_freq", 1000, type=int))
-            self.halt_freq_spinbox.setValue(self.settings.value("job_submission/halt_freq", 100, type=int))
-            self.max_time_buffer_spinbox.setValue(self.settings.value("job_submission/max_time_buffer", 600, type=int))
+            self.restart_freq_spinbox.setValue(self.settings.value("job_submission/restart_freq", 100000, type=int))
+            self.runtime_threshold_hours.setValue(self.settings.value("job_submission/runtime_threshold_hours", 23, type=int))
+            self.runtime_threshold_minutes.setValue(self.settings.value("job_submission/runtime_threshold_minutes", 45, type=int))
+            self.delete_restart_files_checkbox.setChecked(self.settings.value("job_submission/delete_restart_files", False, type=bool))
             
             # Multi-study settings
             if hasattr(self, 'deformation_tab_widget'):
@@ -2848,6 +2873,10 @@ class LammpsGui(QMainWindow):
                 enable_restart = job_submission.get("enable_restart", False)
                 self.enable_restart_checkbox.setChecked(enable_restart)
                 self.restart_options_widget.setVisible(enable_restart)
+                self.restart_freq_spinbox.setValue(job_submission.get("restart_freq", 100000))
+                self.runtime_threshold_hours.setValue(job_submission.get("runtime_threshold_hours", 23))
+                self.runtime_threshold_minutes.setValue(job_submission.get("runtime_threshold_minutes", 45))
+                self.delete_restart_files_checkbox.setChecked(job_submission.get("delete_restart_files", False))
 
             # Multi-study configuration
             if "multistudy" in config and hasattr(self, 'deformation_tab_widget'):
