@@ -47,10 +47,11 @@ class LammpsScriptGenerator:
             else:
                 return {"success": False, "message": "Invalid system path."}
             
-            # Check if multi-system processing is enabled
-            enable_multi_system = self.config.get("multistudy", {}).get("enable_multi_system", False)
-            if is_multi_system and not enable_multi_system:
-                return {"success": False, "message": "Multiple .data files found but multi-system processing is not enabled."}
+            # Check units consistency if multi-system
+            if is_multi_system:
+                units_check = self.check_units_consistency(system_files)
+                if not units_check["consistent"]:
+                    return {"success": False, "message": units_check["message"]}
             
             # Create output directory structure
             output_path = self.config.get("output", {}).get("output_path", "")
@@ -86,12 +87,6 @@ class LammpsScriptGenerator:
             if not deform_studies:
                 return {"success": False, "message": "No deformation studies defined."}
             
-            # Check units consistency if multi-system
-            if is_multi_system:
-                units_check = self.check_units_consistency(system_files)
-                if not units_check["consistent"]:
-                    return {"success": False, "message": units_check["message"]}
-            
             # Generate scripts for each deformation study and system combination
             for study in deform_studies:
                 study_name = study.get("name", "study")
@@ -103,14 +98,9 @@ class LammpsScriptGenerator:
                 for system_file in system_files:
                     system_name = Path(system_file).stem
                     
-                    # Determine folder structure based on system type
-                    if is_multi_system:
-                        # For multiple systems: create system-specific folder within study folder
-                        system_folder = os.path.join(study_folder, system_name)
-                        os.makedirs(system_folder, exist_ok=True)
-                    else:
-                        # For single system: use study folder directly
-                        system_folder = study_folder
+                    # Always create system-specific folder within study folder for consistent structure
+                    system_folder = os.path.join(study_folder, system_name)
+                    os.makedirs(system_folder, exist_ok=True)
                     
                     # Generate script for this study-system combination
                     model_name = f"{system_name}_{study_name}"
@@ -124,18 +114,14 @@ class LammpsScriptGenerator:
                     if not result["success"]:
                         return result
             
-            # Generate execution script based on execution mode
-            execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
-            if execution_mode == "local" and self.config.get("multistudy", {}).get("sequential_execution", True):
-                # Sequential execution only for local runs
-                exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
-                if not exec_script_result["success"]:
-                    return exec_script_result
-            elif execution_mode == "cluster":
-                # For cluster runs, generate a master submission script
-                cluster_script_result = self.generate_cluster_submission_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
-                if not cluster_script_result["success"]:
-                    return cluster_script_result
+            # Always generate both local and cluster execution scripts
+            exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
+            if not exec_script_result["success"]:
+                return exec_script_result
+            
+            cluster_script_result = self.generate_cluster_submission_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
+            if not cluster_script_result["success"]:
+                return cluster_script_result
             
             # Save settings to JSON file
             settings_result = self.save_settings_to_json(root_simulation_dir)
@@ -446,14 +432,25 @@ class LammpsScriptGenerator:
             
             # Bond breakage if enabled
             if deform_config.get("enable_bond_breakage", False):
-                break_distance = deform_config.get("break_distance", 1.5)
-                break_force = deform_config.get("break_force", 50.0)
+                nevery = deform_config.get("nevery", 1)
+                bondtype = deform_config.get("bondtype", 1)
+                rmax = deform_config.get("rmax", 1.5)
+                enable_prob = deform_config.get("enable_prob", False)
+                
+                # Build bond break command
+                bond_break_cmd = f"fix break_all all bond/break {nevery} {bondtype} {rmax}"
+                
+                # Add probability if enabled
+                if enable_prob:
+                    prob_fraction = deform_config.get("prob_fraction", 0.1)
+                    prob_seed = deform_config.get("prob_seed", 12345)
+                    bond_break_cmd += f" prob {prob_fraction} {prob_seed}"
                 
                 script_lines.extend([
                     "#------------------------",
                     "# Bond breakage",
                     "#------------------------",
-                    f"fix break_all all bond/break 1 1 {break_distance} {break_force}",
+                    bond_break_cmd,
                     ""
                 ])
             
@@ -671,20 +668,17 @@ class LammpsScriptGenerator:
             return {"success": False, "message": f"Error generating job file: {str(e)}"}
         
     def generate_execution_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
-        """Generate execution script for sequential multi-system processing"""
+        """Generate local execution script for all simulations"""
         try:
             exec_script_path = os.path.join(root_simulation_dir, "run_all.sh")
             
             script_lines = [
                 "#!/bin/bash",
-                "# Sequential execution script for multiple LAMMPS simulations",
+                "# Local execution script for multiple LAMMPS simulations",
                 "",
-                "echo \"Starting sequential LAMMPS simulations...\"",
+                "echo \"Starting local LAMMPS simulations...\"",
                 ""
             ]
-            
-            # Get execution mode
-            execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
             
             for study in deform_studies:
                 study_name = study.get("name", "study")
@@ -693,35 +687,18 @@ class LammpsScriptGenerator:
                     system_name = Path(system_file).stem
                     model_name = f"{system_name}_{study_name}"
                     
-                    # Determine paths based on system type
-                    if is_multi_system:
-                        # Multi-system: script is in study/system/ directory
-                        script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
-                        job_relative_path = f"{study_name}/{system_name}/{model_name}.job"
-                        sim_directory = f"{study_name}/{system_name}"
-                    else:
-                        # Single-system: script is in study/ directory
-                        script_relative_path = f"{study_name}/{model_name}.in"
-                        job_relative_path = f"{study_name}/{model_name}.job"
-                        sim_directory = study_name
+                    # Always use consistent file structure: study/system/model_name.in
+                    script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
+                    sim_directory = f"{study_name}/{system_name}"
                     
-                    if execution_mode == "local":
-                        # Local execution - change to simulation directory and run
-                        script_lines.extend([
-                            f"echo \"Running simulation: {model_name}\"",
-                            f"cd {sim_directory}",
-                            f"lmp -in {model_name}.in",
-                            "echo \"Completed: {model_name}\"",
-                            ""
-                        ])
-                    else:
-                        # Cluster execution - submit job file from root directory
-                        script_lines.extend([
-                            f"echo \"Submitting job: {model_name}\"",
-                            f"sbatch {job_relative_path}",
-                            "echo \"Job submitted: {model_name}\"",
-                            ""
-                        ])
+                    # Local execution - change to simulation directory and run
+                    script_lines.extend([
+                        f"echo \"Running simulation: {model_name}\"",
+                        f"cd {sim_directory}",
+                        f"lmp -in {model_name}.in",
+                        "echo \"Completed: {model_name}\"",
+                        ""
+                    ])
             
             script_lines.extend([
                 "echo \"All simulations completed!\"",
@@ -747,41 +724,18 @@ class LammpsScriptGenerator:
         try:
             master_job_path = os.path.join(root_simulation_dir, "lammps_simulation.job")
             
-            # Get cluster settings
-            cluster_config = self.config.get("cluster", {})
-            partition = cluster_config.get("cluster_partition", "singlenode")
-            nodes = cluster_config.get("cluster_nodes", 1)
-            ntasks = cluster_config.get("cluster_ntasks", 72)
-            cpus_per_task = cluster_config.get("cluster_cpus_per_task", 1)
-            time_limit = cluster_config.get("cluster_time", "24:00:00")
-            export_setting = cluster_config.get("cluster_export", "NONE")
-            output_file = cluster_config.get("cluster_output", "lammps_output_%j.txt")
-            error_file = cluster_config.get("cluster_error", "lammps_error_%j.txt")
-            email = cluster_config.get("cluster_mail", "")
-            mail_type = cluster_config.get("cluster_mail_type", "ALL")
-            
-            # Generate job file content
+            # Generate job file content with default cluster settings
             job_lines = [
                 "#!/bin/bash",
-                f"#SBATCH --job-name=lammps_multi_simulation",
-                f"#SBATCH --partition={partition}",
-                f"#SBATCH --nodes={nodes}",
-                f"#SBATCH --ntasks-per-node={ntasks}",
-                f"#SBATCH --cpus-per-task={cpus_per_task}",
-                f"#SBATCH --time={time_limit}",
-                f"#SBATCH --export={export_setting}",
-                f"#SBATCH --output={output_file}",
-                f"#SBATCH --error={error_file}"
-            ]
-            
-            # Add email settings if provided
-            if email:
-                job_lines.extend([
-                    f"#SBATCH --mail-user={email}",
-                    f"#SBATCH --mail-type={mail_type}"
-                ])
-            
-            job_lines.extend([
+                "#SBATCH --job-name=lammps_multi_simulation",
+                "#SBATCH --partition=singlenode",
+                "#SBATCH --nodes=1",
+                "#SBATCH --ntasks-per-node=16",
+                "#SBATCH --cpus-per-task=1",
+                "#SBATCH --time=24:00:00",
+                "#SBATCH --export=NONE",
+                "#SBATCH --output=lammps_output_%j.txt",
+                "#SBATCH --error=lammps_error_%j.txt",
                 "",
                 "# Load modules",
                 "module load lammps",
@@ -789,7 +743,7 @@ class LammpsScriptGenerator:
                 "# Run all LAMMPS simulations",
                 "echo \"Starting LAMMPS simulations...\"",
                 ""
-            ])
+            ]
             
             # Add commands for each simulation
             for study in deform_studies:
@@ -799,13 +753,8 @@ class LammpsScriptGenerator:
                     system_name = Path(system_file).stem
                     model_name = f"{system_name}_{study_name}"
                     
-                    # Determine input file path relative to root directory
-                    if is_multi_system:
-                        # Multi-system: input file is in study/system/ directory
-                        input_relative_path = f"{study_name}/{system_name}/{model_name}.in"
-                    else:
-                        # Single-system: input file is in study/ directory
-                        input_relative_path = f"{study_name}/{model_name}.in"
+                    # Always use consistent file structure: study/system/model_name.in
+                    input_relative_path = f"{study_name}/{system_name}/{model_name}.in"
                     
                     # Create output directory for this simulation
                     output_dir = f"{study_name}_{system_name}_output"

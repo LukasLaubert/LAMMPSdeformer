@@ -12,7 +12,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import and run the main application
-from lammps_gui_new import main
+from lammps_gui import main
 
 if __name__ == "__main__":
     main()

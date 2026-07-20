@@ -61,9 +61,9 @@ except ImportError as e:
 
 # Import the script generator
 try:
-    from script_generator import LammpsScriptGenerator as ScriptGen
+    from script_generator import LammpsScriptGenerator
 except ImportError as e:
-    ScriptGen = None
+    LammpsScriptGenerator = None
 
 class NumericTableWidgetItem(QTableWidgetItem):
     """Custom table widget item that validates numeric input"""
@@ -104,6 +104,9 @@ class LammpsScriptGenerator(QMainWindow):
         self.setWindowTitle("LAMMPS Input Script Generator")
         self.setGeometry(100, 100, 1200, 800)
         
+        # Apply modern stylesheet
+        self.apply_modern_stylesheet()
+        
         # Initialize settings with organization and app name
         self.settings = QSettings("LammpsScriptGenerator", "LammpsInputGenerator")
         
@@ -114,6 +117,9 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Track widget references for focus jumping
         self.widget_references = {}
+        
+        # Track groupbox documentation links
+        self.groupbox_doc_links = {}
         
         # Create main widget and layout
         self.main_widget = QWidget()
@@ -128,7 +134,6 @@ class LammpsScriptGenerator(QMainWindow):
         self.create_system_tab()
         self.create_deformation_tab()
         self.create_output_tab()
-        self.create_cluster_tab()
         
         # Create bottom buttons
         self.create_bottom_buttons()
@@ -501,8 +506,17 @@ class LammpsScriptGenerator(QMainWindow):
     def toggle_bond_breakage_settings(self, state):
         """Toggle bond breakage parameter fields based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
-        self.break_distance.setEnabled(enabled)
-        self.break_force.setEnabled(enabled)
+        self.nevery.setEnabled(enabled)
+        self.bondtype.setEnabled(enabled)
+        self.rmax.setEnabled(enabled)
+        self.enable_prob.setEnabled(enabled)
+        self.toggle_probability_settings(self.enable_prob.checkState())
+        
+    def toggle_probability_settings(self, state):
+        """Toggle probability parameter fields based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.prob_fraction.setEnabled(enabled)
+        self.prob_seed.setEnabled(enabled)
         
     def update_system_type(self):
         """Update system type display based on selected path"""
@@ -724,22 +738,6 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(studies_group)
         
         # Multi-system processing settings
-        processing_group = QGroupBox("Multi-System Processing")
-        processing_layout = QVBoxLayout()
-        
-        self.enable_multi_system = QCheckBox("Enable Multi-System Processing")
-        self.enable_multi_system.setChecked(False)
-        self.enable_multi_system.setToolTip("When enabled, the GUI will automatically process all .data files found in the system directory.\n\nEach .data file will be processed with all deformation studies, creating separate simulation folders and input files for each combination.\n\nThis is useful for running the same set of deformation studies on multiple different systems or configurations.")
-        
-        self.sequential_execution = QCheckBox("Sequential Execution")
-        self.sequential_execution.setChecked(True)
-        self.sequential_execution.setToolTip("When enabled, simulations will run one after another to avoid resource conflicts.\n\nWhen disabled, simulations may run in parallel (if supported by the execution environment), but this requires careful resource management to avoid overloading the system.")
-        
-        processing_layout.addWidget(self.enable_multi_system)
-        processing_layout.addWidget(self.sequential_execution)
-        processing_group.setLayout(processing_layout)
-        scroll_layout.addWidget(processing_group)
-        
         # Wall settings for wall movement
         wall_settings_group = QGroupBox("Wall Settings (for Wall Movement)")
         wall_settings_layout = QFormLayout()
@@ -774,33 +772,54 @@ class LammpsScriptGenerator(QMainWindow):
         
         bond_breakage_form_layout = QFormLayout()
         
-        self.break_distance = QDoubleSpinBox()
-        self.break_distance.setRange(0.1, 10.0)
-        self.break_distance.setValue(1.5)
-        self.break_distance.setSingleStep(0.1)
-        self.break_distance.setDecimals(2)
-        self.break_distance.setEnabled(False)
-        self.break_distance.setToolTip("Distance at which bonds will break (in simulation units)")
+        # Nevery parameter
+        self.nevery = QSpinBox()
+        self.nevery.setRange(1, 1000000)
+        self.nevery.setValue(1)
+        self.nevery.setEnabled(False)
+        self.nevery.setToolTip("Attempt bond breaking every this many steps")
         
-        self.break_force = QDoubleSpinBox()
-        self.break_force.setRange(0.1, 1000.0)
-        self.break_force.setValue(50.0)
-        self.break_force.setSingleStep(1.0)
-        self.break_force.setDecimals(1)
-        self.break_force.setEnabled(False)
-        self.break_force.setToolTip("Force threshold for bond breakage (in simulation units)")
+        # Bond type
+        self.bondtype = QSpinBox()
+        self.bondtype.setRange(1, 100)
+        self.bondtype.setValue(1)
+        self.bondtype.setEnabled(False)
+        self.bondtype.setToolTip("Type of bonds to break (integer or type label)")
         
-        bond_breakage_label = QLabel("Bond Breakage:")
-        bond_breakage_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            bond_breakage_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        bond_breakage_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_bond_break")
-        bond_breakage_label.setToolTip("Click to open LAMMPS fix bond/break documentation")
+        # Rmax parameter
+        self.rmax = QDoubleSpinBox()
+        self.rmax.setRange(0, 1000)
+        self.rmax.setValue(1.5)
+        self.rmax.setSingleStep(0.1)
+        self.rmax.setEnabled(False)
+        self.rmax.setToolTip("Bond longer than Rmax can break (distance units)")
         
-        bond_breakage_form_layout.addRow("Break Distance:", self.break_distance)
-        bond_breakage_form_layout.addRow("Break Force:", self.break_force)
+        # Probability options
+        self.enable_prob = QCheckBox("Enable Probability")
+        self.enable_prob.setChecked(False)
+        self.enable_prob.setEnabled(False)
+        self.enable_prob.setToolTip("Enable probabilistic bond breakage")
+        self.enable_prob.stateChanged.connect(self.toggle_probability_settings)
+        
+        self.prob_fraction = QDoubleSpinBox()
+        self.prob_fraction.setRange(0, 1)
+        self.prob_fraction.setValue(0.1)
+        self.prob_fraction.setSingleStep(0.01)
+        self.prob_fraction.setEnabled(False)
+        self.prob_fraction.setToolTip("Break a bond with this probability if otherwise eligible")
+        
+        self.prob_seed = QSpinBox()
+        self.prob_seed.setRange(1, 1000000)
+        self.prob_seed.setValue(12345)
+        self.prob_seed.setEnabled(False)
+        self.prob_seed.setToolTip("Random number seed (positive integer)")
+        
+        bond_breakage_form_layout.addRow("Nevery:", self.nevery)
+        bond_breakage_form_layout.addRow("Bond Type:", self.bondtype)
+        bond_breakage_form_layout.addRow("Rmax:", self.rmax)
+        bond_breakage_form_layout.addRow(self.enable_prob)
+        bond_breakage_form_layout.addRow("Probability:", self.prob_fraction)
+        bond_breakage_form_layout.addRow("Seed:", self.prob_seed)
         
         bond_breakage_layout.addWidget(self.enable_bond_breakage)
         bond_breakage_layout.addLayout(bond_breakage_form_layout)
@@ -1064,12 +1083,18 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(path_group)
         
         # Trajectory output settings
-        traj_group = QGroupBox("Trajectory Output Settings")
+        traj_group = QGroupBox("Trajectory Output Settings (LAMMPS dump Documentation)")
+        traj_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
+        # Make the group box title clickable
+        traj_group.installEventFilter(self)
+        self.groupbox_doc_links["traj_group"] = "dump"
+        
         traj_layout = QVBoxLayout()
         
         self.enable_trajectory = QCheckBox("Enable Trajectory Output")
         self.enable_trajectory.setChecked(True)
         self.enable_trajectory.setToolTip("Enable trajectory file output")
+        self.enable_trajectory.stateChanged.connect(self.toggle_trajectory_settings)
         
         traj_form_layout = QFormLayout()
         
@@ -1082,15 +1107,6 @@ class LammpsScriptGenerator(QMainWindow):
         self.trj_output_items.setMaximumHeight(100)
         self.trj_output_items.setToolTip("Items to include in trajectory output")
         
-        traj_label = QLabel("Trajectory Settings:")
-        traj_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            traj_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        traj_label.mousePressEvent = lambda e: self.open_lammps_doc("dump")
-        traj_label.setToolTip("Click to open LAMMPS dump documentation")
-        
         traj_form_layout.addRow("Trajectory Format:", self.traj_format)
         traj_form_layout.addRow("Output Items:", self.trj_output_items)
         
@@ -1100,12 +1116,17 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(traj_group)
         
         # Thermo output settings
-        thermo_group = QGroupBox("Thermo Output Settings")
+        thermo_group = QGroupBox("Thermo Output Settings (LAMMPS thermo_style Documentation)")
+        thermo_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
+        thermo_group.installEventFilter(self)
+        self.groupbox_doc_links["thermo_group"] = "thermo_style"
+        
         thermo_layout = QVBoxLayout()
         
         self.enable_thermo = QCheckBox("Enable Thermo Output")
         self.enable_thermo.setChecked(True)
         self.enable_thermo.setToolTip("Enable thermodynamic output")
+        self.enable_thermo.stateChanged.connect(self.toggle_thermo_settings)
         
         thermo_form_layout = QFormLayout()
         
@@ -1114,16 +1135,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.thermo_style.setMaximumHeight(100)
         self.thermo_style.setToolTip("Thermo style specification")
         
-        thermo_label = QLabel("Thermo Style:")
-        thermo_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            thermo_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        thermo_label.mousePressEvent = lambda e: self.open_lammps_doc("thermo_style")
-        thermo_label.setToolTip("Click to open LAMMPS thermo_style documentation")
-        
-        thermo_form_layout.addRow(thermo_label, self.thermo_style)
+        thermo_form_layout.addRow("Thermo Style:", self.thermo_style)
         
         thermo_layout.addWidget(self.enable_thermo)
         thermo_layout.addLayout(thermo_form_layout)
@@ -1131,29 +1143,27 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(thermo_group)
         
         # Stress calculations
-        stress_group = QGroupBox("Stress Calculations")
+        stress_group = QGroupBox("Stress Calculations (LAMMPS compute stress/atom Documentation)")
+        stress_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
+        stress_group.installEventFilter(self)
+        self.groupbox_doc_links["stress_group"] = "compute_stress_atom"
+        
         stress_layout = QVBoxLayout()
         
         self.enable_stress = QCheckBox("Enable Stress Calculations")
         self.enable_stress.setChecked(True)
         self.enable_stress.setToolTip("Enable stress tensor calculations")
-        
-        stress_label = QLabel("Stress Calculations:")
-        stress_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            stress_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        stress_label.mousePressEvent = lambda e: self.open_lammps_doc("compute_stress")
-        stress_label.setToolTip("Click to open LAMMPS compute stress documentation")
+        self.enable_stress.stateChanged.connect(self.toggle_stress_settings)
         
         stress_layout.addWidget(self.enable_stress)
-        stress_layout.addWidget(stress_label)
         stress_group.setLayout(stress_layout)
         scroll_layout.addWidget(stress_group)
         
         # Custom computes
-        custom_computes_group = QGroupBox("Custom Computes")
+        custom_computes_group = QGroupBox("Custom Computes (LAMMPS compute Documentation)")
+        custom_computes_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
+        custom_computes_group.installEventFilter(self)
+        self.groupbox_doc_links["custom_computes_group"] = "compute"
         custom_computes_layout = QVBoxLayout()
         
         self.enable_custom_computes = QCheckBox("Enable Custom Computes")
@@ -1167,23 +1177,17 @@ class LammpsScriptGenerator(QMainWindow):
         self.custom_computes_text.setEnabled(False)
         self.custom_computes_text.setToolTip("Custom LAMMPS compute commands")
         
-        custom_computes_label = QLabel("Custom Computes:")
-        custom_computes_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            custom_computes_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        custom_computes_label.mousePressEvent = lambda e: self.open_lammps_doc("compute")
-        custom_computes_label.setToolTip("Click to open LAMMPS compute documentation")
-        
         custom_computes_layout.addWidget(self.enable_custom_computes)
-        custom_computes_layout.addWidget(custom_computes_label)
         custom_computes_layout.addWidget(self.custom_computes_text)
         custom_computes_group.setLayout(custom_computes_layout)
         scroll_layout.addWidget(custom_computes_group)
         
         # Custom dumps
-        custom_dumps_group = QGroupBox("Custom Dumps")
+        custom_dumps_group = QGroupBox("Custom Dumps (LAMMPS dump Documentation)")
+        custom_dumps_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
+        custom_dumps_group.installEventFilter(self)
+        self.groupbox_doc_links["custom_dumps_group"] = "dump"
+        
         custom_dumps_layout = QVBoxLayout()
         
         self.enable_custom_dumps = QCheckBox("Enable Custom Dumps")
@@ -1197,17 +1201,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.custom_dumps_text.setEnabled(False)
         self.custom_dumps_text.setToolTip("Custom LAMMPS dump commands")
         
-        custom_dumps_label = QLabel("Custom Dumps:")
-        custom_dumps_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            custom_dumps_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        custom_dumps_label.mousePressEvent = lambda e: self.open_lammps_doc("dump")
-        custom_dumps_label.setToolTip("Click to open LAMMPS dump documentation")
-        
         custom_dumps_layout.addWidget(self.enable_custom_dumps)
-        custom_dumps_layout.addWidget(custom_dumps_label)
         custom_dumps_layout.addWidget(self.custom_dumps_text)
         custom_dumps_group.setLayout(custom_dumps_layout)
         scroll_layout.addWidget(custom_dumps_group)
@@ -1224,132 +1218,6 @@ class LammpsScriptGenerator(QMainWindow):
         """Toggle custom dumps text box based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         self.custom_dumps_text.setEnabled(enabled)
-        
-    def create_cluster_tab(self):
-        """Create the cluster configuration tab"""
-        self.cluster_tab = QWidget()
-        self.tab_widget.addTab(self.cluster_tab, "Cluster Configuration")
-        
-        # Create scroll area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
-        scroll.setWidget(scroll_widget)
-        
-        # Main layout for cluster tab
-        cluster_layout = QVBoxLayout(self.cluster_tab)
-        cluster_layout.addWidget(scroll)
-        
-        # Execution mode selection
-        exec_mode_group = QGroupBox("Execution Mode")
-        exec_mode_layout = QVBoxLayout()
-        
-        self.execution_mode_combo = QComboBox()
-        self.execution_mode_combo.addItems(["local", "cluster"])
-        self.execution_mode_combo.setCurrentText("local")
-        self.execution_mode_combo.setToolTip("Select execution mode for simulations")
-        self.execution_mode_combo.currentTextChanged.connect(self.toggle_execution_settings)
-        
-        exec_mode_layout.addWidget(QLabel("Execution Mode:"))
-        exec_mode_layout.addWidget(self.execution_mode_combo)
-        exec_mode_group.setLayout(exec_mode_layout)
-        scroll_layout.addWidget(exec_mode_group)
-        
-        # Local execution settings
-        self.local_exec_group = QGroupBox("Local Execution Settings")
-        local_exec_layout = QFormLayout()
-        
-        self.lammps_command_edit = QLineEdit()
-        self.lammps_command_edit.setText("lmp")
-        self.lammps_command_edit.setToolTip("LAMMPS command for local execution")
-        
-        self.threads_spin = QSpinBox()
-        self.threads_spin.setRange(1, 128)
-        self.threads_spin.setValue(4)
-        self.threads_spin.setToolTip("Number of threads for local execution")
-        
-        local_exec_layout.addRow("LAMMPS Command:", self.lammps_command_edit)
-        local_exec_layout.addRow("Threads:", self.threads_spin)
-        self.local_exec_group.setLayout(local_exec_layout)
-        scroll_layout.addWidget(self.local_exec_group)
-        
-        # Cluster execution settings
-        self.cluster_exec_group = QGroupBox("Cluster Execution Settings")
-        cluster_exec_layout = QFormLayout()
-        
-        self.cluster_partition = QLineEdit()
-        self.cluster_partition.setText("singlenode")
-        self.cluster_partition.setToolTip("Cluster partition for job submission")
-        
-        self.cluster_nodes = QSpinBox()
-        self.cluster_nodes.setRange(1, 100)
-        self.cluster_nodes.setValue(1)
-        self.cluster_nodes.setToolTip("Number of nodes for cluster execution")
-        
-        self.cluster_ntasks = QSpinBox()
-        self.cluster_ntasks.setRange(1, 1000)
-        self.cluster_ntasks.setValue(72)
-        self.cluster_ntasks.setToolTip("Number of tasks for cluster execution")
-        
-        self.cluster_time = QLineEdit()
-        self.cluster_time.setText("24:00:00")
-        self.cluster_time.setToolTip("Time limit for cluster jobs (HH:MM:SS)")
-        
-        self.cluster_mail = QLineEdit()
-        self.cluster_mail.setPlaceholderText("email@example.com")
-        self.cluster_mail.setToolTip("Email address for job notifications")
-        
-        self.cluster_mail_type = QComboBox()
-        self.cluster_mail_type.addItems(["ALL", "BEGIN", "END", "FAIL", "NONE"])
-        self.cluster_mail_type.setCurrentText("ALL")
-        self.cluster_mail_type.setToolTip("When to send email notifications")
-        
-        cluster_exec_layout.addRow("Partition:", self.cluster_partition)
-        cluster_exec_layout.addRow("Nodes:", self.cluster_nodes)
-        cluster_exec_layout.addRow("Tasks:", self.cluster_ntasks)
-        cluster_exec_layout.addRow("Time Limit:", self.cluster_time)
-        cluster_exec_layout.addRow("Email:", self.cluster_mail)
-        cluster_exec_layout.addRow("Mail Type:", self.cluster_mail_type)
-        self.cluster_exec_group.setLayout(cluster_exec_layout)
-        scroll_layout.addWidget(self.cluster_exec_group)
-        
-        # Job submission settings
-        job_submit_group = QGroupBox("Job Submission Settings")
-        job_submit_layout = QVBoxLayout()
-        
-        self.auto_submit = QCheckBox("Auto-submit Jobs")
-        self.auto_submit.setChecked(False)
-        self.auto_submit.setToolTip("Automatically submit jobs to cluster")
-        
-        self.show_command = QCheckBox("Show Command")
-        self.show_command.setChecked(True)
-        self.show_command.setToolTip("Show execution command before running")
-        
-        self.save_scripts_only = QCheckBox("Save Scripts Only")
-        self.save_scripts_only.setChecked(False)
-        self.save_scripts_only.setToolTip("Only save scripts without executing")
-        
-        job_submit_layout.addWidget(self.auto_submit)
-        job_submit_layout.addWidget(self.show_command)
-        job_submit_layout.addWidget(self.save_scripts_only)
-        job_submit_group.setLayout(job_submit_layout)
-        scroll_layout.addWidget(job_submit_group)
-        
-        # Initialize execution settings
-        self.toggle_execution_settings("local")
-        
-        # Add stretch to push everything up
-        scroll_layout.addStretch()
-        
-    def toggle_execution_settings(self, mode):
-        """Toggle between local and cluster execution settings"""
-        if mode == "local":
-            self.local_exec_group.setEnabled(True)
-            self.cluster_exec_group.setEnabled(False)
-        else:
-            self.local_exec_group.setEnabled(False)
-            self.cluster_exec_group.setEnabled(True)
         
     def create_bottom_buttons(self):
         """Create the bottom buttons"""
@@ -1454,6 +1322,269 @@ class LammpsScriptGenerator(QMainWindow):
         url = QUrl(f"https://docs.lammps.org/{command}.html")
         QDesktopServices.openUrl(url)
     
+    def eventFilter(self, obj, event):
+        """Event filter to handle clicks on groupbox titles"""
+        if event.type() == event.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            for widget, doc_command in self.groupbox_doc_links.items():
+                if obj == getattr(self, widget, None):
+                    self.open_lammps_doc(doc_command)
+                    return True
+        return super().eventFilter(obj, event)
+    
+    def toggle_trajectory_settings(self, state):
+        """Toggle trajectory settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.traj_format.setEnabled(enabled)
+        self.trj_output_items.setEnabled(enabled)
+    
+    def toggle_thermo_settings(self, state):
+        """Toggle thermo settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.thermo_style.setEnabled(enabled)
+    
+    def toggle_stress_settings(self, state):
+        """Toggle stress settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        # Stress calculations don't have additional settings currently, but added for consistency
+    
+    def toggle_custom_computes(self, state):
+        """Toggle custom computes settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.custom_computes_text.setEnabled(enabled)
+    
+    def toggle_custom_dumps(self, state):
+        """Toggle custom dumps settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.custom_dumps_text.setEnabled(enabled)
+    
+    def show_generated_files_dialog(self, result):
+        """Show dialog with generated file structure"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Generated Scripts")
+        dialog.setMinimumSize(600, 400)
+        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        
+        layout = QVBoxLayout()
+        
+        # Title
+        title_label = QLabel("Scripts Generated Successfully!")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: green;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # Message
+        message_label = QLabel(result["message"])
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+        
+        # File structure
+        files_label = QLabel("Generated File Structure:")
+        files_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(files_label)
+        
+        # Create text area for file structure
+        file_structure_text = QTextEdit()
+        file_structure_text.setReadOnly(True)
+        file_structure_text.setMaximumHeight(200)
+        
+        # Generate file structure text
+        structure_text = self.generate_file_structure_text(result.get("files", []))
+        file_structure_text.setPlainText(structure_text)
+        
+        layout.addWidget(file_structure_text)
+        
+        # Instructions
+        instructions_label = QLabel("Instructions:")
+        instructions_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(instructions_label)
+        
+        instructions_text = QTextEdit()
+        instructions_text.setReadOnly(True)
+        instructions_text.setMaximumHeight(100)
+        instructions_text.setPlainText(
+            "• run_all.sh: Local execution script. Run with: bash run_all.sh\n"
+            "• lammps_simulation.job: Cluster job submission script. Submit with: sbatch lammps_simulation.job\n"
+            "• All .in files are located in their respective study/system folders\n"
+            "• Data files are copied to the input_files folder for easy access"
+        )
+        layout.addWidget(instructions_text)
+        
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        button_box.accepted.connect(dialog.accept)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def generate_file_structure_text(self, files):
+        """Generate text representation of file structure"""
+        if not files:
+            return "No files generated."
+        
+        # Get unique directories
+        directories = set()
+        for file_path in files:
+            directories.add(os.path.dirname(file_path))
+        
+        structure_lines = ["Generated Files:"]
+        
+        # Add files by directory
+        for directory in sorted(directories):
+            dir_files = [f for f in files if os.path.dirname(f) == directory]
+            if dir_files:
+                structure_lines.append(f"\n{directory}/")
+                for file_path in sorted(dir_files):
+                    filename = os.path.basename(file_path)
+                    structure_lines.append(f"  └── {filename}")
+        
+        return "\n".join(structure_lines)
+    
+    def apply_modern_stylesheet(self):
+        """Apply modern stylesheet to the application"""
+        stylesheet = """
+        QMainWindow {
+            background-color: #f5f5f5;
+        }
+        
+        QTabWidget::pane {
+            border: 1px solid #c0c0c0;
+            background-color: #ffffff;
+            border-radius: 4px;
+        }
+        
+        QTabWidget::tab-bar {
+            left: 5px;
+        }
+        
+        QTabBar::tab {
+            background-color: #e0e0e0;
+            border: 1px solid #c0c0c0;
+            border-bottom: none;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+            padding: 8px 16px;
+            margin-right: 2px;
+        }
+        
+        QTabBar::tab:selected {
+            background-color: #ffffff;
+            border-bottom: 2px solid #007acc;
+        }
+        
+        QTabBar::tab:hover {
+            background-color: #f0f0f0;
+        }
+        
+        QGroupBox {
+            font-weight: bold;
+            border: 2px solid #cccccc;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding-top: 10px;
+            background-color: #fafafa;
+        }
+        
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px 0 5px;
+        }
+        
+        QPushButton {
+            background-color: #007acc;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            font-weight: bold;
+        }
+        
+        QPushButton:hover {
+            background-color: #005a9e;
+        }
+        
+        QPushButton:pressed {
+            background-color: #004080;
+        }
+        
+        QPushButton:disabled {
+            background-color: #cccccc;
+            color: #666666;
+        }
+        
+        QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+            padding: 4px;
+            background-color: white;
+        }
+        
+        QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+            border: 2px solid #007acc;
+        }
+        
+        QCheckBox {
+            spacing: 8px;
+        }
+        
+        QCheckBox::indicator {
+            width: 18px;
+            height: 18px;
+            border: 2px solid #cccccc;
+            border-radius: 3px;
+            background-color: white;
+        }
+        
+        QCheckBox::indicator:checked {
+            background-color: #007acc;
+            border-color: #007acc;
+        }
+        
+        QCheckBox::indicator:hover {
+            border-color: #007acc;
+        }
+        
+        QTableWidget {
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+            background-color: white;
+            gridline-color: #e0e0e0;
+        }
+        
+        QTableWidget::item {
+            padding: 4px;
+        }
+        
+        QTableWidget::item:selected {
+            background-color: #007acc;
+            color: white;
+        }
+        
+        QHeaderView::section {
+            background-color: #f0f0f0;
+            padding: 4px;
+            border: 1px solid #cccccc;
+            font-weight: bold;
+        }
+        
+        QScrollArea {
+            border: none;
+        }
+        
+        QLabel {
+            color: #333333;
+        }
+        
+        QToolTip {
+            background-color: #ffffe1;
+            border: 1px solid #cccccc;
+            padding: 4px;
+            border-radius: 3px;
+        }
+        """
+        self.setStyleSheet(stylesheet)
+    
     def collect_config(self):
         """Collect configuration from all GUI elements"""
         config = {
@@ -1482,8 +1613,12 @@ class LammpsScriptGenerator(QMainWindow):
             "deformation": {
                 "wall_thickness": self.wall_thickness.value(),
                 "enable_bond_breakage": self.enable_bond_breakage.isChecked(),
-                "break_distance": self.break_distance.value(),
-                "break_force": self.break_force.value()
+                "nevery": self.nevery.value(),
+                "bondtype": self.bondtype.value(),
+                "rmax": self.rmax.value(),
+                "enable_prob": self.enable_prob.isChecked(),
+                "prob_fraction": self.prob_fraction.value(),
+                "prob_seed": self.prob_seed.value()
             },
             "output": {
                 "output_path": self.output_path_edit.text(),
@@ -1513,8 +1648,6 @@ class LammpsScriptGenerator(QMainWindow):
                 "save_scripts_only": self.save_scripts_only.isChecked()
             },
             "multistudy": {
-                "enable_multi_system": self.enable_multi_system.isChecked(),
-                "sequential_execution": self.sequential_execution.isChecked(),
                 "deform_studies": []
             }
         }
@@ -1569,8 +1702,12 @@ class LammpsScriptGenerator(QMainWindow):
             # Deformation settings
             self.wall_thickness.setValue(self.settings.value("deformation/wall_thickness", 5.0, type=float))
             self.enable_bond_breakage.setChecked(self.settings.value("deformation/enable_bond_breakage", False, type=bool))
-            self.break_distance.setValue(self.settings.value("deformation/break_distance", 1.5, type=float))
-            self.break_force.setValue(self.settings.value("deformation/break_force", 50.0, type=float))
+            self.nevery.setValue(self.settings.value("deformation/nevery", 1, type=int))
+            self.bondtype.setValue(self.settings.value("deformation/bondtype", 1, type=int))
+            self.rmax.setValue(self.settings.value("deformation/rmax", 1.5, type=float))
+            self.enable_prob.setChecked(self.settings.value("deformation/enable_prob", False, type=bool))
+            self.prob_fraction.setValue(self.settings.value("deformation/prob_fraction", 0.1, type=float))
+            self.prob_seed.setValue(self.settings.value("deformation/prob_seed", 12345, type=int))
             
             # Output settings
             self.output_path_edit.setText(self.settings.value("output/output_path", ""))
@@ -1600,8 +1737,6 @@ class LammpsScriptGenerator(QMainWindow):
             self.save_scripts_only.setChecked(self.settings.value("cluster/save_scripts_only", False, type=bool))
             
             # Multi-study settings
-            self.enable_multi_system.setChecked(self.settings.value("multistudy/enable_multi_system", False, type=bool))
-            self.sequential_execution.setChecked(self.settings.value("multistudy/sequential_execution", True, type=bool))
             
             # Load deformation studies
             studies_data = self.settings.value("multistudy/deform_studies")
@@ -1673,16 +1808,12 @@ class LammpsScriptGenerator(QMainWindow):
                 return
             
             # Generate scripts
-            if ScriptGen:
-                generator = ScriptGen(config)
+            if LammpsScriptGenerator:
+                generator = LammpsScriptGenerator(config)
                 result = generator.generate_all_scripts()
                 
                 if result["success"]:
-                    QMessageBox.information(self, "Success", result["message"])
-                    
-                    # Show generated files if requested
-                    if config["cluster"]["show_command"]:
-                        self.show_generated_scripts(result.get("files", []))
+                    self.show_generated_files_dialog(result)
                 else:
                     QMessageBox.critical(self, "Error", result["message"])
             else:
@@ -1784,8 +1915,12 @@ class LammpsScriptGenerator(QMainWindow):
                 deformation = config["deformation"]
                 self.wall_thickness.setValue(deformation.get("wall_thickness", 5.0))
                 self.enable_bond_breakage.setChecked(deformation.get("enable_bond_breakage", False))
-                self.break_distance.setValue(deformation.get("break_distance", 1.5))
-                self.break_force.setValue(deformation.get("break_force", 50.0))
+                self.nevery.setValue(deformation.get("nevery", 1))
+                self.bondtype.setValue(deformation.get("bondtype", 1))
+                self.rmax.setValue(deformation.get("rmax", 1.5))
+                self.enable_prob.setChecked(deformation.get("enable_prob", False))
+                self.prob_fraction.setValue(deformation.get("prob_fraction", 0.1))
+                self.prob_seed.setValue(deformation.get("prob_seed", 12345))
             
             # Output configuration
             if "output" in config:
@@ -1821,8 +1956,6 @@ class LammpsScriptGenerator(QMainWindow):
             # Multi-study configuration
             if "multistudy" in config:
                 multistudy = config["multistudy"]
-                self.enable_multi_system.setChecked(multistudy.get("enable_multi_system", False))
-                self.sequential_execution.setChecked(multistudy.get("sequential_execution", True))
                 
                 # Load deformation studies
                 studies = multistudy.get("deform_studies", [])
