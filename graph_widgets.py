@@ -122,6 +122,10 @@ class GraphWidget(QWidget):
         self._dragged_handle_index, self._hovered_handle_index, self._dragged_segment_index, self._hovered_segment_index = None, None, None, None
         self._drag_start_pos_widget, self._drag_axis_lock, self._segment_drag_offset_norm = None, None, QPointF(0,0)
         self._drag_mouse_to_p1_offset = QPointF(0,0); self._clickable_regions = []
+        # Add data structures to track fixed segments, locked x-axis ticks, and locked y-value labels
+        self._fixed_segments = set()
+        self._locked_x_ticks = set()
+        self._locked_y_labels = set()
     def set_max_values(self, s, min_e, max_e):
         old_points_data = self.get_data_points(); old_max_steps = self._max_steps
         self._max_steps, self._min_strain, self._max_strain = int(s), float(min_e), float(max_e)
@@ -156,6 +160,8 @@ class GraphWidget(QWidget):
     def reset_graph(self):
         y_start = self.get_y_start()
         self.points_norm = [self._data_to_norm(QPointF(0, y_start)), self._data_to_norm(QPointF(self._max_steps, self._max_strain))]
+        # Clear fixed segments when resetting the graph
+        self._fixed_segments.clear()
         self.update()
         self.dataChanged.emit()
     def generate_staircase_scheme(self, cycles, relax_factor, direction):
@@ -246,24 +252,38 @@ class GraphWidget(QWidget):
         self._draw_axes_and_frame(painter)
         if not self.points_norm: return
         fm = QFontMetrics(QFont("Arial", 10))
+        # Draw the line segments and slope labels
         for i in range(len(self.points_norm) - 1):
             p1_w, p2_w = self._norm_to_widget(self.points_norm[i]), self._norm_to_widget(self.points_norm[i+1])
             painter.setPen(QPen(self.STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
             p1_d, p2_d = self._norm_to_data(self.points_norm[i]), self._norm_to_data(self.points_norm[i+1])
             dx_s, dy_e, dx_t = p2_d.x() - p1_d.x(), p2_d.y() - p1_d.y(), (p2_d.x() - p1_d.x()) * self._timestep
             slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
-            slope_text = f"{slope:.2e} {self.get_y_unit()}/step"
-            rate_text = f"{rate:.2e} {self.get_y_unit()}/t"
+            slope_text = f"{slope:.4e} {self.get_y_unit()}/step"
+            rate_text = f"{rate:.4e} {self.get_y_unit()}/t"
             slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w/2 + p2_w/2) - QPointF(0, 20))
             rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w/2 + p2_w/2) - QPointF(0, 6))
-            painter.setPen(STYLE_SLOPE_TEXT); painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
-            painter.setPen(STYLE_TEXT_SECONDARY); painter.drawText(rate_rect, rate_text)
+            # Check if this segment is fixed and draw in red if so
+            if i in self._fixed_segments:
+                painter.setPen(QColor("red"))
+            else:
+                painter.setPen(STYLE_SLOPE_TEXT)
+            painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
+            if i in self._fixed_segments:
+                painter.setPen(QColor("red"))
+            else:
+                painter.setPen(STYLE_TEXT_SECONDARY)
+            painter.drawText(rate_rect, rate_text)
             self._clickable_regions.append((slope_rect.united(rate_rect), "slope", i))
+        # Draw the handles and labels
         for i, p_norm in enumerate(self.points_norm):
             p_data, p_w = self._norm_to_data(p_norm), self._norm_to_widget(p_norm)
             painter.setPen(QPen(STYLE_HANDLE_OUTLINE, 2)); painter.setBrush(self.STYLE_HANDLE); painter.drawEllipse(p_w, HANDLE_RADIUS, HANDLE_RADIUS)
             y_text = f"{p_data.y():.3f}"; y_rect = QRectF(fm.boundingRect(y_text)); y_rect.moveCenter(QPointF(p_w.x() + 35, p_w.y()))
-            if self.mode == 'Temperature':
+            # Check if this y-label is locked and draw in red if so
+            if i in self._locked_y_labels:
+                painter.setPen(QColor("red"))
+            elif self.mode == 'Temperature':
                 painter.setPen(QColor("darkorange"))
             else:
                 painter.setPen(STYLE_TEXT_PRIMARY)
@@ -272,8 +292,17 @@ class GraphWidget(QWidget):
             step_text, time_text = f"{p_data.x():.0f}", f"({p_data.x() * self._timestep:.2f}{self._time_unit})"
             step_rect = QRectF(fm.boundingRect(step_text).adjusted(-4,0,4,0)); step_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 18))
             time_rect = QRectF(fm.boundingRect(time_text)); time_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 34))
-            painter.setPen(STYLE_TEXT_PRIMARY); painter.drawText(step_rect, step_text)
-            painter.setPen(STYLE_TEXT_SECONDARY); painter.setFont(QFont("Arial", 9)); painter.drawText(time_rect, time_text)
+            # Check if this x-tick is locked and draw in red if so
+            if i in self._locked_x_ticks:
+                painter.setPen(QColor("red"))
+            else:
+                painter.setPen(STYLE_TEXT_PRIMARY)
+            painter.drawText(step_rect, step_text)
+            if i in self._locked_x_ticks:
+                painter.setPen(QColor("red"))
+            else:
+                painter.setPen(STYLE_TEXT_SECONDARY)
+            painter.setFont(QFont("Arial", 9)); painter.drawText(time_rect, time_text)
             self._clickable_regions.append((step_rect.united(time_rect), "x_val", i))
     def _draw_axes_and_frame(self, painter):
         painter.setPen(QPen(STYLE_FRAME, 2)); painter.drawRect(self.padding['left'], self.padding['top'], self.width() - (self.padding['left'] + self.padding['right']), self.height() - (self.padding['top'] + self.padding['bottom']))
@@ -290,12 +319,69 @@ class GraphWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos_widget = event.position()
             self._dragged_handle_index = self._get_handle_at(self._drag_start_pos_widget)
+            if self._dragged_handle_index is not None:
+                # Check if adjacent segments are fixed, which would constrain movement
+                prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
+                next_segment_fixed = self._dragged_handle_index in self._fixed_segments if self._dragged_handle_index < len(self.points_norm) - 1 else False
+                # Check if this handle's x or y positions are locked
+                x_locked = self._dragged_handle_index in self._locked_x_ticks
+                y_locked = self._dragged_handle_index in self._locked_y_labels
+                
+                # Cannot move handle if both adjacent segments are fixed
+                if prev_segment_fixed and next_segment_fixed:
+                    self._dragged_handle_index = None
+                    return
+                    
+                # Cannot move handle if both x and y are locked
+                if x_locked and y_locked:
+                    self._dragged_handle_index = None
+                    return
+                    
+                # Cannot move handle if y is locked and either adjacent segment is fixed (slope is fixed)
+                if y_locked and (prev_segment_fixed or next_segment_fixed):
+                    self._dragged_handle_index = None
+                    return
+                    
+                # Cannot move handle if it's at the first or last position and has a fixed segment
+                if (self._dragged_handle_index == 0 and next_segment_fixed) or (self._dragged_handle_index == len(self.points_norm) - 1 and prev_segment_fixed):
+                    self._dragged_handle_index = None
+                    return
             if self._dragged_handle_index is None:
                 self._dragged_segment_index = self._get_segment_at(self._drag_start_pos_widget)
                 if self._dragged_segment_index is not None:
+                    # Check if this segment is fixed, which would prevent moving it
+                    if self._dragged_segment_index in self._fixed_segments:
+                        self._dragged_segment_index = None
+                        return
                     i = self._dragged_segment_index; p1_w = self._norm_to_widget(self.points_norm[i])
                     self._drag_mouse_to_p1_offset = self._drag_start_pos_widget - p1_w
                     self._segment_drag_offset_norm = self.points_norm[i+1] - self.points_norm[i]
+        elif event.button() == Qt.MouseButton.RightButton:
+            # Handle right-click for locking/unlocking x-axis ticks, y-value labels, and slope segments
+            pos = event.position()
+            for region, type, index in self._clickable_regions:
+                if region.contains(pos):
+                    if type == "slope":
+                        # Toggle fixed state for slope segments
+                        if index in self._fixed_segments:
+                            self._fixed_segments.remove(index)
+                        else:
+                            self._fixed_segments.add(index)
+                    elif type == "x_val":
+                        # Toggle locked state for x-axis tick labels
+                        if index in self._locked_x_ticks:
+                            self._locked_x_ticks.remove(index)
+                        else:
+                            self._locked_x_ticks.add(index)
+                    elif type == "y_val":
+                        # Toggle locked state for y-value labels
+                        if index in self._locked_y_labels:
+                            self._locked_y_labels.remove(index)
+                        else:
+                            self._locked_y_labels.add(index)
+                    self.update()
+                    self.dataChanged.emit()
+                    return
     def mouseMoveEvent(self, event):
         pos = event.position()
         self._hovered_handle_index = self._get_handle_at(pos)
@@ -310,43 +396,244 @@ class GraphWidget(QWidget):
             if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
             else: constrained_pos.setX(self._drag_start_pos_widget.x())
         if self._dragged_handle_index is not None:
+            # Check if this handle's x or y positions are locked
+            x_locked = self._dragged_handle_index in self._locked_x_ticks
+            y_locked = self._dragged_handle_index in self._locked_y_labels
+            
+            # Check if adjacent segments are fixed, which would constrain movement
+            prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
+            next_segment_fixed = self._dragged_handle_index in self._fixed_segments if self._dragged_handle_index < len(self.points_norm) - 1 else False
+            
+            # If both x and y are locked, or if y is locked and both adjacent segments are fixed, cannot move this handle at all
+            if (x_locked and y_locked) or (y_locked and prev_segment_fixed and next_segment_fixed):
+                return
+                
+            # Cannot move handle if it's at the first or last position and has a fixed segment
+            if (self._dragged_handle_index == 0 and next_segment_fixed) or (self._dragged_handle_index == len(self.points_norm) - 1 and prev_segment_fixed):
+                return
+                
             if self._dragged_handle_index == 0:
                 if self.mode == 'Deformation':
-                    return
+                    # First point x is always locked in deformation mode
+                    if not y_locked:  # Only allow y movement if not locked
+                        constrained_pos.setX(self._drag_start_pos_widget.x())
+                        # Ensure the first point stays at x=0
+                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
+                        p_data.setX(0)  # Force x to be 0 for the first point
+                        # Clamp y to min/max strain values
+                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
+                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                        final_p_norm.setX(0)  # Ensure normalized x is also 0
+                    else:
+                        # Y is locked, don't move at all
+                        return
                 else: # Temperature mode, only allow y-drag and ensure x stays at 0
-                    constrained_pos.setX(self._drag_start_pos_widget.x())
-                    # Ensure the first point stays at x=0
-                    p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                    p_data.setX(0)  # Force x to be 0 for the first point
-                    final_p_norm = self._data_to_norm(self._snap_data_point(p_data))
-                    final_p_norm.setX(0)  # Ensure normalized x is also 0
+                    if not y_locked:  # Only allow y movement if not locked
+                        constrained_pos.setX(self._drag_start_pos_widget.x())
+                        # Ensure the first point stays at x=0
+                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
+                        p_data.setX(0)  # Force x to be 0 for the first point
+                        # Clamp y to min/max strain values
+                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
+                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                        final_p_norm.setX(0)  # Ensure normalized x is also 0
+                    else:
+                        # Y is locked, don't move at all
+                        return
             else:
                 p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                final_p_norm = self._data_to_norm(self._snap_data_point(p_data))
+                
+                # Apply locking constraints
+                if x_locked:
+                    # X position is locked, keep the original x value
+                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    p_data.setX(orig_data.x())
+                if y_locked:
+                    # Y position is locked, keep the original y value
+                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    p_data.setY(orig_data.y())
+                
+                # If adjacent segments are fixed, constrain movement along the fixed slope
+                movement_allowed = True
+                if prev_segment_fixed and not next_segment_fixed:
+                    # Only previous segment is fixed, constrain movement along its slope
+                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
+                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    # Calculate slope of fixed segment
+                    if current_point.x() != prev_point.x():
+                        slope = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x())
+                        # Constrain y position based on x position and slope (unless y is locked)
+                        if not y_locked:
+                            calculated_y = prev_point.y() + slope * (p_data.x() - prev_point.x())
+                            # Check if we've hit min or max y
+                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
+                                movement_allowed = False
+                            # Clamp to min/max strain values
+                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
+                elif not prev_segment_fixed and next_segment_fixed:
+                    # Only next segment is fixed, constrain movement along its slope
+                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
+                    # Calculate slope of fixed segment
+                    if next_point.x() != current_point.x():
+                        slope = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x())
+                        # Constrain y position based on x position and slope (unless y is locked)
+                        if not y_locked:
+                            calculated_y = current_point.y() + slope * (p_data.x() - current_point.x())
+                            # Check if we've hit min or max y
+                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
+                                movement_allowed = False
+                            # Clamp to min/max strain values
+                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
+                elif prev_segment_fixed and next_segment_fixed:
+                    # Both segments are fixed, constrain to the average slope
+                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
+                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
+                    # Calculate slopes of both fixed segments
+                    slope1 = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x()) if current_point.x() != prev_point.x() else 0
+                    slope2 = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x()) if next_point.x() != current_point.x() else 0
+                    # Use average slope for constraint
+                    avg_slope = (slope1 + slope2) / 2
+                    # Constrain y position based on x position and average slope (unless y is locked)
+                    if not y_locked:
+                        # We'll use the position relative to the previous point
+                        calculated_y = prev_point.y() + avg_slope * (p_data.x() - prev_point.x())
+                        # Check if we've hit min or max y
+                        if calculated_y < self._min_strain or calculated_y > self._max_strain:
+                            movement_allowed = False
+                        # Clamp to min/max strain values
+                        p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
+                    
+                final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
+                
+                # If we've hit min or max y while following a fixed slope, stop all movement
+                if not movement_allowed:
+                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                    orig_p_norm = self._data_to_norm(orig_data)
+                    final_p_norm = orig_p_norm
+                
+                # If y is locked or if a slope is fixed, prevent moving past neighboring points
+                neighbor_hit = False
+                if (y_locked or prev_segment_fixed or next_segment_fixed) and self._dragged_handle_index > 0 and self._dragged_handle_index < len(self.points_norm) - 1:
+                    # Get neighboring points in normalized coordinates
+                    prev_point_norm = self.points_norm[self._dragged_handle_index - 1]
+                    next_point_norm = self.points_norm[self._dragged_handle_index + 1]
+                    
+                    # Check if we're trying to move past neighbors
+                    if final_p_norm.x() <= prev_point_norm.x() or final_p_norm.x() >= next_point_norm.x():
+                        neighbor_hit = True
+                        # Stop all movement when hitting a neighbor
+                        orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                        orig_p_norm = self._data_to_norm(orig_data)
+                        final_p_norm = orig_p_norm
+                    else:
+                        # Constrain x position to stay between neighbors
+                        final_p_norm.setX(max(prev_point_norm.x(), min(next_point_norm.x(), final_p_norm.x())))
                 
             if self._dragged_handle_index == len(self.points_norm) - 1:
+                # Last point x is always locked to max_steps
                 final_p_norm.setX(1.0)
+                # Also clamp y to min/max strain values
+                p_data = self._norm_to_data(final_p_norm)
+                p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
+                final_p_norm = self._data_to_norm(p_data)
+                final_p_norm.setX(1.0)  # Ensure x stays locked
                 
             self.points_norm[self._dragged_handle_index] = final_p_norm
             self._sort_points()
             self._dragged_handle_index = self.points_norm.index(final_p_norm)
         elif self._dragged_segment_index is not None:
+            # Check if this segment is fixed, which would prevent moving it
+            if self._dragged_segment_index in self._fixed_segments:
+                return
+                
             i = self._dragged_segment_index
             if i == 0:
-                p1_new_norm = self._data_to_norm(self._snap_data_point(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset))))
+                p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
                 p1_new_norm.setX(0)  # Ensure first point stays at x=0
                 self.points_norm[i] = p1_new_norm
             else:
                 target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
-                p1_new_data_snapped = self._snap_data_point(self._norm_to_data(self._widget_to_norm(target_p1_w)))
-                p1_new_norm = self._data_to_norm(p1_new_data_snapped)
+                p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
+                # Clamp y values to min/max strain
+                p1_new_data.setY(max(self._min_strain, min(self._max_strain, p1_new_data.y())))
+                p1_new_norm = self._data_to_norm(p1_new_data)
                 p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
+                # Also clamp the second point
+                p2_new_data = self._norm_to_data(p2_new_norm)
+                p2_new_data.setY(max(self._min_strain, min(self._max_strain, p2_new_data.y())))
+                p2_new_norm = self._data_to_norm(p2_new_data)
                 p_prev = self.points_norm[i-1] if i > 0 else None
                 p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
                 if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
                     self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
         self.update()
     def mouseReleaseEvent(self, event): 
+        # Apply snapping when mouse is released
+        if self._dragged_handle_index is not None:
+            # Check if adjacent segments are fixed
+            prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
+            next_segment_fixed = self._dragged_handle_index in self._fixed_segments if self._dragged_handle_index < len(self.points_norm) - 1 else False
+            
+            # Check if this handle's y position is locked
+            y_locked = self._dragged_handle_index in self._locked_y_labels
+            
+            # Apply grid snapping when releasing, EXCEPT when adjacent slope is fixed
+            # Grid snapping should ONLY NOT be applied when a node is moved while adjacent slope is fixed
+            if not (prev_segment_fixed or next_segment_fixed):
+                # Snap the dragged handle to the grid
+                p_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
+                snapped_p_data = self._snap_data_point(p_data)
+                snapped_p_norm = self._data_to_norm(snapped_p_data)
+            else:
+                # Preserve exact position when adjacent slope is fixed
+                snapped_p_norm = self.points_norm[self._dragged_handle_index]
+            
+            # Ensure first point stays at x=0
+            if self._dragged_handle_index == 0:
+                snapped_p_norm.setX(0)
+                
+            # Ensure last point stays at max x
+            if self._dragged_handle_index == len(self.points_norm) - 1:
+                snapped_p_norm.setX(1.0)
+                
+            self.points_norm[self._dragged_handle_index] = snapped_p_norm
+            self._sort_points()
+            
+        elif self._dragged_segment_index is not None:
+            # Check if this segment is fixed, which would prevent moving it
+            if self._dragged_segment_index in self._fixed_segments:
+                return
+                
+            i = self._dragged_segment_index
+            if i < len(self.points_norm) - 1:
+                # Apply grid snapping when releasing, EXCEPT when the segment itself is fixed
+                # Grid snapping should ONLY NOT be applied when a node is moved while adjacent slope is fixed
+                if i not in self._fixed_segments:
+                    p1_data = self._norm_to_data(self.points_norm[i])
+                    p2_data = self._norm_to_data(self.points_norm[i+1])
+                    
+                    # Snap both points
+                    snapped_p1_data = self._snap_data_point(p1_data)
+                    snapped_p2_data = self._snap_data_point(p2_data)
+                    
+                    # Convert back to normalized coordinates
+                    snapped_p1_norm = self._data_to_norm(snapped_p1_data)
+                    snapped_p2_norm = self._data_to_norm(snapped_p2_data)
+                else:
+                    # Preserve exact positions when segment is fixed
+                    snapped_p1_norm = self.points_norm[i]
+                    snapped_p2_norm = self.points_norm[i+1]
+                
+                # Ensure first point stays at x=0 if it's the first segment
+                if i == 0:
+                    snapped_p1_norm.setX(0)
+                    
+                self.points_norm[i] = snapped_p1_norm
+                self.points_norm[i+1] = snapped_p2_norm
+                self._sort_points()
+        
         # Ensure the first point stays at x=0 for both modes
         if len(self.points_norm) > 0:
             self.points_norm[0].setX(0)
@@ -915,6 +1202,7 @@ class StudyWidget(QWidget):
             'max_strain': self.max_strain_spinbox.value(),
             'deform_axis': self.deform_axis_combo.currentText(),
             'mode': self.mode,
+            'fixed_segments': list(self.graph_widget._fixed_segments),  # Save fixed segments
             'ensemble': {
                 'ensemble': self.ensemble_combo.currentText(),
                 'temperature': self.temp_spinbox.value(),
@@ -995,6 +1283,10 @@ class StudyWidget(QWidget):
         
         # Update graph controls to set the correct axis limits
         self._update_graph_controls()
+        
+        # Load fixed segments
+        fixed_segments = state.get('fixed_segments', [])
+        self.graph_widget._fixed_segments = set(fixed_segments)
         
         # Now set the data points
         data_points_list = state.get('data_points', [])
@@ -1241,6 +1533,7 @@ class DeformationTab(QWidget):
 
         new_study.dataChanged.connect(self.update_summaries)
         new_study.graph_widget.dataChanged.connect(self.update_summaries)  # Add this line for real-time updates
+        new_study.graph_widget.dataChanged.connect(new_study.graph_widget.update)  # Force canvas repaint on data changes
         # Connect mouse move event for real-time updates
         original_mouse_move = new_study.graph_widget.mouseMoveEvent
         new_study.graph_widget.mouseMoveEvent = lambda event: self._wrapped_mouse_move_event(original_mouse_move, event, new_study.graph_widget)
@@ -1456,7 +1749,13 @@ class DeformationTab(QWidget):
                 all_summaries.append("")
 
         # Set the text
+        # Preserve scroll position to prevent jumping to top when updating text
+        scrollbar = self.summary_text.verticalScrollBar()
+        current_scroll_position = scrollbar.value() if scrollbar else 0
         self.summary_text.setText("\n".join(all_summaries))
+        # Restore scroll position after updating text
+        if scrollbar:
+            scrollbar.setValue(current_scroll_position)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
