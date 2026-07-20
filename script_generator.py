@@ -296,13 +296,49 @@ class LammpsScriptGenerator:
                     f"else \"read_data ../../{data_file}\"", ""
                 ])
             else:
-                script_lines.extend(["#------------------------", "# System Setup", "#------------------------", f"read_data ../../{data_file}", ""])
-
+                script_lines.extend(["#------------------------", "# System Setup", "#------------------------", f"read_data ../../{data_file}"])
+            
             if system_config.get("use_potential_file", False):
                 potential_file = system_config.get("potential_file", "")
                 if potential_file:
                     potential_path = (Path("_input_files") / Path(potential_file).name).as_posix()
                     script_lines.extend([f"include ../../{potential_path}", ""])
+
+            # --- New logic for preserving initial box dimensions ---
+            if enable_restart:
+                new_lines = [
+                    "#------------------------",
+                    "# Initial Box Dimensions Handling",
+                    "#------------------------",
+                    "if \"${curstep} == 0\" then &",
+                    "  \"shell echo variable L0x equal $(lx) > restart.init\" &",
+                    "  \"shell echo variable L0y equal $(ly) >> restart.init\" &",
+                    "  \"shell echo variable L0z equal $(lz) >> restart.init\" &",
+                    "  \"shell echo variable xlo0 equal $(xlo) >> restart.init\" &",
+                    "  \"shell echo variable xhi0 equal $(xhi) >> restart.init\" &",
+                    "  \"shell echo variable ylo0 equal $(ylo) >> restart.init\" &",
+                    "  \"shell echo variable yhi0 equal $(yhi) >> restart.init\" &",
+                    "  \"shell echo variable zlo0 equal $(zlo) >> restart.init\" &",
+                    "  \"shell echo variable zhi0 equal $(zhi) >> restart.init\" &",
+                    "else \"shell if [ ! -f restart.init ]; then echo 'ERROR: Restarting, but restart.init not found. Initial dimensions are unknown.' && exit 1; fi\"",
+                    "include restart.init",
+                    ""
+                ]
+            else:
+                new_lines = [
+                    "variable L0x equal $(lx)",
+                    "variable L0y equal $(ly)",
+                    "variable L0z equal $(lz)",
+                    "variable xlo0 equal $(xlo)",
+                    "variable xhi0 equal $(xhi)",
+                    "variable ylo0 equal $(ylo)",
+                    "variable yhi0 equal $(yhi)",
+                    "variable zlo0 equal $(zlo)",
+                    "variable zhi0 equal $(zhi)",
+                    ""
+                ]
+
+            script_lines.extend(new_lines)
 
             deform_axis = deform_study.get("deform_axis", "x")
             mode = deform_study.get("mode", "Deformation")
@@ -639,22 +675,13 @@ class LammpsScriptGenerator:
         # --- Define all possible strain/stress variables if in Deformation mode ---
         if mode == "Deformation":
             lines.extend([
-                "# Engineering Strain & Cauchy Stress Variables",
-                "variable L0x equal $(lx)",
-                "variable L0y equal $(ly)",
-                "variable L0z equal $(lz)",
-                "variable xlo0 equal $(xlo)",
-                "variable xhi0 equal $(xhi)",
-                "variable ylo0 equal $(ylo)",
-                "variable yhi0 equal $(yhi)",
-                "variable zlo0 equal $(zlo)",
-                "variable zhi0 equal $(zhi)",
-                "variable exx equal (lx-v_L0x)/v_L0x",
-                "variable eyy equal (ly-v_L0y)/v_L0y",
-                "variable ezz equal (lz-v_L0z)/v_L0z",
-                "variable exy equal xy/v_L0y",
-                "variable exz equal xz/v_L0z",
-                "variable eyz equal yz/v_L0z",
+                "# Engineering strain & Cauchy stress variables",
+                "variable strain_xx equal (lx-v_L0x)/v_L0x",
+                "variable strain_yy equal (ly-v_L0y)/v_L0y",
+                "variable strain_zz equal (lz-v_L0z)/v_L0z",
+                "variable strain_xy equal xy/v_L0y",
+                "variable strain_xz equal xz/v_L0z",
+                "variable strain_yz equal yz/v_L0z",
                 f"variable cauchy_xx equal -(pxx-{pressure})",
                 f"variable cauchy_yy equal -(pyy-{pressure})",
                 f"variable cauchy_zz equal -(pzz-{pressure})",
@@ -668,11 +695,11 @@ class LammpsScriptGenerator:
 
         # --- Add selected strains/stresses to thermo output ---
         if mode == "Deformation":
-            strain_map = {'εxx': 'exx', 'εyy': 'eyy', 'εzz': 'ezz', 'εxy': 'exy', 'εxz': 'exz', 'εyz': 'eyz'}
+            strain_map = {'εxx': 'strain_xx', 'εyy': 'strain_yy', 'εzz': 'strain_zz', 'εxy': 'strain_xy', 'εxz': 'strain_xz', 'εyz': 'strain_yz'}
             for strain in output_config.get("eng_strains", []):
                 if strain == 'deformation direction':
                     axis_suffix = deform_axis if is_shear else deform_axis * 2
-                    thermo_style_parts.append(f"v_e{axis_suffix}")
+                    thermo_style_parts.append(f"v_strain_{axis_suffix}")
                 elif strain in strain_map:
                     thermo_style_parts.append(f"v_{strain_map[strain]}")
             
@@ -808,7 +835,9 @@ class LammpsScriptGenerator:
             ])
         if config.get("enable_trajectory", True):
             lines.extend([
-                f"dump trajectory all custom {config.get('traj_freq', 100)} {model_name}.{config.get('traj_format', 'lammpstrj')} {config.get('trj_output_items', 'id type x y z')}", ""
+                f"dump trajectory all custom {config.get('traj_freq', 100)} {model_name}.{config.get('traj_format', 'lammpstrj')} {config.get('trj_output_items', 'id type x y z')}",
+                "dump_modify trajectory append yes",
+                ""
             ])
         if config.get("custom_dumps", ""):
             lines.extend(["# Custom Dumps", config.get("custom_dumps", ""), ""])
@@ -943,8 +972,9 @@ class LammpsScriptGenerator:
                     "    elif [ -f finished.flag ]; then",
                     "        echo \"Simulation completed successfully.\"",
                     f"        if [ \"{delete_restarts}\" = \"true\" ]; then",
-                    "            echo \"Cleanup is enabled. Deleting restart_files directory.\"",
+                    "            echo \"Cleanup is enabled. Deleting restart_files directory and restart.init.\"",
                     "            rm -rf restart_files",
+                    "            rm restart.init",
                     "        fi",
                     "        rm finished.flag",
                     "    else",

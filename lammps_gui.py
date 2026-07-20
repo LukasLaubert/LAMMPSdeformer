@@ -1517,7 +1517,7 @@ class LammpsGui(QMainWindow):
         
         # Time averaged thermo styles
         time_averaged_layout = QHBoxLayout()
-        time_averaged_label = QLabel("Averaged quantities:")
+        time_averaged_label = QLabel("Average")
         self.averaged_quantities_combo = QComboBox()
         self.avg_chips_layout = QHBoxLayout()
         self.avg_chips_layout.setSpacing(2)
@@ -1540,7 +1540,7 @@ class LammpsGui(QMainWindow):
         time_averaged_layout.addLayout(self.avg_chips_layout)
         time_averaged_layout.addWidget(self.averaged_quantities_combo, 1)
         time_averaged_layout.addStretch(0)
-        time_averaged_layout.addWidget(QLabel("Average every"))
+        time_averaged_layout.addWidget(QLabel("every"))
         time_averaged_layout.addWidget(self.avg_nevery_spinbox)
         time_averaged_layout.addWidget(QLabel("timesteps and consider"))
         time_averaged_layout.addWidget(self.avg_nrepeat_spinbox)
@@ -1723,8 +1723,8 @@ class LammpsGui(QMainWindow):
 #SBATCH --cpus-per-task=1
 #SBATCH --time=24:00:00
 #SBATCH --export=NONE
-#SBATCH --output=lammps_output_%j.txt
-#SBATCH --error=lammps_error_%j.txt""")
+#SBATCH --output=job_%j.log
+#SBATCH --error=Job_%j.err""")
         self.slurm_header_text.setToolTip("SLURM batch script header.")
         self.slurm_header_text.setMinimumHeight(300)
         cluster_layout.addRow("SLURM Header:", self.slurm_header_text)
@@ -2875,7 +2875,7 @@ class LammpsGui(QMainWindow):
                     error_message += "\nPlease either:\n"
                     error_message += "1. Shift the handles to integer multiples of the thermo frequency,\n"
                     error_message += "2. Change the thermo frequency accordingly, or\n"
-                    error_message += "3. Remove all quantities from the 'Averaged quantities'"
+                    error_message += "3. Remove all quantities from the 'Average' line in the Thermo Output Settings"
                     
                     QMessageBox.critical(self, "Validation Error", error_message)
                     return
