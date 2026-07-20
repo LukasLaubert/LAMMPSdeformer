@@ -2304,74 +2304,63 @@ class StudyWidget(QWidget):
 
         layout.addLayout(ensemble_layout)
 
-        # Bond Breakage Controls
-        bond_breakage_layout = QHBoxLayout()
-        bond_breakage_layout.setContentsMargins(0, 0, 0, 0) # No margins for a compact look
-        bond_breakage_layout.setSpacing(5) # Small spacing between elements
+        # Free Text Custom Commands Controls
+        # Create a horizontal layout for the text field and sync button
+        custom_commands_layout = QHBoxLayout()
+        custom_commands_layout.setContentsMargins(0, 0, 0, 0)  # No margins for a compact look
+        custom_commands_layout.setSpacing(5)  # Small spacing between elements
 
-        self.enable_bond_breakage_checkbox = QCheckBox("Enable Bond Breakage")
-        self.enable_bond_breakage_checkbox.setToolTip("Enable bond breakage during deformation simulation")
-        bond_breakage_layout.addWidget(self.enable_bond_breakage_checkbox)
+        # Create the text edit field with appropriate size policy for proper expansion
+        self.custom_commands_text = QTextEdit()
+        self.custom_commands_text.setPlaceholderText("Enter custom study-specific LAMMPS commands (e.g. fix bond/break) ...")
 
-        self.nevery_spinbox = QSpinBox()
-        self.nevery_spinbox.setPrefix("Nevery: ")
-        self.nevery_spinbox.setRange(1, 1000000)
-        self.nevery_spinbox.setValue(1)
-        self.nevery_spinbox.setToolTip("Attempt bond breaking every this many steps")
-        self.nevery_spinbox.setFixedWidth(100) # Adjust width
-        bond_breakage_layout.addWidget(self.nevery_spinbox)
+        # Make the font slightly smaller
+        font = self.custom_commands_text.font()
+        font.setPointSize(max(8, font.pointSize() - 1))  # Reduce font size by 1, minimum 8
+        self.custom_commands_text.setFont(font)
 
-        self.bondtype_spinbox = QSpinBox()
-        self.bondtype_spinbox.setPrefix("Bond Type: ")
-        self.bondtype_spinbox.setRange(1, 100)
-        self.bondtype_spinbox.setValue(1)
-        self.bondtype_spinbox.setToolTip("Type of bonds to break (integer or type label)")
-        self.bondtype_spinbox.setFixedWidth(100) # Adjust width
-        bond_breakage_layout.addWidget(self.bondtype_spinbox)
+        # Set initial size constraints - this is the key for proper behavior
+        font_height = self.custom_commands_text.fontMetrics().lineSpacing()
+        # 18px covers: line height + document margins (4px*2) + frame borders (1px*2) + breathing room
+        total_height = font_height + 12
+        self.custom_commands_text.setMinimumHeight(total_height)
+        self.custom_commands_text.setMaximumHeight(total_height)
 
-        self.rmax_spinbox = QDoubleSpinBox()
-        self.rmax_spinbox.setPrefix("Rmax: ")
-        self.rmax_spinbox.setRange(0, 1000)
-        self.rmax_spinbox.setValue(1.5)
-        self.rmax_spinbox.setSingleStep(0.1)
-        self.rmax_spinbox.setToolTip("Bond longer than Rmax can break (distance units)")
-        self.rmax_spinbox.setFixedWidth(100) # Adjust width
-        bond_breakage_layout.addWidget(self.rmax_spinbox)
+        # Set size policy to expand horizontally but control vertical expansion
+        self.custom_commands_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self.enable_prob_checkbox = QCheckBox("Enable Probability")
-        self.enable_prob_checkbox.setToolTip("Enable probabilistic bond breakage")
-        bond_breakage_layout.addWidget(self.enable_prob_checkbox)
+        # Apply custom stylesheet to make scrollbar more visually appealing without up/down arrows
+        self.custom_commands_text.setStyleSheet("""
+            QScrollBar:vertical {
+                background: #f0f0f0;
+                width: 8px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #b0b0b0;
+                min-height: 20px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #909090;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+        """)
 
-        self.prob_fraction_spinbox = QDoubleSpinBox()
-        self.prob_fraction_spinbox.setPrefix("Prob: ")
-        self.prob_fraction_spinbox.setRange(0, 1)
-        self.prob_fraction_spinbox.setValue(0.1)
-        self.prob_fraction_spinbox.setSingleStep(0.01)
-        self.prob_fraction_spinbox.setToolTip("Break a bond with this probability if otherwise eligible")
-        self.prob_fraction_spinbox.setFixedWidth(100) # Adjust width
-        bond_breakage_layout.addWidget(self.prob_fraction_spinbox)
+        # Add the text field to the layout
+        custom_commands_layout.addWidget(self.custom_commands_text)
 
-        self.prob_seed_spinbox = QSpinBox()
-        self.prob_seed_spinbox.setPrefix("Seed: ")
-        self.prob_seed_spinbox.setRange(1, 1000000)
-        self.prob_seed_spinbox.setValue(12345)
-        self.prob_seed_spinbox.setToolTip("Random number seed (positive integer)")
-        self.prob_seed_spinbox.setFixedWidth(100) # Adjust width
-        bond_breakage_layout.addWidget(self.prob_seed_spinbox)
+        # Add sync checkbox
+        self.sync_custom_commands_checkbox = QCheckBox("Sync custom commands")
+        self.sync_custom_commands_checkbox.setToolTip("Synchronize custom commands across all studies")
+        custom_commands_layout.addWidget(self.sync_custom_commands_checkbox)
 
-        # Add info icon for bond breakage
-        bond_break_url = QUrl("https://docs.lammps.org/fix_bond_break.html")
-        bond_break_tooltip = "Click to open LAMMPS fix bond/break documentation"
-        self.bond_break_info_label = create_info_icon_label(bond_break_url, bond_break_tooltip, "blue")
-        bond_breakage_layout.addWidget(self.bond_break_info_label)
-
-        bond_breakage_layout.addStretch(1) # Push sync button to the right
-
-        self.sync_bond_break_checkbox = QCheckBox("Sync bond break")
-        self.sync_bond_break_checkbox.setToolTip("Synchronize bond breakage settings across all studies")
-        bond_breakage_layout.addWidget(self.sync_bond_break_checkbox)
-
-        layout.addLayout(bond_breakage_layout) # Add the new bond breakage layout to the main layout
+        layout.addLayout(custom_commands_layout)  # Add the new custom commands layout to the main layout
 
         # Connect signals for ensemble settings
         self.ensemble_combo.currentTextChanged.connect(self._on_ensemble_setting_changed)
@@ -2380,23 +2369,15 @@ class StudyWidget(QWidget):
         self.npt_aniso_combo.currentTextChanged.connect(self._on_ensemble_setting_changed)
         self.sync_ensemble_checkbox.stateChanged.connect(self._on_ensemble_setting_changed)
 
-        # Connect signals for bond breakage controls
-        self.enable_bond_breakage_checkbox.stateChanged.connect(self._update_bond_breakage_ui_state)
-        self.enable_prob_checkbox.stateChanged.connect(self._update_bond_breakage_ui_state)
+        # Connect signals for the new custom commands text field
+        self.custom_commands_text.textChanged.connect(self._on_custom_commands_changed)
+        self.sync_custom_commands_checkbox.stateChanged.connect(self._on_custom_commands_changed)
 
-        # Connect all bond breakage controls to a common handler for sync logic
-        self.enable_bond_breakage_checkbox.stateChanged.connect(self._on_bond_breakage_setting_changed)
-        self.nevery_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
-        self.bondtype_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
-        self.rmax_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
-        self.enable_prob_checkbox.stateChanged.connect(self._on_bond_breakage_setting_changed)
-        self.prob_fraction_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
-        self.prob_seed_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
-        self.sync_bond_break_checkbox.stateChanged.connect(self._on_bond_breakage_setting_changed)
-
-        # Initial UI state update for bond breakage controls
+        # Initial UI state update
         self._update_ensemble_ui_state()
-        self._update_bond_breakage_ui_state()
+
+        # Update text field height when content changes
+        self.custom_commands_text.textChanged.connect(self._update_custom_commands_height)
 
         self._last_staircase_params = {'cycles': 5, 'factor': 1.0, 'direction': 'Tension'}
         self._last_cyclic_params = {'cycles': 3, 'relax_factor': 0.0, 'start_with': 'Tension'}
@@ -2428,9 +2409,6 @@ class StudyWidget(QWidget):
         self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
         self._save_state_for_undo()
-        
-        # Update bond breakage UI state to ensure fields are enabled/disabled correctly on startup
-        self._update_bond_breakage_ui_state()
         
         # Update deform scenario visibility on startup
         self._update_deform_scenario_visibility()
@@ -2666,13 +2644,12 @@ class StudyWidget(QWidget):
         # based on both study activation state and ensemble
         self.npt_aniso_combo.setEnabled(enabled)
         self.sync_ensemble_checkbox.setEnabled(enabled)
-        self.enable_bond_breakage_checkbox.setEnabled(enabled)
-        self.sync_bond_break_checkbox.setEnabled(enabled)
-        
+        self.custom_commands_text.setEnabled(enabled)
+        self.sync_custom_commands_checkbox.setEnabled(enabled)
+
         # These functions will correctly handle the logic for their own children
         # based on the state of the parent checkboxes, which are now correctly enabled/disabled.
         self._update_ensemble_ui_state()
-        self._update_bond_breakage_ui_state()
 
         # The graph widget is a special case; we don't disable it,
         # but its paintEvent will draw an overlay. We just need to trigger a repaint.
@@ -2715,15 +2692,9 @@ class StudyWidget(QWidget):
                 'npt_aniso': self.npt_aniso_combo.currentText(),
                 'sync_ensemble': self.sync_ensemble_checkbox.isChecked()
             },
-            'bond_breakage': {
-                'enable_bond_breakage': self.enable_bond_breakage_checkbox.isChecked(),
-                'nevery': self.nevery_spinbox.value(),
-                'bondtype': self.bondtype_spinbox.value(),
-                'rmax': self.rmax_spinbox.value(),
-                'enable_prob': self.enable_prob_checkbox.isChecked(),
-                'prob_fraction': self.prob_fraction_spinbox.value(),
-                'prob_seed': self.prob_seed_spinbox.value(),
-                'sync_bond_break': self.sync_bond_break_checkbox.isChecked()
+            'bond_commands': {
+                'commands': self.custom_commands_text.toPlainText(),
+                'sync_bond_commands': self.sync_custom_commands_checkbox.isChecked()
             }
         }
     def set_state(self, state):
@@ -2736,14 +2707,8 @@ class StudyWidget(QWidget):
         self.pressure_spinbox.blockSignals(True)
         self.npt_aniso_combo.blockSignals(True)
         self.sync_ensemble_checkbox.blockSignals(True)
-        self.enable_bond_breakage_checkbox.blockSignals(True)
-        self.nevery_spinbox.blockSignals(True)
-        self.bondtype_spinbox.blockSignals(True)
-        self.rmax_spinbox.blockSignals(True)
-        self.enable_prob_checkbox.blockSignals(True)
-        self.prob_fraction_spinbox.blockSignals(True)
-        self.prob_seed_spinbox.blockSignals(True)
-        self.sync_bond_break_checkbox.blockSignals(True)
+        self.custom_commands_text.blockSignals(True)
+        self.sync_custom_commands_checkbox.blockSignals(True)
 
         # 1. Set mode and update mode-dependent UI without triggering corrective logic
         new_mode = state.get('mode', 'Deformation')
@@ -2783,15 +2748,16 @@ class StudyWidget(QWidget):
         self.npt_aniso_combo.setCurrentText(ensemble_state.get('npt_aniso', 'iso'))
         self.sync_ensemble_checkbox.setChecked(ensemble_state.get('sync_ensemble', False))
 
-        bond_breakage_state = state.get('bond_breakage', {})
-        self.enable_bond_breakage_checkbox.setChecked(bond_breakage_state.get('enable_bond_breakage', False))
-        self.nevery_spinbox.setValue(bond_breakage_state.get('nevery', 1))
-        self.bondtype_spinbox.setValue(bond_breakage_state.get('bondtype', 1))
-        self.rmax_spinbox.setValue(bond_breakage_state.get('rmax', 1.5))
-        self.enable_prob_checkbox.setChecked(bond_breakage_state.get('enable_prob', False))
-        self.prob_fraction_spinbox.setValue(bond_breakage_state.get('prob_fraction', 0.1))
-        self.prob_seed_spinbox.setValue(bond_breakage_state.get('prob_seed', 12345))
-        self.sync_bond_break_checkbox.setChecked(bond_breakage_state.get('sync_bond_break', False))
+        # Handle custom commands loading
+        if 'bond_commands' in state:
+            # Load new format
+            bond_commands_state = state.get('bond_commands', {})
+            self.custom_commands_text.setPlainText(bond_commands_state.get('commands', ''))
+            self.sync_custom_commands_checkbox.setChecked(bond_commands_state.get('sync_bond_commands', False))
+        else:
+            # Old format (bond_breakage) or no data: default to empty (ignore old settings)
+            self.custom_commands_text.setPlainText('')
+            self.sync_custom_commands_checkbox.setChecked(False)
 
         # 4. Directly update the graph's axes with the loaded values
         self.graph_widget.set_max_values(max_steps, min_strain, max_strain)
@@ -2821,33 +2787,17 @@ class StudyWidget(QWidget):
         self.pressure_spinbox.blockSignals(False)
         self.npt_aniso_combo.blockSignals(False)
         self.sync_ensemble_checkbox.blockSignals(False)
-        self.enable_bond_breakage_checkbox.blockSignals(False)
-        self.nevery_spinbox.blockSignals(False)
-        self.bondtype_spinbox.blockSignals(False)
-        self.rmax_spinbox.blockSignals(False)
-        self.enable_prob_checkbox.blockSignals(False)
-        self.prob_fraction_spinbox.blockSignals(False)
-        self.prob_seed_spinbox.blockSignals(False)
-        self.sync_bond_break_checkbox.blockSignals(False)
-        
+        self.custom_commands_text.blockSignals(False)
+        self.sync_custom_commands_checkbox.blockSignals(False)
+
         # 7. Final UI refresh
         self.graph_widget.update()
         self.dataChanged.emit()
         self._update_ensemble_ui_state()
-        self._update_bond_breakage_ui_state()
         self._update_deform_scenario_visibility()
+        self._update_custom_commands_height()  # Update the text field height after loading
         self.set_enabled(state.get('is_enabled', True))
 
-    def _update_bond_breakage_ui_state(self):
-        enabled_bond_breakage = self.enable_bond_breakage_checkbox.isChecked()
-        self.nevery_spinbox.setEnabled(enabled_bond_breakage)
-        self.bondtype_spinbox.setEnabled(enabled_bond_breakage)
-        self.rmax_spinbox.setEnabled(enabled_bond_breakage)
-        self.enable_prob_checkbox.setEnabled(enabled_bond_breakage)
-
-        enabled_prob = self.enable_prob_checkbox.isChecked() and enabled_bond_breakage
-        self.prob_fraction_spinbox.setEnabled(enabled_prob)
-        self.prob_seed_spinbox.setEnabled(enabled_prob)
 
     def _on_ensemble_setting_changed(self):
         self._update_ensemble_ui_state()
@@ -2920,33 +2870,10 @@ class StudyWidget(QWidget):
 
         self.npt_aniso_combo.blockSignals(False)
 
+    # Old method for bond breakage - no longer needed since we replaced with custom text field
+    # Keeping this method for backward compatibility during transition
     def _on_bond_breakage_setting_changed(self):
-        # Update UI state first
-        self._update_bond_breakage_ui_state()
-
-        # Get the parent DeformationTab instance
-        # The StudyWidget is added directly to the tab_widget, so we need to go up the hierarchy
-        # StudyWidget -> QStackedWidget (tab_widget) -> QTabWidget (tab_widget) -> DeformationTab
-        stacked_widget = self.parent()  # This is the QStackedWidget
-        if stacked_widget is not None:
-            tab_widget = stacked_widget.parent()  # This should be the QTabWidget
-            if tab_widget is not None:
-                deformation_tab = tab_widget.parent()  # This should be the DeformationTab
-                if isinstance(deformation_tab, DeformationTab):
-                    # Check if sync is enabled in THIS tab (the one that changed)
-                    sync_state = self.sync_bond_break_checkbox.isChecked()
-                    if sync_state:
-                        # Sync is enabled in this tab, propagate all settings from this tab to all other tabs
-                        deformation_tab._sync_bond_breakage_settings(self)
-                    else:
-                        # Sync is disabled, check if this was a sync checkbox change
-                        sender = self.sender()
-                        if sender == self.sync_bond_break_checkbox:
-                            # The sync checkbox was just unchecked in this tab
-                            # Uncheck sync in all other tabs
-                            deformation_tab._sync_bond_breakage_settings(self, force_unchecked=True)
-
-        self.dataChanged.emit() # Emit dataChanged to update summaries
+        pass
 
     def set_mode(self, mode, adjust_values=True):
         if self.mode == mode:
@@ -3021,6 +2948,60 @@ class StudyWidget(QWidget):
         self.dataChanged.emit()
 
         self._is_mode_switching = False
+
+    def _update_custom_commands_height(self):
+        """Update the height of the custom commands text field based on content."""
+        # Calculate the required height based on number of lines
+        line_count = self.custom_commands_text.document().lineCount()
+        font_height = self.custom_commands_text.fontMetrics().lineSpacing()
+        
+        # Use consistent padding of 18px to account for borders and margins
+        padding = 14
+
+        # Calculate the required height for the content
+        content_height = int(line_count * font_height + padding)
+        max_height = int(4 * font_height + padding)
+
+        # Only show scrollbar when content exceeds the display area (more than 4 lines)
+        if line_count > 4:
+            self.custom_commands_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        else:
+            self.custom_commands_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Set the height constraints
+        # Ensure minimum is exactly one line + padding
+        self.custom_commands_text.setMinimumHeight(int(font_height + padding))
+
+        if line_count <= 4:
+            # Expand to fit content up to 4 lines
+            self.custom_commands_text.setMaximumHeight(content_height)
+        else:
+            # Keep fixed height and let scrollbar handle overflow
+            self.custom_commands_text.setMaximumHeight(max_height)
+
+    def _on_custom_commands_changed(self):
+        """Handle changes to the custom commands text field or sync checkbox."""
+        # Get the parent DeformationTab instance
+        stacked_widget = self.parent()  # This is the QStackedWidget
+        if stacked_widget is not None:
+            tab_widget = stacked_widget.parent()  # This should be the QTabWidget
+            if tab_widget is not None:
+                deformation_tab = tab_widget.parent()  # This should be the DeformationTab
+                if isinstance(deformation_tab, DeformationTab):
+                    # Check if sync is enabled in THIS tab (the one that changed)
+                    sync_state = self.sync_custom_commands_checkbox.isChecked()
+                    if sync_state:
+                        # Sync is enabled in this tab, propagate the text from this tab to all other tabs
+                        deformation_tab._sync_custom_commands_settings(self)
+                    else:
+                        # Sync is disabled, check if this was a sync checkbox change
+                        sender = self.sender()
+                        if sender == self.sync_custom_commands_checkbox:
+                            # The sync checkbox was just unchecked in this tab
+                            # Uncheck sync in all other tabs
+                            deformation_tab._sync_custom_commands_settings(self, force_unchecked=True)
+
+        self.dataChanged.emit() # Emit dataChanged to update summaries
 
 class DeformationTab(QWidget):
     studiesChanged = pyqtSignal()
@@ -3279,10 +3260,16 @@ class DeformationTab(QWidget):
             if re.match(r"^Study\d+$", tab_text):
                 self.tab_widget.setTabText(i, f"Study{default_study_counter:02d}"); default_study_counter += 1
 
+    # Old method for bond breakage - no longer needed since we replaced with custom text field
+    # Keeping this method for backward compatibility during transition
     def _sync_bond_breakage_settings(self, source_study_widget, force_unchecked=False):
-        # Get the source state
-        source_state = source_study_widget.get_state()['bond_breakage']
-        
+        pass
+
+    def _sync_custom_commands_settings(self, source_study_widget, force_unchecked=False):
+        """Sync custom commands text across all study tabs"""
+        # Get the source state (the custom commands text and sync status)
+        source_state = source_study_widget.get_state()['bond_commands']  # Use old key for backward compatibility
+
         # Propagate settings to all other tabs
         for i in range(self.tab_widget.count()):
             target_study_widget = self.tab_widget.widget(i)
@@ -3291,42 +3278,24 @@ class DeformationTab(QWidget):
                 continue
 
             # Block signals on target widget to prevent recursive calls
-            target_study_widget.enable_bond_breakage_checkbox.blockSignals(True)
-            target_study_widget.nevery_spinbox.blockSignals(True)
-            target_study_widget.bondtype_spinbox.blockSignals(True)
-            target_study_widget.rmax_spinbox.blockSignals(True)
-            target_study_widget.enable_prob_checkbox.blockSignals(True)
-            target_study_widget.prob_fraction_spinbox.blockSignals(True)
-            target_study_widget.prob_seed_spinbox.blockSignals(True)
-            target_study_widget.sync_bond_break_checkbox.blockSignals(True)
+            target_study_widget.custom_commands_text.blockSignals(True)
+            target_study_widget.sync_custom_commands_checkbox.blockSignals(True)
 
             if force_unchecked:
                 # Only uncheck the sync checkbox in all other tabs
-                target_study_widget.sync_bond_break_checkbox.setChecked(False)
+                target_study_widget.sync_custom_commands_checkbox.setChecked(False)
             else:
-                # Copy all bond breakage settings from source to target
-                target_study_widget.enable_bond_breakage_checkbox.setChecked(source_state['enable_bond_breakage'])
-                target_study_widget.nevery_spinbox.setValue(source_state['nevery'])
-                target_study_widget.bondtype_spinbox.setValue(source_state['bondtype'])
-                target_study_widget.rmax_spinbox.setValue(source_state['rmax'])
-                target_study_widget.enable_prob_checkbox.setChecked(source_state['enable_prob'])
-                target_study_widget.prob_fraction_spinbox.setValue(source_state['prob_fraction'])
-                target_study_widget.prob_seed_spinbox.setValue(source_state['prob_seed'])
+                # Copy the custom commands text from source to target
+                target_study_widget.custom_commands_text.setPlainText(source_state['commands'])
                 # Also copy the sync checkbox state
-                target_study_widget.sync_bond_break_checkbox.setChecked(source_state['sync_bond_break'])
+                target_study_widget.sync_custom_commands_checkbox.setChecked(source_state['sync_bond_commands'])
 
             # Unblock signals
-            target_study_widget.enable_bond_breakage_checkbox.blockSignals(False)
-            target_study_widget.nevery_spinbox.blockSignals(False)
-            target_study_widget.bondtype_spinbox.blockSignals(False)
-            target_study_widget.rmax_spinbox.blockSignals(False)
-            target_study_widget.enable_prob_checkbox.blockSignals(False)
-            target_study_widget.prob_fraction_spinbox.blockSignals(False)
-            target_study_widget.prob_seed_spinbox.blockSignals(False)
-            target_study_widget.sync_bond_break_checkbox.blockSignals(False)
+            target_study_widget.custom_commands_text.blockSignals(False)
+            target_study_widget.sync_custom_commands_checkbox.blockSignals(False)
 
-            # Update UI state for the target widget
-            target_study_widget._update_bond_breakage_ui_state()
+            # Trigger height update for target widget
+            target_study_widget._update_custom_commands_height()
             target_study_widget.dataChanged.emit() # Trigger summary update for target
 
     def _sync_ensemble_settings(self, source_study_widget, force_unchecked=False):
@@ -3413,8 +3382,8 @@ class DeformationTab(QWidget):
             study_name = self.tab_widget.tabText(i)
             mode = study_widget.mode
             study_state = study_widget.get_state()
-            bond_breakage_status = "Enabled" if study_state.get('bond_breakage', {}).get('enable_bond_breakage', False) else "Disabled"
-            all_summaries.append(f'--- Summary for {study_name} | Mode: {mode} | Bond Breakage: {bond_breakage_status} ---')
+            bond_commands_status = "Custom Commands" if study_state.get('bond_commands', {}).get('commands', '').strip() else "None"
+            all_summaries.append(f'--- Summary for {study_name} | Mode: {mode} | Bond Commands: {bond_commands_status} ---')
 
             points = study_widget.graph_widget.get_data_points()
             segments = study_widget.graph_widget.segments

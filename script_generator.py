@@ -379,6 +379,21 @@ class LammpsScriptGenerator:
                         ""
                     ])
 
+            # Handle the new bond commands functionality - if the new field exists, use it
+            bond_commands_config = deform_study.get("bond_commands", {})
+            bond_commands_text = bond_commands_config.get("commands", "").strip()
+
+            if bond_commands_text:  # If there are study-specific commands
+                # Add the custom study-specific commands to the script
+                script_lines.extend(["#------------------------", "# Study-specific Commands", "#------------------------"])
+                # Split the commands by newlines and add each one
+                for line in bond_commands_text.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('#'):  # Skip empty lines and comments
+                        script_lines.append(line)
+                script_lines.append("")  # Add empty line for formatting
+
+            # Handle backward compatibility for old bond breakage settings
             bond_breakage_config = deform_study.get("bond_breakage", {})
             if bond_breakage_config.get("enable_bond_breakage", False):
                 script_lines.extend(self._generate_bond_breakage_section(bond_breakage_config))
