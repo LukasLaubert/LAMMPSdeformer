@@ -168,7 +168,7 @@ class PresetDialog(QDialog):
         self.cyclic_start.setCurrentText(current_start)
 
         layout.addRow("Number of Cycles:", self.cyclic_cycles)
-        layout.addRow("Final Relaxation Factor (of 1 cycle):", self.cyclic_relax_factor)
+        layout.addRow("Relaxation (multiple of 1 cycle):", self.cyclic_relax_factor)
         layout.addRow("Start With:", self.cyclic_start)
         self.stacked_widget.addWidget(self.cyclic_widget)
 
@@ -188,9 +188,9 @@ class PresetDialog(QDialog):
         layout.addRow("Number of cycles:", self.sinusoidal_cycles)
 
         self.sinusoidal_relax_factor = QDoubleSpinBox()
-        self.sinusoidal_relax_factor.setRange(0.0, 1000.0)
+        self.sinusoidal_relax_factor.setRange(0, 1000)
         self.sinusoidal_relax_factor.setValue(params.get('relax_factor', 0.0))
-        layout.addRow("Final Relaxation Factor:", self.sinusoidal_relax_factor)
+        layout.addRow("Relaxation (multiple of 1 cycle):", self.sinusoidal_relax_factor)
 
         self.sinusoidal_scheme = QComboBox()
         self.sinusoidal_scheme.addItems([
@@ -618,12 +618,12 @@ class GraphWidget(QWidget):
         effective_max_steps = self._max_steps - equilibration_steps
         if effective_max_steps <= 0: return
 
-        total_cycle_equivalents = num_cycles + relax_factor * num_cycles
+        total_cycle_equivalents = num_cycles + relax_factor
         if total_cycle_equivalents <= 0: return
         steps_per_cycle = effective_max_steps / total_cycle_equivalents
 
         sine_duration_steps = steps_per_cycle * num_cycles
-        relax_duration_steps = steps_per_cycle * relax_factor * num_cycles
+        relax_duration_steps = steps_per_cycle * relax_factor
 
         # 4. Build points and segments lists
         new_data_points = [QPointF(0, start_y_val)]
@@ -3156,8 +3156,35 @@ class DeformationTab(QWidget):
         scroll_area.setWidget(self.summary_text)
         layout.addWidget(scroll_area)
 
+    def _get_unique_copy_name(self, base_name):
+        copy_num = 1
+        new_name = f"{base_name}_copy"
+        while any(new_name == self.tab_widget.tabText(i) for i in range(self.tab_widget.count())):
+            copy_num += 1
+            new_name = f"{base_name}_copy{copy_num}"
+        return new_name
+
     def _add_study(self, is_first=False):
-        initial_state = self.tab_widget.currentWidget().get_state() if not is_first and self.tab_widget.count() > 0 else None
+        initial_state = None
+        tab_name = ""
+        insert_index = self.tab_widget.currentIndex() + 1 if self.tab_widget.count() > 0 else 0
+
+        if is_first:
+            # This is for the initial tab or when the last tab is closed
+            initial_state = None # No state to copy
+            tab_name = f"Study{self._get_next_default_study_number():02d}"
+        else:
+            # Copying an existing tab
+            current_widget = self.tab_widget.currentWidget()
+            if current_widget:
+                initial_state = current_widget.get_state()
+                base_name = self.tab_widget.tabText(self.tab_widget.currentIndex())
+                tab_name = self._get_unique_copy_name(base_name)
+            else:
+                # Fallback if no current widget (shouldn't happen if count > 0)
+                initial_state = None
+                tab_name = f"Study{self._get_next_default_study_number():02d}"
+
         new_study = StudyWidget(initial_state)
 
         # Apply current timestep and units from main window
@@ -3167,18 +3194,16 @@ class DeformationTab(QWidget):
         new_study.graph_widget.set_time_unit(LAMMPS_UNITS[units])
 
         new_study.dataChanged.connect(self.update_summaries)
-        new_study.graph_widget.dataChanged.connect(self.update_summaries)  # Add this line for real-time updates
-        new_study.graph_widget.dataChanged.connect(new_study.graph_widget.update)  # Force canvas repaint on data changes
-        # Connect mouse move event for real-time updates
+        new_study.graph_widget.dataChanged.connect(self.update_summaries)
+        new_study.graph_widget.dataChanged.connect(new_study.graph_widget.update)
         original_mouse_move = new_study.graph_widget.mouseMoveEvent
         new_study.graph_widget.mouseMoveEvent = lambda event: self._wrapped_mouse_move_event(original_mouse_move, event, new_study.graph_widget)
-        # Also connect mouse release event for final updates
         original_mouse_release = new_study.graph_widget.mouseReleaseEvent
         new_study.graph_widget.mouseReleaseEvent = lambda event: self._wrapped_mouse_release_event(original_mouse_release, event, new_study.graph_widget)
-        tab_name = f"Study{self._get_next_default_study_number():02d}"
-        tab_index = self.tab_widget.addTab(new_study, tab_name); self.tab_widget.setCurrentIndex(tab_index)
-        # Only update summaries and tab colors if not in batch loading mode
-        # (During batch loading, a single update will be called at the end)
+        
+        tab_index = self.tab_widget.insertTab(insert_index, new_study, tab_name) # Use insertTab
+        self.tab_widget.setCurrentIndex(tab_index)
+
         if not self._batch_loading:
             self.update_summaries()
             self._update_tab_colors()

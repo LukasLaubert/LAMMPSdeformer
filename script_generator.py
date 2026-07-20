@@ -349,6 +349,10 @@ class LammpsScriptGenerator:
 
             points = deform_study.get("data_points", [])
 
+            # --- Define base_pressure variable ---
+            pressure = self._format_float(ensemble_config.get("pressure", 1.0))
+            script_lines.extend([f"variable base_pressure equal {pressure}", ""])
+
             if mode == "Temperature":
                 script_lines.extend(["#------------------------", "# Temperature Variables", "#------------------------"])
                 initial_temp = points[0][1] if points else 300.0
@@ -672,27 +676,6 @@ class LammpsScriptGenerator:
         ensemble_config = deform_study.get("ensemble", {})
         pressure = self._format_float(ensemble_config.get("pressure", 1.0))
 
-        # --- Define all possible strain/stress variables if in Deformation mode ---
-        if mode == "Deformation":
-            lines.extend([
-                "# Engineering strain & Cauchy stress variables",
-                "variable strain_xx equal (lx-v_L0x)/v_L0x",
-                "variable strain_yy equal (ly-v_L0y)/v_L0y",
-                "variable strain_zz equal (lz-v_L0z)/v_L0z",
-                "variable strain_xy equal xy/v_L0y",
-                "variable strain_xz equal xz/v_L0z",
-                "variable strain_yz equal yz/v_L0z",
-                f"variable cauchy_xx equal -(pxx-{pressure})",
-                f"variable cauchy_yy equal -(pyy-{pressure})",
-                f"variable cauchy_zz equal -(pzz-{pressure})",
-                "variable cauchy_xy equal -pxy",
-                "variable cauchy_xz equal -pxz",
-                "variable cauchy_yz equal -pyz",
-                "variable hydrostatic equal (v_cauchy_xx+v_cauchy_yy+v_cauchy_zz)/3",
-                'variable vMises equal "sqrt(0.5*((v_cauchy_xx-v_cauchy_yy)^2+(v_cauchy_yy-v_cauchy_zz)^2+(v_cauchy_zz-v_cauchy_xx)^2+6*(v_cauchy_xy^2+v_cauchy_yz^2+v_cauchy_xz^2)))"',
-                ""
-            ])
-
         # --- Add selected strains/stresses to thermo output ---
         if mode == "Deformation":
             strain_map = {'εxx': 'strain_xx', 'εyy': 'strain_yy', 'εzz': 'strain_zz', 'εxy': 'strain_xy', 'εxz': 'strain_xz', 'εyz': 'strain_yz'}
@@ -794,15 +777,7 @@ class LammpsScriptGenerator:
             
             lines.append("")
 
-        # --- Custom Fixes/Computes ---
-        if fixes_config.get("enable_custom_fixes", False):
-            custom_fixes = fixes_config.get("custom_fixes", "")
-            if custom_fixes:
-                lines.extend(["# Custom Fixes", custom_fixes, ""])
-        if output_config.get("enable_custom_computes", False):
-            custom_computes = output_config.get("custom_computes", "")
-            if custom_computes:
-                lines.extend(["# Custom Computes", custom_computes, ""])
+
 
         final_thermo_style = " ".join(dict.fromkeys(thermo_style_parts))
         
@@ -1059,6 +1034,40 @@ class LammpsScriptGenerator:
             
             if len(neigh_modify_parts) > 1:
                 lines.append(" ".join(neigh_modify_parts))
+
+            # --- Strain and Stress Variables ---
+            lines.extend([
+                "", "# Strain and Stress Variables",
+                "variable strain_xx equal (lx-v_L0x)/v_L0x",
+                "variable strain_yy equal (ly-v_L0y)/v_L0y",
+                "variable strain_zz equal (lz-v_L0z)/v_L0z",
+                "variable strain_xy equal xy/v_L0y",
+                "variable strain_xz equal xz/v_L0z",
+                "variable strain_yz equal yz/v_L0z",
+                f"variable cauchy_xx equal -(pxx-v_base_pressure)",
+                f"variable cauchy_yy equal -(pyy-v_base_pressure)",
+                f"variable cauchy_zz equal -(pzz-v_base_pressure)",
+                "variable cauchy_xy equal -pxy",
+                "variable cauchy_xz equal -pxz",
+                "variable cauchy_yz equal -pyz",
+                "variable hydrostatic equal (v_cauchy_xx+v_cauchy_yy+v_cauchy_zz)/3",
+                'variable vMises equal "sqrt(0.5*((v_cauchy_xx-v_cauchy_yy)^2+(v_cauchy_yy-v_cauchy_zz)^2+(v_cauchy_zz-v_cauchy_xx)^2+6*(v_cauchy_xy^2+v_cauchy_yz^2+v_cauchy_xz^2)))"',
+                ""
+            ])
+
+            # --- Custom Fixes ---
+            fixes_config = self.config.get("fixes", {})
+            if fixes_config.get("enable_custom_fixes", False):
+                custom_fixes = fixes_config.get("custom_fixes", "")
+                if custom_fixes:
+                    lines.extend(["", "# Custom Fixes", custom_fixes, ""])
+
+            # --- Custom Computes ---
+            output_config = self.config.get("output", {})
+            if output_config.get("enable_custom_computes", False):
+                custom_computes = output_config.get("custom_computes", "")
+                if custom_computes:
+                    lines.extend(["", "# Custom Computes", custom_computes, ""])
 
             base_settings_file = os.path.join(root_simulation_dir, "base_input.in")
             with open(base_settings_file, 'w') as f: f.write("\n".join(lines))

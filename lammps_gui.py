@@ -2874,8 +2874,9 @@ class LammpsGui(QMainWindow):
                     
                     error_message += "\nPlease either:\n"
                     error_message += "1. Shift the handles to integer multiples of the thermo frequency,\n"
-                    error_message += "2. Change the thermo frequency accordingly, or\n"
-                    error_message += "3. Remove all quantities from the 'Average' line in the Thermo Output Settings"
+                    error_message += "2. Change the thermo frequency accordingly,\n"
+                    error_message += "3. Remove all quantities from the 'Average' line in the Thermo Output Settings, or\n"
+                    error_message += "4. Delete or right click on the respective sutdy tab to deactivate it."
                     
                     QMessageBox.critical(self, "Validation Error", error_message)
                     return
