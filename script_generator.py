@@ -106,10 +106,13 @@ class LammpsScriptGenerator:
             for i, system_file in enumerate(system_files):
                 system_name = Path(system_file).stem
                 data_file_dest = os.path.join(data_files_folder, f"{system_name}.data")
-                shutil.copy2(system_file, data_file_dest)
+                
+                # Process the data file to remove Pair Coeffs section if it exists
+                self.process_and_copy_data_file(system_file, data_file_dest)
+                
                 data_file_dest_paths[system_file] = (Path("_input_files") / f"{system_name}.data").as_posix()
                 
-                # Copy potential file if used
+                # Copy potential file if used (potential files are not processed)
                 system_config = self.config.get("system", {})
                 if system_config.get("use_potential_file", False):
                     potential_file = system_config.get("potential_file", "")
@@ -168,6 +171,52 @@ class LammpsScriptGenerator:
         except Exception as e:
             return {"success": False, "message": f"Error generating scripts: {str(e)}"}
         
+    def process_and_copy_data_file(self, source_path, dest_path):
+        """
+        Process and copy a data file, removing the 'Pair Coeffs' section if present.
+        
+        This function copies a LAMMPS data file from source to destination, but removes
+        the 'Pair Coeffs' section if it exists to avoid the error:
+        ERROR: Must define pair_style before Pair Coeffs (src/read_data.cpp:686)
+        """
+        with open(source_path, 'r') as infile:
+            lines = infile.readlines()
+        
+        # Process lines to remove Pair Coeffs section if it exists
+        processed_lines = []
+        in_pair_coeffs_section = False
+        current_line_index = 0
+        
+        while current_line_index < len(lines):
+            line = lines[current_line_index]
+            line_stripped = line.strip()
+            
+            if line_stripped.startswith("Pair Coeffs"):
+                # Found the start of the Pair Coeffs section, skip it
+                in_pair_coeffs_section = True
+                current_line_index += 1
+                continue
+            
+            # Check if we are in the Pair Coeffs section and if this line starts with a letter
+            if in_pair_coeffs_section:
+                # Check if the line starts with a letter (non-whitespace character)
+                line_stripped_no_ws = line.lstrip()  # Remove leading whitespace
+                if line_stripped_no_ws and line_stripped_no_ws[0].isalpha():
+                    # This is the start of the next section, so we're done skipping
+                    in_pair_coeffs_section = False
+                    # Add this line to the output as it's the start of the next section
+                    processed_lines.append(lines[current_line_index])
+                # Skip all lines while in_pair_coeffs_section is True
+            else:
+                # We're not in the Pair Coeffs section, so add the line to output
+                processed_lines.append(lines[current_line_index])
+            
+            current_line_index += 1
+        
+        # Write the processed content to the destination
+        with open(dest_path, 'w') as outfile:
+            outfile.writelines(processed_lines)
+
     def save_settings_to_json(self, root_simulation_dir):
         """Save all settings to a JSON file in the root folder"""
         try:

@@ -1894,13 +1894,13 @@ class LammpsGui(QMainWindow):
         instructions_text.setReadOnly(True)
         instructions_text.setMaximumHeight(100)
         instructions_text.setPlainText(
-            "• run_local_all.sh/.bat: OS-specific local execution script (generated based on your OS). Each simulation runs in its own terminal.\n"
-            "• run_cluster_jobs.sh: Cluster job submission script for Linux clusters only.\n"
-            "• lammps_simulation.job: Single master job file that accepts input file as argument.\n"
-            "• All .in files are located in their respective study/system folders\n"
-            "• Data files are copied to the input_files folder with correct relative paths (../../input_files/)\n"
-            "• Potential files are also copied to input_files folder and referenced correctly\n"
-            "• Output directories are created automatically in each study/system folder"
+            "• Run OS-specific local exectuion script (generated based on your OS) local_run_all.sh/.bat to run all simulations locally.\n"
+            "• Copy all generated files (or root folder) to the cluster and run ``chmod 755 *`` before calling ./cluster_run_jobs.sh to submit all jobs to the sbatch queuing.\n"
+            "\n"
+            "• All input .in files are located in their respective study/system folders\n"
+            "• Data files and potential iles were copied to the _input_files folder and are referenced in the .in scripts using the relative path (../../_input_files/)\n"
+            "• BEWARE! If system/atom data files contained a 'Pair Coeffs' section, it was removed to avoid LAMMPS errors. Make sure to state pair_style followed by the pair_coeff in the potential file!\n"
+            "• Output will be generated in each study/system folder"
         )
         layout.addWidget(instructions_text)
         

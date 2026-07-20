@@ -952,7 +952,7 @@ class StudyWidget(QWidget):
         ensemble_layout.addWidget(QLabel("Ensemble:"))
         ensemble_layout.addWidget(self.ensemble_combo)
 
-        ensemble_urls = [QUrl("https://docs.lammps.org/fix_nvt.html"), QUrl("https://docs.lammps.org/fix_npt.html")]
+        ensemble_urls = [QUrl("https://docs.lammps.org/fix_nvt.html"), QUrl("https://docs.lammps.org/fix_nh.html")]
         ensemble_tooltip = "Click to open LAMMPS documentation for NVT and NPT ensembles"
         self.ensemble_info_label = create_info_icon_label(ensemble_urls, ensemble_tooltip, "blue")
         ensemble_layout.addWidget(self.ensemble_info_label)
