@@ -30,10 +30,21 @@ class LammpsScriptGenerator:
         try:
             self.generated_files = []
             
+            # Validate configuration structure
+            if not isinstance(self.config, dict):
+                return {"success": False, "message": "Invalid configuration: not a dictionary"}
+            
             # Get system path and determine if it's single file or directory
-            system_path = self.config.get("system", {}).get("system_path", "")
-            if not system_path or not os.path.exists(system_path):
-                return {"success": False, "message": "System path does not exist."}
+            system_config = self.config.get("system", {})
+            if not isinstance(system_config, dict):
+                return {"success": False, "message": "Invalid system configuration"}
+                
+            system_path = system_config.get("system_path", "")
+            if not system_path:
+                return {"success": False, "message": "System path not specified"}
+            
+            if not os.path.exists(system_path):
+                return {"success": False, "message": f"System path does not exist: {system_path}"}
             
             # Determine system files
             if os.path.isfile(system_path):
@@ -53,8 +64,34 @@ class LammpsScriptGenerator:
                 if not units_check["consistent"]:
                     return {"success": False, "message": units_check["message"]}
             
+            # Get deformation studies
+            multistudy_config = self.config.get("multistudy", {})
+            if not isinstance(multistudy_config, dict):
+                return {"success": False, "message": "Invalid multistudy configuration"}
+                
+            deform_studies = multistudy_config.get("deform_studies", [])
+            if not isinstance(deform_studies, list):
+                return {"success": False, "message": "Invalid deformation studies configuration"}
+                
+            if not deform_studies:
+                return {"success": False, "message": "No deformation studies defined"}
+            
+            # Validate each deformation study
+            for i, study in enumerate(deform_studies):
+                if not isinstance(study, dict):
+                    return {"success": False, "message": f"Invalid deformation study at index {i}"}
+                
+                required_fields = ["name", "method", "strain_rate", "engineering_strain", "steps", "axis", "style_dir", "thermo_freq"]
+                for field in required_fields:
+                    if field not in study:
+                        return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
+            
             # Create output directory structure
-            output_path = self.config.get("output", {}).get("output_path", "")
+            output_config = self.config.get("output", {})
+            if not isinstance(output_config, dict):
+                return {"success": False, "message": "Invalid output configuration"}
+                
+            output_path = output_config.get("output_path", "")
             if not output_path:
                 output_path = os.path.dirname(system_files[0])
             

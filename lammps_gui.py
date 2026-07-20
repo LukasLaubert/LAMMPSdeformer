@@ -61,9 +61,9 @@ except ImportError as e:
 
 # Import the script generator
 try:
-    from script_generator import LammpsScriptGenerator
+    from script_generator import LammpsScriptGenerator as ScriptGen
 except ImportError as e:
-    LammpsScriptGenerator = None
+    ScriptGen = None
 
 class NumericTableWidgetItem(QTableWidgetItem):
     """Custom table widget item that validates numeric input"""
@@ -1682,17 +1682,38 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Collect deformation studies
         for row in range(self.studies_table.rowCount()):
-            study = {
-                "name": self.studies_table.item(row, 0).text(),
-                "method": self.studies_table.cellWidget(row, 1).currentText(),
-                "strain_rate": float(self.studies_table.item(row, 2).text()),
-                "engineering_strain": float(self.studies_table.item(row, 3).text()),
-                "steps": int(self.studies_table.item(row, 4).text()),
-                "axis": self.studies_table.cellWidget(row, 5).currentText(),
-                "style_dir": self.studies_table.cellWidget(row, 6).currentText(),
-                "thermo_freq": int(self.studies_table.item(row, 7).text())
-            }
-            config["multistudy"]["deform_studies"].append(study)
+            try:
+                # Get basic study info
+                name_item = self.studies_table.item(row, 0)
+                method_combo = self.studies_table.cellWidget(row, 1)
+                strain_rate_item = self.studies_table.item(row, 2)
+                eng_strain_item = self.studies_table.item(row, 3)
+                steps_item = self.studies_table.item(row, 4)
+                axis_combo = self.studies_table.cellWidget(row, 5)
+                style_combo = self.studies_table.cellWidget(row, 6)
+                thermo_item = self.studies_table.item(row, 7)
+                
+                # Validate all required items exist
+                if not all([name_item, method_combo, strain_rate_item, eng_strain_item, 
+                           steps_item, axis_combo, style_combo, thermo_item]):
+                    print(f"Warning: Missing data in row {row}, skipping")
+                    continue
+                
+                study = {
+                    "name": name_item.text(),
+                    "method": method_combo.currentText(),
+                    "strain_rate": float(strain_rate_item.text()),
+                    "engineering_strain": float(eng_strain_item.text()),
+                    "steps": int(steps_item.text()),
+                    "axis": axis_combo.currentText(),
+                    "style_dir": style_combo.currentText(),
+                    "thermo_freq": int(thermo_item.text())
+                }
+                config["multistudy"]["deform_studies"].append(study)
+                
+            except (ValueError, AttributeError) as e:
+                print(f"Warning: Invalid data in row {row}: {e}, skipping")
+                continue
         
         return config
     
@@ -1823,32 +1844,47 @@ class LammpsScriptGenerator(QMainWindow):
     def generate_scripts(self):
         """Generate LAMMPS scripts based on current configuration"""
         try:
-            # Collect configuration
-            config = self.collect_config()
+            # Collect configuration with error handling
+            try:
+                config = self.collect_config()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Error collecting configuration: {str(e)}")
+                return
             
             # Validate configuration
-            if not config["system"]["system_path"]:
+            if not config.get("system", {}).get("system_path"):
                 QMessageBox.warning(self, "Warning", "Please select a system path.")
                 return
             
-            if not config["multistudy"]["deform_studies"]:
+            deform_studies = config.get("multistudy", {}).get("deform_studies", [])
+            if not deform_studies:
                 QMessageBox.warning(self, "Warning", "Please define at least one deformation study.")
                 return
             
+            # Validate system path exists
+            system_path = config["system"]["system_path"]
+            if not os.path.exists(system_path):
+                QMessageBox.critical(self, "Error", f"System path does not exist: {system_path}")
+                return
+            
             # Generate scripts
-            if LammpsScriptGenerator:
-                generator = LammpsScriptGenerator(config)
-                result = generator.generate_all_scripts()
-                
-                if result["success"]:
-                    self.show_generated_files_dialog(result)
-                else:
-                    QMessageBox.critical(self, "Error", result["message"])
+            if ScriptGen:
+                try:
+                    generator = ScriptGen(config)
+                    result = generator.generate_all_scripts()
+                    
+                    if result.get("success"):
+                        self.show_generated_files_dialog(result)
+                    else:
+                        error_msg = result.get("message", "Unknown error occurred")
+                        QMessageBox.critical(self, "Error", f"Error generating scripts: {error_msg}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Error in script generator: {str(e)}")
             else:
                 QMessageBox.critical(self, "Error", "Script generator not available.")
                 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error generating scripts: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Unexpected error generating scripts: {str(e)}")
     
     def show_generated_scripts(self, files):
         """Show dialog with generated scripts and commands"""
