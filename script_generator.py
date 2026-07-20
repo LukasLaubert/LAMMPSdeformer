@@ -301,7 +301,7 @@ class LammpsScriptGenerator:
                 initial_velocity_seed = system_config.get("initial_velocity_seed", 12345)
                 script_lines.extend([
                     "# Initial velocity",
-                    f"velocity all create {temp_init} {initial_velocity_seed} dist gaussian loop geom",
+                    f"velocity all create {temp_init} {initial_velocity_seed} mom yes rot yes dist gaussian",
                     ""
                 ])
             
@@ -485,7 +485,8 @@ class LammpsScriptGenerator:
                 command_suffix = ""
             
             # Get execution mode
-            execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
+            job_submission_config = self.config.get("job_submission", {})
+            local_lammps_cmd = job_submission_config.get("local_lammps_cmd", "lmp")
             
             for study in deform_studies:
                 study_name = study.get("name", "study")
@@ -498,46 +499,25 @@ class LammpsScriptGenerator:
                     script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
                     sim_directory = f"{study_name}/{system_name}"
                     
-                    if execution_mode == "local":
-                        # Local execution - change to simulation directory and run in new terminal
-                        if current_os in ['linux', 'darwin']:
-                            script_lines.extend([
-                                f"echo 'Running simulation: {model_name}'",
-                                f"cd {sim_directory}",
-                                f"{command_prefix}lmp -in {model_name}.in{command_suffix}",
-                                f"echo 'Started simulation in new terminal: {model_name}'",
-                                f"cd ../../",  # Go back to root directory
-                                ""
-                            ])
-                        else:  # Windows
-                            script_lines.extend([
-                                f"echo 'Running simulation: {model_name}'",
-                                f"cd {sim_directory}",
-                                f"{command_prefix}lmp -in {model_name}.in{command_suffix}",
-                                f"echo 'Started simulation in new terminal: {model_name}'",
-                                f"cd ../../",  # Go back to root directory
-                                ""
-                            ])
-                    else:
-                        # Cluster execution - submit master job file with input file argument
-                        if current_os in ['linux', 'darwin']:
-                            script_lines.extend([
-                                f"echo 'Submitting job: {model_name}'",
-                                f"cd {sim_directory}",
-                                f"sbatch --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"",
-                                f"cd ../../",
-                                f"echo 'Job submitted: {model_name}'",
-                                ""
-                            ])
-                        else:  # Windows
-                            script_lines.extend([
-                                f"echo 'Submitting job: {model_name}'",
-                                f"cd {sim_directory}",
-                                f"sbatch --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"",
-                                f"cd ../../",
-                                f"echo 'Job submitted: {model_name}'",
-                                ""
-                            ])
+                    # Local execution - change to simulation directory and run in new terminal
+                    if current_os in ['linux', 'darwin']:
+                        script_lines.extend([
+                            f"echo 'Running simulation: {model_name}'",
+                            f"cd {sim_directory}",
+                            f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
+                            f"echo 'Started simulation in new terminal: {model_name}'",
+                            f"cd ../../",  # Go back to root directory
+                            ""
+                        ])
+                    else:  # Windows
+                        script_lines.extend([
+                            f"echo 'Running simulation: {model_name}'",
+                            f"cd {sim_directory}",
+                            f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
+                            f"echo 'Started simulation in new terminal: {model_name}'",
+                            f"cd ../../",  # Go back to root directory
+                            ""
+                        ])
             
             if current_os in ['linux', 'darwin']:
                 script_lines.extend([
@@ -574,41 +554,16 @@ class LammpsScriptGenerator:
             master_job_path = os.path.join(root_simulation_dir, "lammps_simulation.job")
             
             # Get cluster settings
-            cluster_config = self.config.get("cluster", {})
-            partition = cluster_config.get("cluster_partition", "singlenode")
-            nodes = cluster_config.get("cluster_nodes", 1)
-            ntasks = cluster_config.get("cluster_ntasks", 72)
-            cpus_per_task = cluster_config.get("cluster_cpus_per_task", 1)
-            time_limit = cluster_config.get("cluster_time", "24:00:00")
-            export_setting = cluster_config.get("cluster_export", "NONE")
-            output_file = cluster_config.get("cluster_output", "lammps_output_%j.txt")
-            error_file = cluster_config.get("cluster_error", "lammps_error_%j.txt")
-            email = cluster_config.get("cluster_mail", "")
-            mail_type = cluster_config.get("cluster_mail_type", "ALL")
-            
+            job_submission_config = self.config.get("job_submission", {})
+            cluster_lammps_cmd = job_submission_config.get("cluster_lammps_cmd", "lmp")
+            srun_cmd = job_submission_config.get("srun_cmd", "srun")
+            sbatch_cmd = job_submission_config.get("sbatch_cmd", "sbatch")
+            slurm_header = job_submission_config.get("slurm_header", "#!/bin/bash\n#SBATCH --job-name=lammps_simulation\n#SBATCH --partition=singlenode\n#SBATCH --nodes=1\n#SBATCH --ntasks-per-node=72\n#SBATCH --cpus-per-task=1\n#SBATCH --time=24:00:00\n#SBATCH --export=NONE\n#SBATCH --output=lammps_output_%j.txt\n#SBATCH --error=lammps_error_%j.txt")
+
             # Generate master job file that accepts input file as argument
             job_lines = [
-                "#!/bin/bash",
-                "#SBATCH --job-name=lammps_simulation",
-                f"#SBATCH --partition={partition}",
-                f"#SBATCH --nodes={nodes}",
-                f"#SBATCH --ntasks-per-node={ntasks}",
-                f"#SBATCH --cpus-per-task={cpus_per_task}",
-                f"#SBATCH --time={time_limit}",
-                f"#SBATCH --export={export_setting}",
-                f"#SBATCH --output={output_file}",
-                f"#SBATCH --error={error_file}"
-            ]
-            
-            # Add email settings if provided
-            if email:
-                job_lines.extend([
-                    f"#SBATCH --mail-user={email}",
-                    f"#SBATCH --mail-type={mail_type}"
-                ])
-            
-            job_lines.extend([
-                "",
+                slurm_header,
+                "", 
                 "# Get input file path from first argument",
                 "input=$1",
                 "if [ -z \"$input\" ]; then",
@@ -626,11 +581,11 @@ class LammpsScriptGenerator:
                 "module load lammps",
                 "",
                 "# Run LAMMPS with input file",
-                "srun lmp -in \"$input\"",
+                f"{srun_cmd} {cluster_lammps_cmd} -in \"$input\"",
                 "",
                 "echo 'Completed simulation: $MODEL_NAME'",
                 ""
-            ])
+            ]
             
             # Write master job file with UNIX line endings
             with open(master_job_path, 'w', newline='\n') as f:
@@ -666,7 +621,7 @@ class LammpsScriptGenerator:
                     
                     script_lines.extend([
                         f"cd {sim_directory}",
-                        f"sbatch --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"",
+                        f"{sbatch_cmd} --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"",
                         f"cd ../../",
                         ""
                     ])

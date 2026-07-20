@@ -163,6 +163,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.create_deformation_tab()
         self.create_fixes_tab()
         self.create_output_tab()
+        self.create_job_submission_tab()
         
         # Create bottom buttons
         self.create_bottom_buttons()
@@ -1201,6 +1202,71 @@ class LammpsScriptGenerator(QMainWindow):
         """Toggle custom dumps text box based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         self.custom_dumps_text.setEnabled(enabled)
+
+    def create_job_submission_tab(self):
+        """Create the job submission tab"""
+        self.job_submission_tab = QWidget()
+        self.tab_widget.addTab(self.job_submission_tab, "Job Submission")
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll.setWidget(scroll_widget)
+
+        job_submission_layout = QVBoxLayout(self.job_submission_tab)
+        job_submission_layout.addWidget(scroll)
+
+        # Local settings
+        local_group = QGroupBox("Local Settings")
+        local_layout = QFormLayout()
+
+        self.local_lammps_cmd = QLineEdit()
+        self.local_lammps_cmd.setPlaceholderText("lmp")
+        self.local_lammps_cmd.setToolTip("Command to run LAMMPS locally.")
+        local_layout.addRow("Local LAMMPS Command:", self.local_lammps_cmd)
+
+        local_group.setLayout(local_layout)
+        scroll_layout.addWidget(local_group)
+
+        # Cluster settings
+        cluster_group = QGroupBox("Cluster Settings")
+        cluster_layout = QFormLayout()
+
+        self.cluster_lammps_cmd = QLineEdit()
+        self.cluster_lammps_cmd.setPlaceholderText("lmp")
+        self.cluster_lammps_cmd.setToolTip("Command to run LAMMPS on the cluster.")
+        cluster_layout.addRow("Cluster LAMMPS Command:", self.cluster_lammps_cmd)
+
+        self.srun_cmd = QLineEdit()
+        self.srun_cmd.setPlaceholderText("srun")
+        self.srun_cmd.setToolTip("srun command for cluster execution.")
+        cluster_layout.addRow("srun Command:", self.srun_cmd)
+
+        self.sbatch_cmd = QLineEdit()
+        self.sbatch_cmd.setPlaceholderText("sbatch")
+        self.sbatch_cmd.setToolTip("sbatch command for cluster job submission.")
+        cluster_layout.addRow("sbatch Command:", self.sbatch_cmd)
+
+        self.slurm_header_text = QTextEdit()
+        self.slurm_header_text.setPlainText("""#!/bin/bash
+#SBATCH --job-name=lammps_simulation
+#SBATCH --partition=singlenode
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=72
+#SBATCH --cpus-per-task=1
+#SBATCH --time=24:00:00
+#SBATCH --export=NONE
+#SBATCH --output=lammps_output_%j.txt
+#SBATCH --error=lammps_error_%j.txt""")
+        self.slurm_header_text.setToolTip("SLURM batch script header.")
+        self.slurm_header_text.setMinimumHeight(200)
+        cluster_layout.addRow("SLURM Header:", self.slurm_header_text)
+
+        cluster_group.setLayout(cluster_layout)
+        scroll_layout.addWidget(cluster_group)
+
+        scroll_layout.addStretch()
         
     def create_bottom_buttons(self):
         """Create the bottom buttons"""
@@ -1742,23 +1808,25 @@ class LammpsScriptGenerator(QMainWindow):
                 "enable_custom_dumps": self.enable_custom_dumps.isChecked(),
                 "custom_dumps": self.custom_dumps_text.toPlainText()
             },
-            "cluster": {
-                # Cluster configuration with default values since cluster tab was removed
-                # "execution_mode": self.execution_mode_combo.currentText(),  # Removed - no longer needed
-                "lammps_command": "lmp",  # Default value
-                "threads": 4,  # Default value
-                "cluster_partition": "singlenode",  # Default value
-                "cluster_nodes": 1,  # Default value
-                "cluster_ntasks": 72,  # Default value
-                "cluster_time": "24:00:00",  # Default value
-                "cluster_mail": "",  # Default value
-                "cluster_mail_type": "ALL",  # Default value
-                "auto_submit": False,  # Default value
-                "show_command": True,  # Default value
-                "save_scripts_only": False  # Default value
-            },
+            
             "multistudy": {
                 "deform_studies": []
+            },
+            "job_submission": {
+                "local_lammps_cmd": self.local_lammps_cmd.text() or "lmp",
+                "cluster_lammps_cmd": self.cluster_lammps_cmd.text() or "lmp",
+                "srun_cmd": self.srun_cmd.text() or "srun",
+                "sbatch_cmd": self.sbatch_cmd.text() or "sbatch",
+                "slurm_header": self.slurm_header_text.toPlainText() or """#!/bin/bash
+#SBATCH --job-name=lammps_simulation
+#SBATCH --partition=singlenode
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=72
+#SBATCH --cpus-per-task=1
+#SBATCH --time=24:00:00
+#SBATCH --export=NONE
+#SBATCH --output=lammps_output_%j.txt
+#SBATCH --error=lammps_error_%j.txt"""
             }
         }
         
@@ -1838,6 +1906,13 @@ class LammpsScriptGenerator(QMainWindow):
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
             self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
+
+            # Job submission settings
+            self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
+            self.cluster_lammps_cmd.setText(self.settings.value("job_submission/cluster_lammps_cmd", ""))
+            self.srun_cmd.setText(self.settings.value("job_submission/srun_cmd", ""))
+            self.sbatch_cmd.setText(self.settings.value("job_submission/sbatch_cmd", ""))
+            self.slurm_header_text.setPlainText(self.settings.value("job_submission/slurm_header", ""))
             
             # Multi-study settings
             if hasattr(self, 'deformation_tab_widget'):
@@ -1905,11 +1980,11 @@ class LammpsScriptGenerator(QMainWindow):
             # Save output settings
             for key, value in config["output"].items():
                 self.settings.setValue(f"output/{key}", value)
-            
-            # Save cluster settings
-            for key, value in config["cluster"].items():
-                self.settings.setValue(f"cluster/{key}", value)
-            
+
+            # Save job_submission settings
+            for key, value in config["job_submission"].items():
+                self.settings.setValue(f"job_submission/{key}", value)
+
             # Save multi-study settings
             for key, value in config["multistudy"].items():
                 if key == "deform_studies":
