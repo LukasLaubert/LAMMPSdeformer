@@ -406,6 +406,14 @@ class StudyWidget(QWidget):
         self.prob_seed_spinbox.setFixedWidth(100) # Adjust width
         bond_breakage_layout.addWidget(self.prob_seed_spinbox)
 
+        # Add info icon for bond breakage
+        self.bond_break_info_label = QLabel("ℹ️", self)
+        self.bond_break_info_label.setStyleSheet("color: blue; font-size: 14px;")
+        self.bond_break_info_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.bond_break_info_label.setToolTip("Click to open LAMMPS fix bond/break documentation")
+        self.bond_break_info_label.mousePressEvent = lambda event: self.parent().main_window.open_lammps_doc("fix_bond_break")
+        bond_breakage_layout.addWidget(self.bond_break_info_label)
+
         bond_breakage_layout.addStretch(1) # Push sync button to the right
 
         self.sync_bond_break_checkbox = QCheckBox("Sync bond break")

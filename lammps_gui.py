@@ -74,18 +74,25 @@ except ImportError as e:
     DeformationTab = None
 
 class InfoGroupBox(QGroupBox):
-    def __init__(self, title, doc_link, parent=None):
+    def __init__(self, title, doc_link, parent=None, is_external=False):
         super().__init__(title, parent)
         self.doc_link = doc_link
+        self.is_external = is_external
 
         self.info_label = QLabel("ℹ️", self)
         self.info_label.setStyleSheet("color: blue; font-size: 14px;")
         self.info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.info_label.setToolTip(f"Click to open LAMMPS {doc_link} documentation")
+        if is_external:
+            self.info_label.setToolTip(f"Click to open {doc_link}")
+        else:
+            self.info_label.setToolTip(f"Click to open LAMMPS {doc_link} documentation")
         self.info_label.mousePressEvent = self.open_doc_link
 
     def open_doc_link(self, event):
-        url = QUrl(f"https://docs.lammps.org/{self.doc_link}.html")
+        if self.is_external:
+            url = QUrl(self.doc_link)
+        else:
+            url = QUrl(f"https://docs.lammps.org/{self.doc_link}.html")
         QDesktopServices.openUrl(url)
 
     def resizeEvent(self, event):
@@ -531,76 +538,9 @@ class LammpsScriptGenerator(QMainWindow):
         fixes_layout = QVBoxLayout(self.fixes_tab)
         fixes_layout.addWidget(scroll)
 
-        # Bond breakage settings
-        bond_breakage_group = InfoGroupBox("Bond Breakage Settings", "fix_bond_break")
-        bond_breakage_layout = QVBoxLayout()
-
-        self.enable_bond_breakage = QCheckBox("Enable Bond Breakage")
-        self.enable_bond_breakage.setToolTip("Enable bond breakage during deformation simulation")
-        self.enable_bond_breakage.stateChanged.connect(self.toggle_bond_breakage_settings)
-
-        bond_breakage_form_layout = QFormLayout()
-
-        # Nevery parameter
-        self.nevery = QSpinBox()
-        self.nevery.setRange(1, 1000000)
-        self.nevery.setValue(1)
-        self.nevery.setEnabled(False)
-        self.nevery.setToolTip("Attempt bond breaking every this many steps")
-
-        # Bond type
-        self.bondtype = QSpinBox()
-        self.bondtype.setRange(1, 100)
-        self.bondtype.setValue(1)
-        self.bondtype.setEnabled(False)
-        self.bondtype.setToolTip("Type of bonds to break (integer or type label)")
-
-        # Rmax parameter
-        self.rmax = QDoubleSpinBox()
-        self.rmax.setRange(0, 1000)
-        self.rmax.setValue(1.5)
-        self.rmax.setSingleStep(0.1)
-        self.rmax.setEnabled(False)
-        self.rmax.setToolTip("Bond longer than Rmax can break (distance units)")
-
-        # Probability options
-        self.enable_prob = QCheckBox("Enable Probability")
-        self.enable_prob.setChecked(False)
-        self.enable_prob.setEnabled(False)
-        self.enable_prob.setToolTip("Enable probabilistic bond breakage")
-        self.enable_prob.stateChanged.connect(self.toggle_probability_settings)
-
-        self.prob_fraction = QDoubleSpinBox()
-        self.prob_fraction.setRange(0, 1)
-        self.prob_fraction.setValue(0.1)
-        self.prob_fraction.setSingleStep(0.01)
-        self.prob_fraction.setEnabled(False)
-        self.prob_fraction.setToolTip("Break a bond with this probability if otherwise eligible")
-
-        self.prob_seed = QSpinBox()
-        self.prob_seed.setRange(1, 1000000)
-        self.prob_seed.setValue(12345)
-        self.prob_seed.setEnabled(False)
-        self.prob_seed.setToolTip("Random number seed (positive integer)")
-
-        bond_breakage_form_layout.addRow("Nevery:", self.nevery)
-        bond_breakage_form_layout.addRow("Bond Type:", self.bondtype)
-        bond_breakage_form_layout.addRow("Rmax:", self.rmax)
-        bond_breakage_form_layout.addRow(self.enable_prob)
-        bond_breakage_form_layout.addRow("Probability:", self.prob_fraction)
-        bond_breakage_form_layout.addRow("Seed:", self.prob_seed)
-
-        bond_breakage_layout.addWidget(self.enable_bond_breakage)
-        bond_breakage_layout.addLayout(bond_breakage_form_layout)
-        bond_breakage_group.setLayout(bond_breakage_layout)
-        scroll_layout.addWidget(bond_breakage_group)
-
         # Custom fixes
         custom_fixes_group = InfoGroupBox("Custom Fixes", "fix")
-        custom_fixes_group.setFixedHeight(120)  # Set fixed height for the entire group box
         custom_fixes_layout = QVBoxLayout()
-        custom_fixes_layout.setSpacing(2)  # Reduce spacing between elements
-        custom_fixes_layout.setContentsMargins(5, 5, 5, 5)  # Reduce margins
 
         self.enable_custom_fixes = QCheckBox("Enable Custom Fixes")
         self.enable_custom_fixes.setChecked(False)
@@ -609,8 +549,7 @@ class LammpsScriptGenerator(QMainWindow):
 
         self.custom_fixes_text = QTextEdit()
         self.custom_fixes_text.setPlaceholderText("Enter custom fix commands here...")
-        self.custom_fixes_text.setMaximumHeight(60)  # Significantly reduce height
-        self.custom_fixes_text.setMinimumHeight(60)  # Set minimum height too
+        self.custom_fixes_text.setMaximumHeight(150)  # Significantly reduce height
         self.custom_fixes_text.setEnabled(False)
         self.custom_fixes_text.setToolTip("Custom LAMMPS fix commands")
 
@@ -640,7 +579,7 @@ class LammpsScriptGenerator(QMainWindow):
 
         self.custom_computes_text = QTextEdit()
         self.custom_computes_text.setPlaceholderText("Enter custom compute commands here...")
-        self.custom_computes_text.setMaximumHeight(100)
+        self.custom_computes_text.setMaximumHeight(150)
         self.custom_computes_text.setEnabled(False)
         self.custom_computes_text.setToolTip("Custom LAMMPS compute commands")
 
@@ -1218,7 +1157,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(local_group)
 
         # Cluster settings
-        cluster_group = QGroupBox("Cluster Settings")
+        cluster_group = InfoGroupBox("Cluster Settings", "https://hpc-wiki.info/hpc/SLURM", is_external=True)
         cluster_layout = QFormLayout()
 
         self.cluster_lammps_cmd = QLineEdit()
@@ -1236,8 +1175,13 @@ class LammpsScriptGenerator(QMainWindow):
         self.sbatch_cmd.setToolTip("sbatch command for cluster job submission.")
         cluster_layout.addRow("sbatch Command:", self.sbatch_cmd)
 
+        self.module_load_cmd = QLineEdit()
+        self.module_load_cmd.setPlaceholderText("lammps")
+        self.module_load_cmd.setToolTip("Module to load on the cluster.")
+        cluster_layout.addRow("Module Load:", self.module_load_cmd)
+
         self.slurm_header_text = QTextEdit()
-        self.slurm_header_text.setPlainText("""#!/bin/bash
+        self.slurm_header_text.setPlainText("""#!/bin/bash -l
 #SBATCH --job-name=lammps_simulation
 #SBATCH --partition=singlenode
 #SBATCH --nodes=1
@@ -1248,7 +1192,7 @@ class LammpsScriptGenerator(QMainWindow):
 #SBATCH --output=lammps_output_%j.txt
 #SBATCH --error=lammps_error_%j.txt""")
         self.slurm_header_text.setToolTip("SLURM batch script header.")
-        self.slurm_header_text.setMinimumHeight(200)
+        self.slurm_header_text.setMinimumHeight(300)
         cluster_layout.addRow("SLURM Header:", self.slurm_header_text)
 
         cluster_group.setLayout(cluster_layout)
@@ -1774,13 +1718,6 @@ class LammpsScriptGenerator(QMainWindow):
                 "timestep": self.timestep.value()
             },
             "fixes": {
-                "enable_bond_breakage": self.enable_bond_breakage.isChecked(),
-                "nevery": self.nevery.value(),
-                "bondtype": self.bondtype.value(),
-                "rmax": self.rmax.value(),
-                "enable_prob": self.enable_prob.isChecked(),
-                "prob_fraction": self.prob_fraction.value(),
-                "prob_seed": self.prob_seed.value(),
                 "enable_custom_fixes": self.enable_custom_fixes.isChecked(),
                 "custom_fixes": self.custom_fixes_text.toPlainText()
             },
@@ -1805,6 +1742,7 @@ class LammpsScriptGenerator(QMainWindow):
                 "cluster_lammps_cmd": self.cluster_lammps_cmd.text() or "lmp",
                 "srun_cmd": self.srun_cmd.text() or "srun",
                 "sbatch_cmd": self.sbatch_cmd.text() or "sbatch",
+                "module_load": self.module_load_cmd.text() or "lammps",
                 "slurm_header": self.slurm_header_text.toPlainText() or """#!/bin/bash
 #SBATCH --job-name=lammps_simulation
 #SBATCH --partition=singlenode
@@ -1866,13 +1804,6 @@ class LammpsScriptGenerator(QMainWindow):
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
             
             # Fixes settings
-            self.enable_bond_breakage.setChecked(self.settings.value("fixes/enable_bond_breakage", False, type=bool))
-            self.nevery.setValue(self.settings.value("fixes/nevery", 1, type=int))
-            self.bondtype.setValue(self.settings.value("fixes/bondtype", 1, type=int))
-            self.rmax.setValue(self.settings.value("fixes/rmax", 1.5, type=float))
-            self.enable_prob.setChecked(self.settings.value("fixes/enable_prob", False, type=bool))
-            self.prob_fraction.setValue(self.settings.value("fixes/prob_fraction", 0.1, type=float))
-            self.prob_seed.setValue(self.settings.value("fixes/prob_seed", 12345, type=int))
             self.enable_custom_fixes.setChecked(self.settings.value("fixes/enable_custom_fixes", False, type=bool))
             self.custom_fixes_text.setPlainText(self.settings.value("fixes/custom_fixes", ""))
             
@@ -1893,6 +1824,7 @@ class LammpsScriptGenerator(QMainWindow):
             self.cluster_lammps_cmd.setText(self.settings.value("job_submission/cluster_lammps_cmd", ""))
             self.srun_cmd.setText(self.settings.value("job_submission/srun_cmd", ""))
             self.sbatch_cmd.setText(self.settings.value("job_submission/sbatch_cmd", ""))
+            self.module_load_cmd.setText(self.settings.value("job_submission/module_load", ""))
             self.slurm_header_text.setPlainText(self.settings.value("job_submission/slurm_header", ""))
             
             # Multi-study settings
@@ -2145,13 +2077,6 @@ class LammpsScriptGenerator(QMainWindow):
             # Fixes configuration
             if "fixes" in config:
                 fixes = config["fixes"]
-                self.enable_bond_breakage.setChecked(fixes.get("enable_bond_breakage", False))
-                self.nevery.setValue(fixes.get("nevery", 1))
-                self.bondtype.setValue(fixes.get("bondtype", 1))
-                self.rmax.setValue(fixes.get("rmax", 1.5))
-                self.enable_prob.setChecked(fixes.get("enable_prob", False))
-                self.prob_fraction.setValue(fixes.get("prob_fraction", 0.1))
-                self.prob_seed.setValue(fixes.get("prob_seed", 12345))
                 self.enable_custom_fixes.setChecked(fixes.get("enable_custom_fixes", False))
                 self.custom_fixes_text.setPlainText(fixes.get("custom_fixes", ""))
 

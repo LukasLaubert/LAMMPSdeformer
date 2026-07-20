@@ -576,7 +576,7 @@ class LammpsScriptGenerator:
             cluster_lammps_cmd = job_submission_config.get("cluster_lammps_cmd", "lmp")
             srun_cmd = job_submission_config.get("srun_cmd", "srun")
             sbatch_cmd = job_submission_config.get("sbatch_cmd", "sbatch")
-            slurm_header = job_submission_config.get("slurm_header", "#!/bin/bash\n#SBATCH --job-name=lammps_simulation\n#SBATCH --partition=singlenode\n#SBATCH --nodes=1\n#SBATCH --ntasks-per-node=72\n#SBATCH --cpus-per-task=1\n#SBATCH --time=24:00:00\n#SBATCH --export=NONE\n#SBATCH --output=lammps_output_%j.txt\n#SBATCH --error=lammps_error_%j.txt")
+            slurm_header = job_submission_config.get("slurm_header", "#!/bin/bash\n -l#SBATCH --job-name=lammps_simulation\n#SBATCH --partition=singlenode\n#SBATCH --nodes=1\n#SBATCH --ntasks-per-node=72\n#SBATCH --cpus-per-task=1\n#SBATCH --time=24:00:00\n#SBATCH --export=NONE\n#SBATCH --output=lammps_output_%j.txt\n#SBATCH --error=lammps_error_%j.txt\n\nunset SLURM_EXPORT_ENV")
 
             # Generate master job file that accepts input file as argument
             job_lines = [
@@ -596,13 +596,13 @@ class LammpsScriptGenerator:
                 "echo 'Input file: $input'",
                 "",
                 "# Load modules",
-                "module load lammps",
-                "",
+                f"module load {job_submission_config.get('module_load', 'lammps')}",
+                "",                
                 "# Run LAMMPS with input file",
-                f"{srun_cmd} {cluster_lammps_cmd} -in \"$input\"",
-                "",
+                f"{srun_cmd} {cluster_lammps_cmd} -in \"$input.in\"",
+                
                 "echo 'Completed simulation: $MODEL_NAME'",
-                ""
+                
             ]
             
             # Write master job file with UNIX line endings
