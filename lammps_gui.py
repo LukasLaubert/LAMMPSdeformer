@@ -56,19 +56,14 @@ try:
                 self.bottom = bottom
                 self.top = top
     
-    print("Using PyQt6")
     
 except ImportError as e:
-    print(f"PyQt6 import failed: {e}")
-    print("Please install PyQt6 using: pip install PyQt6")
     sys.exit(1)
 
 # Import the script generator
 try:
     from script_generator import LammpsScriptGenerator as ScriptGen
 except ImportError as e:
-    print(f"Warning: Could not import script_generator: {e}")
-    print("The GUI will work but script generation may be limited.")
     ScriptGen = None
 
 class NumericTableWidgetItem(QTableWidgetItem):
@@ -147,7 +142,6 @@ class LammpsScriptGenerator(QMainWindow):
         
     def handle_exception(self, exc_type, exc_value, exc_traceback):
         """Handle uncaught exceptions and save settings"""
-        print(f"Uncaught exception: {exc_type.__name__}: {exc_value}")
         self.emergency_save()
         
         # Show error message
@@ -156,7 +150,7 @@ class LammpsScriptGenerator(QMainWindow):
                               f"The application encountered an error:\n{exc_type.__name__}: {exc_value}\n\n"
                               f"Your settings have been saved automatically.")
         except Exception:
-            print(f"Error showing message box: {exc_type.__name__}: {exc_value}")
+            pass
         
         # Call original exception handler
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -168,9 +162,8 @@ class LammpsScriptGenerator(QMainWindow):
             emergency_file = os.path.join(tempfile.gettempdir(), "lammps_gui_emergency_save.json")
             with open(emergency_file, 'w') as f:
                 json.dump(config, f, indent=2)
-            print(f"Emergency save completed: {emergency_file}")
         except Exception as e:
-            print(f"Emergency save failed: {e}")
+            pass
     
     def create_system_tab(self):
         """Create the system configuration tab"""
@@ -1457,7 +1450,6 @@ def main():
         window.show()
         sys.exit(app.exec())
     except Exception as e:
-        print(f"Error starting application: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

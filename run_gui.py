@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LAMMPS Input Script Generator Launcher - Clean PyQt6 Version
+LAMMPS Input Script Generator Launcher - PyQt6 Version
 """
 
 import sys
@@ -10,7 +10,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import and run the main application
-from lammps_gui_clean import main
+from lammps_gui import main
 
 if __name__ == "__main__":
     main()
