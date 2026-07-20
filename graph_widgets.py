@@ -1021,9 +1021,9 @@ class StudyWidget(QWidget):
         
         self.deform_axis_label = QLabel("<b>Deform Direction:</b>")
         self.deform_axis_combo = QComboBox()
-        self.deform_axis_combo.addItems(["x", "y", "z"])
-        self.deform_axis_combo.setMinimumWidth(30)
-        self.deform_axis_combo.setMaximumWidth(40)
+        self.deform_axis_combo.addItems(["x", "y", "z", "xy", "xz", "yz"])
+        self.deform_axis_combo.setMinimumWidth(40)
+        self.deform_axis_combo.setMaximumWidth(50)
         self.deform_axis_label.setVisible(True)
         self.deform_axis_combo.setVisible(True)
         self.deform_axis_combo.setStyleSheet(""" 
@@ -1059,6 +1059,12 @@ class StudyWidget(QWidget):
         controls_layout.addSpacing(5)
         controls_layout.addWidget(self.deform_scenario_label)
         controls_layout.addWidget(self.deform_scenario_combo)
+        
+        # Connect the axis combo to the scenario visibility function
+        self.deform_axis_combo.currentTextChanged.connect(self._update_scenario_visibility)
+        
+        # Initialize scenario visibility based on the current axis value
+        self._update_scenario_visibility(self.deform_axis_combo.currentText())
         
         controls_layout.addStretch()  # Push buttons to the right
         # Add buttons with right alignment
@@ -1486,6 +1492,9 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
         self.deform_scenario_combo.setCurrentText(state.get('deform_scenario', 'symmetric'))
 
+        # Update scenario visibility based on loaded axis
+        self._update_scenario_visibility(state.get('deform_axis', 'x'))
+
         self.set_mode(state.get('mode', 'Deformation'), adjust_values=False)
 
         ensemble_state = state.get('ensemble', {})
@@ -1588,6 +1597,22 @@ class StudyWidget(QWidget):
         self.npt_aniso_label.setVisible(is_npt)
         self.npt_aniso_combo.setVisible(is_npt)
 
+    def _update_scenario_visibility(self, axis):
+        """Hide/unhide the Deform Scenario option based on direction type and mode"""
+        # Hide the scenario options for shear directions (xy, xz, yz) or when in temperature mode
+        is_shear = axis in ["xy", "xz", "yz"]
+        is_temp_mode = self.mode == 'Temperature'
+        should_show_scenario = not is_shear and not is_temp_mode
+        self.deform_scenario_label.setVisible(should_show_scenario)
+        self.deform_scenario_combo.setVisible(should_show_scenario)
+        
+        # Update the tab to ensure proper layout
+        if self.parent() and self.parent().parent():
+            # Repaint the tab widget to update layout
+            self.parent().parent().repaint()
+
+
+
     def _on_bond_breakage_setting_changed(self):
         # Update UI state first
         self._update_bond_breakage_ui_state()
@@ -1661,8 +1686,9 @@ class StudyWidget(QWidget):
         self.temp_spinbox.setVisible(not is_temp_mode)
         self.deform_axis_label.setVisible(not is_temp_mode)
         self.deform_axis_combo.setVisible(not is_temp_mode)
-        self.deform_scenario_label.setVisible(not is_temp_mode)
-        self.deform_scenario_combo.setVisible(not is_temp_mode)
+        
+        # Update scenario visibility based on current axis and new mode
+        self._update_scenario_visibility(self.deform_axis_combo.currentText())
 
         self.graph_widget.set_mode(mode)
         self._update_graph_controls()

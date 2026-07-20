@@ -1394,7 +1394,7 @@ class LammpsGui(QMainWindow):
         thermo_freq_layout.addStretch()
         thermo_top_layout.addLayout(thermo_freq_layout, 2)
 
-        self.add_target_to_thermo_check = QCheckBox("Add Target Strain/Temp to Thermo")
+        self.add_target_to_thermo_check = QCheckBox("Add Target Strain/Temp to Thermo Output")
         self.add_target_to_thermo_check.setToolTip("If checked, adds the target strain/temperature for the current study step to the thermo output.")
         thermo_top_layout.addWidget(self.add_target_to_thermo_check, 2)
 

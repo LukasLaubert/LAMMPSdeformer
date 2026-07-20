@@ -353,17 +353,6 @@ class LammpsScriptGenerator:
                     f"fix stop_early all halt {halt_freq} tlimit > ${{maxtime}}",
                     ""
                 ])
-                
-                # Add triclinic box setting if NPT aniso is set to "tri"
-                ensemble_config = deform_study.get("ensemble", {})
-                ensemble = ensemble_config.get("ensemble", "NVT")
-                npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
-                if ensemble == "NPT" and npt_aniso == "tri":
-                    script_lines.extend([
-                        "# Triclinic boundaries are required for NPT anisotropic simulation with 'tri' setting",
-                        "change_box all triclinic",
-                        ""
-                    ])
             else:
                 # For non-restart case, read data and potential directly
                 script_lines.extend([
@@ -381,30 +370,34 @@ class LammpsScriptGenerator:
                         script_lines.append(f"include ../../{potential_path}")
                 script_lines.append("")
                 
-                # Add triclinic box setting if NPT aniso is set to "tri"
-                ensemble_config = deform_study.get("ensemble", {})
-                ensemble = ensemble_config.get("ensemble", "NVT")
-                npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
-                if ensemble == "NPT" and npt_aniso == "tri":
-                    script_lines.extend([
-                        "# Triclinic boundaries are required for NPT anisotropic simulation with 'tri' setting",
-                        "change_box all triclinic",
-                        ""
-                    ])
+            # Add triclinic box setting if NPT aniso is set to "tri"
+            ensemble_config = deform_study.get("ensemble", {})
+            ensemble = ensemble_config.get("ensemble", "NVT")
+            npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
+            if ensemble == "NPT" and npt_aniso == "tri":
+                script_lines.extend([
+                    "# Triclinic boundaries are required for NPT anisotropic simulation with 'tri' setting",
+                    "change_box all triclinic",
+                    ""
+                ])
 
             # Variables
             deform_axis = deform_study.get("deform_axis", "x")
-            script_lines.extend([
-                "#------------------------",
-                "# Variables",
-                "#------------------------",
-                f"variable L0{deform_axis} equal $(l{deform_axis})",
-                f"variable {deform_axis}lo0 equal $({deform_axis}lo)",
-                f"variable {deform_axis}hi0 equal $({deform_axis}hi)",
-                f"variable estrain_{deform_axis}{deform_axis} equal (l{deform_axis}-v_L0{deform_axis})/v_L0{deform_axis}",
-                f""
-                ""
-            ])
+            mode = deform_study.get("mode", "Deformation")
+            
+            # Only add the Variables section if in deformation mode (since only deformation mode has variables)
+            if mode == "Deformation":
+                script_lines.extend([
+                    "#------------------------",
+                    "# Variables",
+                    "#------------------------",
+                    f"variable L0{deform_axis} equal $(l{deform_axis})",
+                    f"variable {deform_axis}lo0 equal $({deform_axis}lo)",
+                    f"variable {deform_axis}hi0 equal $({deform_axis}hi)",
+                    f"variable estrain_{deform_axis}{deform_axis} equal (l{deform_axis}-v_L0{deform_axis})/v_L0{deform_axis}",
+                    ""
+                ])
+            # For temperature mode, we don't add the Variables section header at all, continuing to the next section
 
             # Fixes & Computes section
             fixes_computes_lines = []
@@ -634,9 +627,16 @@ class LammpsScriptGenerator:
                 "#------------------------",
                 "# Deformation",
                 "#------------------------",
-                f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0{deform_axis}}}\"",
-                ""
             ])
+            
+            # Only add the print statement if in deformation mode since it references deformation variables
+            if mode == "Deformation":
+                script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0{deform_axis}}}\"")
+            else:
+                # For temperature mode, we can add a different print statement if needed
+                script_lines.append(f"print \"Starting temperature simulation with initial temperature: {points[0][1] if points else 300.0}\"")
+            
+            script_lines.append("")
 
             points = deform_study.get("data_points", [])
             mode = deform_study.get("mode", "Deformation")
@@ -667,27 +667,41 @@ class LammpsScriptGenerator:
 
 
                     if mode == "Deformation":
-                        # Calculate new boundaries based on engineering strain from initial state
-                        new_lo_var = f"{deform_axis}lo_target_{i+1}"
-                        new_hi_var = f"{deform_axis}hi_target_{i+1}"
+                        # Check if this is a shear deformation (xy, xz, yz) or tensile (x, y, z)
+                        is_shear = deform_axis in ["xy", "xz", "yz"]
                         
-                        deform_scenario = deform_study.get("deform_scenario", "symmetric")
-                        script_lines.append(f"# Target engineering strain: {end_y:.6f}, Scenario: {deform_scenario}")
+                        if is_shear:
+                            # For shear deformation, use the final style with the tilt factor
+                            script_lines.append(f"# Shear deformation in {deform_axis} direction")
+                            
+                            # For shear, we directly use the strain value as the tilt factor change
+                            # The strain value represents the engineering strain (change in tilt)
+                            if abs(y_change) > 1e-12:
+                                # For shear deformation, we use the 'xy final' format
+                                script_lines.append(f"fix deform all deform 1 {deform_axis} final {end_y} units box")
+                        else:
+                            # For tensile deformation (x, y, z), use the existing logic
+                            # Calculate new boundaries based on engineering strain from initial state
+                            new_lo_var = f"{deform_axis}lo_target_{i+1}"
+                            new_hi_var = f"{deform_axis}hi_target_{i+1}"
+                            
+                            deform_scenario = deform_study.get("deform_scenario", "symmetric")
+                            script_lines.append(f"# Target engineering strain: {end_y:.6f}, Scenario: {deform_scenario}")
 
-                        if deform_scenario == "shift hi, fix lo":
-                            script_lines.append(f"variable {new_lo_var} equal v_{deform_axis}lo0")
-                            script_lines.append(f'variable {new_hi_var} equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {end_y})"')
-                        elif deform_scenario == "shift lo, fix hi":
-                            script_lines.append(f'variable {new_lo_var} equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {end_y})"')
-                            script_lines.append(f"variable {new_hi_var} equal v_{deform_axis}hi0")
-                        else:  # symmetric
-                            script_lines.append(f'variable {new_lo_var} equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {end_y}) / 2"')
-                            script_lines.append(f'variable {new_hi_var} equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {end_y}) / 2"')
-                        
-                        script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
+                            if deform_scenario == "shift hi, fix lo":
+                                script_lines.append(f"variable {new_lo_var} equal v_{deform_axis}lo0")
+                                script_lines.append(f'variable {new_hi_var} equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {end_y})"')
+                            elif deform_scenario == "shift lo, fix hi":
+                                script_lines.append(f'variable {new_lo_var} equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {end_y})"')
+                                script_lines.append(f"variable {new_hi_var} equal v_{deform_axis}hi0")
+                            else:  # symmetric
+                                script_lines.append(f'variable {new_lo_var} equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {end_y}) / 2"')
+                                script_lines.append(f'variable {new_hi_var} equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {end_y}) / 2"')
+                            
+                            script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
 
-                        if abs(y_change) > 1e-12:
-                            script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box")
+                            if abs(y_change) > 1e-12:
+                                script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box")
 
                         # Apply ensemble for this segment
                         if ensemble == "NVT":
@@ -812,7 +826,8 @@ class LammpsScriptGenerator:
                 full_local_cmd = local_lammps_cmd
 
             if job_submission_config.get("enable_restart", False):
-                full_local_cmd += " -var restart FALSE -var maxtime 86400"
+                log_file_name = job_submission_config.get("log_file_name", "job.log")
+                full_local_cmd += f" -log {log_file_name} -var restart FALSE -var maxtime 86400"
             
             # Local execution should not have restart logic.
             for study in deform_studies:
@@ -928,10 +943,10 @@ class LammpsScriptGenerator:
                     "  echo \"Moving $latest_restart to restart_files/${MODEL_NAME}.restart for LAMMPS to use\"",
                     "  mv \"$latest_restart\" \"restart_files/${MODEL_NAME}.restart\"",
                     "  # Run LAMMPS with restart flag set to TRUE",
-                    f"  {srun_cmd} {cluster_lammps_cmd} -in \"$input\" -var restart TRUE -var maxtime $MAXTIME",
+                    f"  {srun_cmd} {cluster_lammps_cmd} -in \"$input\" -log none -var restart TRUE -var maxtime $MAXTIME",
                     "else",
                     "  # No restart files, run initial simulation",
-                    f"  {srun_cmd} {cluster_lammps_cmd} -in \"$input\" -var restart FALSE -var maxtime $MAXTIME",
+                    f"  {srun_cmd} {cluster_lammps_cmd} -in \"$input\" -log none -var restart FALSE -var maxtime $MAXTIME",
                     "fi",
                     "",
                                         "# Check if a restart file was created, indicating the job was halted and should be resubmitted.",
@@ -947,6 +962,9 @@ class LammpsScriptGenerator:
                                         "    echo \"WARNING: Job took less than 60s, no resubmission to prevent loops!\"",
                                         "  fi",
                                         "fi",
+                                        "",
+                                        "# Delete the restart_files folder before returning to submit directory",
+                                        "rm -rf restart_files",
                                         "",
                                         "cd \"$SLURM_SUBMIT_DIR\"",
                                         "echo 'Completed simulation: $MODEL_NAME'",                 ]
@@ -1040,6 +1058,7 @@ class LammpsScriptGenerator:
             units = system_config.get("units", "metal")
             
             base_settings_lines = [
+                "",
                 "#------------------------",
                 "# Basic LAMMPS settings",
                 "#------------------------",
