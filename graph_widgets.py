@@ -308,9 +308,9 @@ class StudyWidget(QWidget):
         layout.setContentsMargins(0,5,0,0)
         layout.setSpacing(2)
         controls_layout = QHBoxLayout()
-        self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100)
-        self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-1e9, 0.0); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3)
-        self.max_strain_spinbox = QDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(0.0, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setDecimals(3)
+        self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
+        self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-1e9, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3); self.min_strain_spinbox.setKeyboardTracking(False)
+        self.max_strain_spinbox = QDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(-1e9, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setDecimals(3); self.max_strain_spinbox.setKeyboardTracking(False)
 
         self.undo_button = QPushButton("↩"); self.redo_button = QPushButton("↪")
         self.generate_button = QPushButton("Generate Scheme..."); self.reset_button = QPushButton("Reset Graph")
@@ -369,13 +369,173 @@ class StudyWidget(QWidget):
         self.graph_widget.dataChanged.connect(self.dataChanged); self.reset_button.clicked.connect(self.graph_widget.reset_graph); self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
         self._save_state_for_undo()
+
     def _update_graph_controls(self):
-        max_steps, min_strain, max_strain = self.max_steps_spinbox.value(), self.min_strain_spinbox.value(), self.max_strain_spinbox.value()
+        max_steps = self.max_steps_spinbox.value()
+        min_strain = self.min_strain_spinbox.value()
+        max_strain = self.max_strain_spinbox.value()
+
+        # Block signals to prevent recursive calls
+        self.min_strain_spinbox.blockSignals(True)
+        self.max_strain_spinbox.blockSignals(True)
+
+        if min_strain > 0:
+            min_strain = -min_strain
+            self.min_strain_spinbox.setValue(min_strain)
+        
+        if max_strain < 0:
+            max_strain = -max_strain
+            self.max_strain_spinbox.setValue(max_strain)
+
+        # Unblock signals
+        self.min_strain_spinbox.blockSignals(False)
+        self.max_strain_spinbox.blockSignals(False)
+
         self.max_steps_spinbox.setSingleStep(max(1, int(max_steps * 0.02)))
         self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_strain) * 0.02) if min_strain != 0 else 0.001)
         self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_strain) * 0.02) if max_strain != 0 else 0.001)
-        if min_strain >= max_strain: self.min_strain_spinbox.setValue(round(max_strain - 0.01, 3))
-        self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), max_strain)
+
+        if min_strain >= max_strain:
+            self.min_strain_spinbox.blockSignals(True)
+            self.min_strain_spinbox.setValue(round(max_strain - 0.01, 3))
+            self.min_strain_spinbox.blockSignals(False)
+
+        self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), self.max_strain_spinbox.value())
+
+    def _show_preset_dialog(self):
+        dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, self)
+        if dialog.exec():
+            scheme, params = dialog.get_parameters()
+            self._last_scheme = scheme
+            if scheme == "Staircase Loading":
+                if params['direction'] == "Tension" and self.max_strain_spinbox.value() <= 0: QMessageBox.warning(self, "Invalid Parameter", "Max Strain must be > 0 for a Tension staircase."); return
+                if params['direction'] == "Compression" and self.min_strain_spinbox.value() >= 0: QMessageBox.warning(self, "Invalid Parameter", "Min Strain must be < 0 for a Compression staircase."); return
+                self._last_staircase_params = params; self.graph_widget.generate_staircase_scheme(params['cycles'], params['factor'], params['direction'])
+            elif scheme == "Cyclic Loading":
+                self._last_cyclic_params = params; self.graph_widget.generate_cyclic_scheme(params['cycles'], params['relax_factor'], params['start_with'])
+
+    def _setup_undo_redo(self):
+        self.undo_action = QAction("Undo", self)
+        self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
+        self.undo_action.triggered.connect(self.undo)
+        self.addAction(self.undo_action)
+
+        self.redo_action = QAction("Redo", self)
+        self.redo_action.setShortcut(QKeySequence("Ctrl+Y"))
+        self.redo_action.triggered.connect(self.redo)
+        self.addAction(self.redo_action)
+
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button.clicked.connect(self.redo)
+
+        # Use a single connection for all change events to prevent duplicate recordings
+        self.graph_widget.dataChanged.connect(self._schedule_undo_save)
+        
+        # Connect editingFinished signals for spinboxes
+        self.max_steps_spinbox.editingFinished.connect(self._schedule_undo_save)
+        self.min_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
+        self.max_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
+        
+        # Timer to debounce undo saves
+        self._undo_debounce_timer = QTimer()
+        self._undo_debounce_timer.setSingleShot(True)
+        self._undo_debounce_timer.timeout.connect(self._save_state_for_undo)
+        
+    def _schedule_undo_save(self):
+        # Debounce undo saves to prevent multiple recordings of the same user action
+        self._undo_debounce_timer.start(50)  # 50ms debounce
+
+        self.update_undo_redo_buttons()
+
+    def _save_state_for_undo(self):
+        state = self.get_undo_state()
+        if not self._undo_stack or self._undo_stack[-1] != state:
+            self._undo_stack.append(state)
+            self._redo_stack.clear()
+            self.update_undo_redo_buttons()
+
+    def undo(self):
+        if len(self._undo_stack) > 1:
+            # Move current state to redo stack
+            current_state = self._undo_stack.pop()
+            self._redo_stack.append(current_state)
+            # Restore previous state
+            previous_state = self._undo_stack[-1]
+            self.set_undo_state(previous_state)
+            self.update_undo_redo_buttons()
+
+    def redo(self):
+        if self._redo_stack:
+            # Move state from redo stack back to undo stack
+            state_to_redo = self._redo_stack.pop()
+            self._undo_stack.append(state_to_redo)
+            # Apply the state
+            self.set_undo_state(state_to_redo)
+            self.update_undo_redo_buttons()
+
+    def update_undo_redo_buttons(self):
+        self.undo_button.setEnabled(len(self._undo_stack) > 1)
+        self.redo_button.setEnabled(len(self._redo_stack) > 0)
+        self.undo_action.setEnabled(len(self._undo_stack) > 1)
+        self.redo_action.setEnabled(len(self._redo_stack) > 0)
+
+    def get_undo_state(self):
+        return {
+            'data_points': [QPointF(p.x(), p.y()) for p in self.graph_widget.get_data_points()],
+            'max_steps': self.max_steps_spinbox.value(),
+            'min_strain': self.min_strain_spinbox.value(),
+            'max_strain': self.max_strain_spinbox.value(),
+        }
+
+    def set_undo_state(self, state):
+        self.max_steps_spinbox.blockSignals(True)
+        self.min_strain_spinbox.blockSignals(True)
+        self.max_strain_spinbox.blockSignals(True)
+
+        self.max_steps_spinbox.setValue(state['max_steps'])
+        self.min_strain_spinbox.setValue(state['min_strain'])
+        self.max_strain_spinbox.setValue(state['max_strain'])
+
+        self.max_steps_spinbox.blockSignals(False)
+        self.min_strain_spinbox.blockSignals(False)
+        self.max_strain_spinbox.blockSignals(False)
+
+        self._update_graph_controls()
+        self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in state['data_points']]
+        self.graph_widget.update()
+        self.dataChanged.emit()
+
+    def _update_graph_controls(self):
+        max_steps = self.max_steps_spinbox.value()
+        min_strain = self.min_strain_spinbox.value()
+        max_strain = self.max_strain_spinbox.value()
+
+        # Block signals to prevent recursive calls
+        self.min_strain_spinbox.blockSignals(True)
+        self.max_strain_spinbox.blockSignals(True)
+
+        if min_strain > 0:
+            min_strain = -min_strain
+            self.min_strain_spinbox.setValue(min_strain)
+        
+        if max_strain < 0:
+            max_strain = -max_strain
+            self.max_strain_spinbox.setValue(max_strain)
+
+        # Unblock signals
+        self.min_strain_spinbox.blockSignals(False)
+        self.max_strain_spinbox.blockSignals(False)
+
+        self.max_steps_spinbox.setSingleStep(max(1, int(max_steps * 0.02)))
+        self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_strain) * 0.02) if min_strain != 0 else 0.001)
+        self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_strain) * 0.02) if max_strain != 0 else 0.001)
+
+        if min_strain >= max_strain:
+            self.min_strain_spinbox.blockSignals(True)
+            self.min_strain_spinbox.setValue(round(max_strain - 0.01, 3))
+            self.min_strain_spinbox.blockSignals(False)
+
+        self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), self.max_strain_spinbox.value())
     def _show_preset_dialog(self):
         dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, self)
         if dialog.exec():
@@ -403,9 +563,11 @@ class StudyWidget(QWidget):
 
         # Use a single connection for all change events to prevent duplicate recordings
         self.graph_widget.dataChanged.connect(self._schedule_undo_save)
-        self.max_steps_spinbox.valueChanged.connect(self._schedule_undo_save)
-        self.min_strain_spinbox.valueChanged.connect(self._schedule_undo_save)
-        self.max_strain_spinbox.valueChanged.connect(self._schedule_undo_save)
+        
+        # Connect editingFinished signals for spinboxes
+        self.max_steps_spinbox.editingFinished.connect(self._schedule_undo_save)
+        self.min_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
+        self.max_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
         
         # Timer to debounce undo saves
         self._undo_debounce_timer = QTimer()
