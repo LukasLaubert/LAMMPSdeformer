@@ -140,7 +140,7 @@ class LammpsScriptGenerator:
                     os.makedirs(system_folder, exist_ok=True)
                     
                     # Generate script for this study-system combination
-                    model_name = f"{system_name}_{study_name}"
+                    model_name = f"{study_name}_{system_name}"  # Changed to study_name_first
                     data_file_relative_path = data_file_dest_paths[system_file]
                     
                     result = self.generate_single_script(
@@ -668,7 +668,7 @@ class LammpsScriptGenerator:
                 
                 for system_file in system_files:
                     system_name = Path(system_file).stem
-                    model_name = f"{system_name}_{study_name}"
+                    model_name = f"{study_name}_{system_name}"  # Changed to study_name_first
                     
                     # Always use consistent file structure: study/system/model_name.in
                     script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
@@ -699,14 +699,18 @@ class LammpsScriptGenerator:
                         if current_os in ['linux', 'darwin']:
                             script_lines.extend([
                                 f"echo 'Submitting job: {model_name}'",
-                                f"sbatch --export=INPUT_FILE='{script_relative_path}' lammps_simulation.job",
+                                f"cd {sim_directory}",
+                                f"sbatch --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"",
+                                f"cd ../../",
                                 f"echo 'Job submitted: {model_name}'",
                                 ""
                             ])
                         else:  # Windows
                             script_lines.extend([
                                 f"echo 'Submitting job: {model_name}'",
-                                f"sbatch --export=INPUT_FILE='{script_relative_path}' lammps_simulation.job",
+                                f"cd {sim_directory}",
+                                f"sbatch --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"",
+                                f"cd ../../",
                                 f"echo 'Job submitted: {model_name}'",
                                 ""
                             ])
@@ -830,18 +834,16 @@ class LammpsScriptGenerator:
                 
                 for system_file in system_files:
                     system_name = Path(system_file).stem
-                    model_name = f"{system_name}_{study_name}"
+                    model_name = f"{study_name}_{system_name}"  # Changed to study_name_first
                     
                     # Determine input file path and directory
                     input_file_path = f"{model_name}.in"
                     sim_directory = f"{study_name}/{system_name}"
                     
                     script_lines.extend([
-                        f"echo 'Submitting job for simulation: {model_name}'",
                         f"cd {sim_directory}",
-                        f"sbatch {input_file_path} lammps_simulation.job",
+                        f"sbatch --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{model_name}\"",
                         f"cd ../../",
-                        f"echo 'Job submitted for: {model_name}'",
                         ""
                     ])
             
