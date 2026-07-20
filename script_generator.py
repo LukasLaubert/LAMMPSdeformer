@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-LAMMPS Script Generator - Enhanced Version
+LAMMPS Script Generator - Redesigned Version
 
 Handles the generation of LAMMPS input scripts and cluster job files
 based on user configuration with support for symmetric wall movement,
-engineering strain, and proper units handling.
+engineering strain, proper units handling, and structured file generation.
 """
 
 import os
@@ -13,6 +13,7 @@ import glob
 import subprocess
 import tempfile
 import math
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -29,78 +30,98 @@ class LammpsScriptGenerator:
         try:
             self.generated_files = []
             
-            # Check if multi-system processing is enabled
-            if self.config.get("multisystem", {}).get("enable_multi_system", False):
-                # Process multiple systems
-                system_files = self.get_system_files()
-                
+            # Get system path and determine if it's single file or directory
+            system_path = self.config.get("system", {}).get("system_path", "")
+            if not system_path or not os.path.exists(system_path):
+                return {"success": False, "message": "System path does not exist."}
+            
+            # Determine system files
+            if os.path.isfile(system_path):
+                system_files = [system_path]
+                is_multi_system = False
+            elif os.path.isdir(system_path):
+                system_files = glob.glob(os.path.join(system_path, "*.data"))
+                is_multi_system = len(system_files) > 1
                 if not system_files:
-                    return {"success": False, "message": "No system files found."}
-                    
-                # Check units consistency
+                    return {"success": False, "message": "No .data files found in the specified directory."}
+            else:
+                return {"success": False, "message": "Invalid system path."}
+            
+            # Check if multi-system processing is enabled
+            enable_multi_system = self.config.get("multistudy", {}).get("enable_multi_system", False)
+            if is_multi_system and not enable_multi_system:
+                return {"success": False, "message": "Multiple .data files found but multi-system processing is not enabled."}
+            
+            # Create output directory structure
+            output_path = self.config.get("output", {}).get("output_path", "")
+            if not output_path:
+                output_path = os.path.dirname(system_files[0])
+            
+            base_output_dir = os.path.join(output_path, "lammps_output")
+            os.makedirs(base_output_dir, exist_ok=True)
+            
+            # Get deformation studies
+            deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
+            if not deform_studies:
+                return {"success": False, "message": "No deformation studies defined."}
+            
+            # Check units consistency if multi-system
+            if is_multi_system:
                 units_check = self.check_units_consistency(system_files)
                 if not units_check["consistent"]:
                     return {"success": False, "message": units_check["message"]}
-                    
-                # Check if multi-deformation is enabled
-                if self.config.get("multistudy", {}).get("enable_multi_deform", False):
-                    # Process multiple deformation studies for each system
-                    deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
-                    
-                    if not deform_studies:
-                        return {"success": False, "message": "No deformation studies defined."}
-                        
-                    for system_file in system_files:
-                        for study in deform_studies:
-                            result = self.generate_single_script(system_file, study)
-                            if not result["success"]:
-                                return result
-                else:
-                    # Process single deformation for each system
-                    for system_file in system_files:
-                        result = self.generate_single_script(system_file)
-                        if not result["success"]:
-                            return result
-            else:
-                # Process single system
-                data_file = self.config.get("system", {}).get("data_file", "")
+            
+            # Generate scripts for each system and deformation study
+            for i, system_file in enumerate(system_files):
+                # Create system-specific output directory
+                system_name = Path(system_file).stem
+                system_output_dir = os.path.join(base_output_dir, f"system_{i+1}_{system_name}")
+                os.makedirs(system_output_dir, exist_ok=True)
                 
-                if not data_file or not os.path.exists(data_file):
-                    return {"success": False, "message": "Data file not found."}
+                # Copy data file to output directory
+                data_file_dest = os.path.join(system_output_dir, f"{system_name}.data")
+                shutil.copy2(system_file, data_file_dest)
+                
+                # Copy potential file if used
+                system_config = self.config.get("system", {})
+                if system_config.get("use_potential_file", False):
+                    potential_file = system_config.get("potential_file", "")
+                    if os.path.exists(potential_file):
+                        potential_dest = os.path.join(system_output_dir, Path(potential_file).name)
+                        shutil.copy2(potential_file, potential_dest)
+                
+                # Generate scripts for each deformation study
+                for j, study in enumerate(deform_studies):
+                    study_name = study.get("name", f"study{j+1}")
+                    model_name = f"{system_name}_{study_name}"
                     
-                # Check if multi-deformation is enabled
-                if self.config.get("multistudy", {}).get("enable_multi_deform", False):
-                    # Process multiple deformation studies
-                    deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
+                    # Generate script
+                    result = self.generate_single_script(
+                        system_file, model_name, study, 
+                        system_output_dir, data_file_dest
+                    )
                     
-                    if not deform_studies:
-                        return {"success": False, "message": "No deformation studies defined."}
-                        
-                    for study in deform_studies:
-                        result = self.generate_single_script(data_file, study)
-                        if not result["success"]:
-                            return result
-                else:
-                    # Process single deformation
-                    result = self.generate_single_script(data_file)
                     if not result["success"]:
                         return result
-                        
+                    
+                    # Generate job file if cluster execution is enabled
+                    if self.config.get("cluster", {}).get("execution_mode") == "cluster":
+                        job_result = self.generate_job_file(
+                            system_file, model_name, result["script_file"], system_output_dir
+                        )
+                        if not job_result["success"]:
+                            return job_result
+            
+            # Generate execution script for multi-system
+            if is_multi_system and self.config.get("multistudy", {}).get("sequential_execution", True):
+                exec_script_result = self.generate_execution_script(base_output_dir, system_files, deform_studies)
+                if not exec_script_result["success"]:
+                    return exec_script_result
+            
             return {"success": True, "message": "All scripts generated successfully.", "files": self.generated_files}
             
         except Exception as e:
             return {"success": False, "message": f"Error generating scripts: {str(e)}"}
-        
-    def get_system_files(self):
-        """Get list of system files based on configuration"""
-        system_path = self.config.get("multisystem", {}).get("multi_system_path", "")
-        pattern = self.config.get("multisystem", {}).get("multi_system_pattern", "*.data")
-        
-        if not system_path:
-            return []
-            
-        search_pattern = os.path.join(system_path, pattern)
-        return glob.glob(search_pattern)
         
     def check_units_consistency(self, system_files):
         """Check if all data files have the same units"""
@@ -122,54 +143,27 @@ class LammpsScriptGenerator:
                 
         return {"consistent": True, "units": first_units}
         
-    def generate_single_script(self, data_file, deform_study=None):
+    def generate_single_script(self, data_file, model_name, deform_study, output_dir, data_file_dest):
         """Generate a single LAMMPS input script"""
         try:
-            # Create output directory if it doesn't exist
-            output_path = self.config.get("output", {}).get("output_path", "")
-            if not output_path:
-                output_path = os.path.dirname(data_file)
-                
-            os.makedirs(output_path, exist_ok=True)
-            
-            # Generate model name
-            model_name = self.config.get("output", {}).get("model_name", "model")
-            if deform_study:
-                study_name = deform_study.get("name", "study")
-                model_name = f"{model_name}_{study_name}"
-                
             # Generate script filename
-            script_filename = os.path.join(output_path, f"{model_name}.in")
+            script_filename = os.path.join(output_dir, f"{model_name}.in")
             
             # Generate the script content
-            script_content = self.generate_script_content(data_file, model_name, deform_study)
+            script_content = self.generate_script_content(data_file_dest, model_name, deform_study)
             
             # Write the script to file
-            try:
-                with open(script_filename, 'w') as f:
-                    f.write(script_content)
-                self.generated_files.append(script_filename)
-            except Exception as e:
-                return {"success": False, "message": f"Failed to write script file: {str(e)}"}
-                
-            # Generate job file if cluster execution is enabled
-            if self.config.get("cluster", {}).get("execution_mode") == "cluster":
-                job_filename = os.path.join(output_path, f"{model_name}.job")
-                job_content = self.generate_job_file(data_file, model_name, script_filename)
-                
-                try:
-                    with open(job_filename, 'w') as f:
-                        f.write(job_content)
-                    self.generated_files.append(job_filename)
-                except Exception as e:
-                    return {"success": False, "message": f"Failed to write job file: {str(e)}"}
-                
-            return {"success": True, "message": f"Script generated: {script_filename}"}
+            with open(script_filename, 'w') as f:
+                f.write(script_content)
+            
+            self.generated_files.append(script_filename)
+            
+            return {"success": True, "message": f"Script generated: {script_filename}", "script_file": script_filename}
             
         except Exception as e:
             return {"success": False, "message": f"Error generating script: {str(e)}"}
         
-    def generate_script_content(self, data_file, model_name, deform_study=None):
+    def generate_script_content(self, data_file, model_name, deform_study):
         """Generate the content of a LAMMPS input script"""
         try:
             system_config = self.config.get("system", {})
@@ -211,10 +205,11 @@ class LammpsScriptGenerator:
             
             if system_config.get("use_potential_file", False):
                 potential_file = system_config.get("potential_file", "")
-                if os.path.exists(potential_file):
-                    script_lines.append(f"include {potential_file}")
+                potential_name = Path(potential_file).name
+                if os.path.exists(os.path.join(os.path.dirname(data_file), potential_name)):
+                    script_lines.append(f"include {potential_name}")
                 else:
-                    script_lines.append(f"# Warning: Potential file not found: {potential_file}")
+                    script_lines.append(f"# Warning: Potential file not found: {potential_name}")
             script_lines.append("")
             
             # Add neighbor settings
@@ -236,7 +231,6 @@ class LammpsScriptGenerator:
             ensemble = system_config.get("ensemble", "NVT")
             temp_init = system_config.get("temp_init", 300.0)
             temp_end = system_config.get("temp_end", 300.0)
-            initial_velocity_seed = system_config.get("initial_velocity_seed", 12345)
             
             script_lines.extend([
                 "#------------------------",
@@ -244,20 +238,19 @@ class LammpsScriptGenerator:
                 "#------------------------"
             ])
             
-            # Initial velocity
-            script_lines.extend([
-                "# Initial velocity",
-                f"velocity all create {temp_init} {initial_velocity_seed} dist gaussian loop geom",
-                ""
-            ])
+            # Velocity initialization (optional)
+            if system_config.get("enable_velocity", True):
+                initial_velocity_seed = system_config.get("initial_velocity_seed", 12345)
+                damping_factor = system_config.get("damping_factor", 100.0)
+                
+                script_lines.extend([
+                    "# Initial velocity",
+                    f"velocity all create {temp_init} {initial_velocity_seed} dist gaussian loop geom",
+                    ""
+                ])
             
-            # Timestep with units conversion
+            # Timestep
             timestep = system_config.get("timestep", 0.001)
-            timestep_units = system_config.get("timestep_units", "ps")
-            
-            # Convert timestep based on units
-            timestep = self.convert_timestep(timestep, timestep_units, units)
-            
             script_lines.extend([
                 "# Timestep",
                 f"timestep {timestep}",
@@ -266,37 +259,61 @@ class LammpsScriptGenerator:
             
             # Ensemble-specific fixes
             if ensemble == "NVT":
-                script_lines.extend([
-                    "# NVT ensemble",
-                    f"fix nvt all nvt temp {temp_init} {temp_end} 0.1",
-                    ""
-                ])
+                if system_config.get("enable_velocity", True):
+                    damping_factor = system_config.get("damping_factor", 100.0)
+                    script_lines.extend([
+                        "# NVT ensemble",
+                        f"fix nvt all nvt temp {temp_init} {temp_end} $({damping_factor}*dt)",
+                        ""
+                    ])
+                else:
+                    script_lines.extend([
+                        "# NVT ensemble",
+                        f"fix nvt all nvt temp {temp_init} {temp_end} 0.1",
+                        ""
+                    ])
             elif ensemble == "NPT":
                 pressure = system_config.get("pressure", 1.0)
-                script_lines.extend([
-                    "# NPT ensemble",
-                    f"fix npt all npt temp {temp_init} {temp_end} 0.1 iso {pressure} {pressure} 1.0",
-                    ""
-                ])
+                if system_config.get("enable_velocity", True):
+                    damping_factor = system_config.get("damping_factor", 100.0)
+                    script_lines.extend([
+                        "# NPT ensemble",
+                        f"fix npt all npt temp {temp_init} {temp_end} $({damping_factor}*dt) iso {pressure} {pressure} 1.0",
+                        ""
+                    ])
+                else:
+                    script_lines.extend([
+                        "# NPT ensemble",
+                        f"fix npt all npt temp {temp_init} {temp_end} 0.1 iso {pressure} {pressure} 1.0",
+                        ""
+                    ])
             
-            # Handle wall atoms exclusion for wall movement
-            if deform_config.get("method") == "wall_movement":
+            # Handle wall atoms for wall movement
+            method = deform_study.get("method", "fix_deform")
+            if method == "wall_movement":
+                wall_thickness = system_config.get("wall_thickness", 5.0)
+                axis = deform_study.get("axis", "x")
+                
                 script_lines.extend([
                     "#------------------------",
                     "# Wall atom handling",
                     "#------------------------",
+                    f"# Define wall atoms (outer {wall_thickness}% of box in {axis} direction)",
+                    f"variable wall_thickness equal {wall_thickness/100.0}",
+                    f"variable box_{axis} equal lz",  # This should be the actual box dimension
+                    f"variable wall_pos equal v_wall_thickness*v_box_{axis}",
+                    f"group wall_atoms region block INF INF INF INF INF INF EDGE EDGE EDGE",
+                    f"group mobile_atoms subtract all wall_atoms",
                     "# Exclude wall atoms from integration",
-                    "group wall_atoms type 2",  # Assuming type 2 is wall atoms
-                    "group mobile_atoms subtract all wall_atoms",
                     "fix integrate mobile_atoms nve",
                     ""
                 ])
             
             # Deformation
-            if deform_config.get("method") == "fix_deform":
-                deform_params = self.get_deform_parameters(deform_config, deform_study)
-                
-                if deform_params:
+            deform_params = self.get_deformation_parameters(deform_study, system_config)
+            
+            if deform_params:
+                if method == "fix_deform":
                     script_lines.extend([
                         "#------------------------",
                         "# Deformation",
@@ -304,54 +321,43 @@ class LammpsScriptGenerator:
                         f"fix deform all deform 1 {deform_params['axis']} {deform_params['style']} {deform_params['rate']} remap x",
                         ""
                     ])
-                else:
-                    script_lines.extend([
-                        "#------------------------",
-                        "# Deformation (skipped - invalid parameters)",
-                        "#------------------------",
-                        "# Invalid deformation parameters",
-                        ""
-                    ])
-            else:
-                # Wall movement
-                wall_params = self.get_wall_parameters(deform_config, deform_study)
-                
-                if wall_params:
+                elif method == "wall_movement":
                     script_lines.extend([
                         "#------------------------",
                         "# Wall movement",
                         "#------------------------"
                     ])
                     
-                    # Handle symmetric wall movement
-                    if wall_params['direction'] == 'symmetric':
+                    # Handle different wall directions
+                    direction = deform_params.get('direction', 'positive')
+                    if direction == 'symmetric':
                         # Create two walls moving in opposite directions
                         script_lines.extend([
                             "# Symmetric wall movement - both walls moving",
-                            f"fix wall_pos all wall/reflect {wall_params['axis']} EDGE {wall_params['velocity']}",
-                            f"fix wall_neg all wall/reflect {wall_params['axis']} 0.0 {-wall_params['velocity']}",
+                            f"fix wall_pos all wall/reflect {deform_params['axis']} EDGE {deform_params['velocity']}",
+                            f"fix wall_neg all wall/reflect {deform_params['axis']} 0.0 {-deform_params['velocity']}",
                             ""
                         ])
                     else:
                         # Single wall movement
-                        edge = "EDGE" if wall_params['direction'] == 'positive' else "0.0"
+                        edge = "EDGE" if direction == 'positive' else "0.0"
                         script_lines.extend([
                             "# Single wall movement",
-                            f"fix wall_move all wall/reflect {wall_params['axis']} {edge} {wall_params['velocity']}",
+                            f"fix wall_move all wall/reflect {deform_params['axis']} {edge} {deform_params['velocity']}",
                             ""
                         ])
-                else:
-                    script_lines.extend([
-                        "#------------------------",
-                        "# Wall movement (skipped - invalid parameters)",
-                        "#------------------------",
-                        "# Invalid wall parameters",
-                        ""
-                    ])
+            else:
+                script_lines.extend([
+                    "#------------------------",
+                    "# Deformation (skipped - invalid parameters)",
+                    "#------------------------",
+                    "# Invalid deformation parameters",
+                    ""
+                ])
             
             # Output settings
-            thermo_output_freq = deform_config.get("thermo_output_freq", 100)
-            trj_output_freq = deform_config.get("trj_output_freq", 1000)
+            thermo_output_freq = deform_study.get("thermo_freq", 100)
+            trj_output_freq = deform_study.get("thermo_freq", 1000)  # Use same as thermo for simplicity
             
             script_lines.extend([
                 "#------------------------",
@@ -384,11 +390,9 @@ class LammpsScriptGenerator:
                 trj_output_items = output_config.get("trj_output_items", "id type x y z fx fy fz")
                 
                 # Create output directory if it doesn't exist
-                output_dir = os.path.join(os.path.dirname(data_file), "output")
-                os.makedirs(output_dir, exist_ok=True)
-                
+                output_dir = "output"
                 script_lines.extend([
-                    f"dump trajectory all custom {trj_output_freq} output/{model_name}.{traj_format} {trj_output_items}",
+                    f"dump trajectory all custom {trj_output_freq} {output_dir}/{model_name}.{traj_format} {trj_output_items}",
                     ""
                 ])
             
@@ -413,7 +417,7 @@ class LammpsScriptGenerator:
                     ])
             
             # Run simulation
-            run_steps = deform_config.get("run_steps", 10000)
+            run_steps = deform_study.get("steps", 10000)
             script_lines.extend([
                 "#------------------------",
                 "# Run simulation",
@@ -429,132 +433,186 @@ class LammpsScriptGenerator:
         except Exception as e:
             return f"# Error generating script content: {str(e)}"
         
-    def convert_timestep(self, timestep, timestep_units, system_units):
-        """Convert timestep based on units"""
-        # If units match, no conversion needed
-        if timestep_units == system_units:
-            return timestep
-            
-        # Conversion factors to base units (seconds)
-        to_seconds = {
-            'fs': 1e-15,
-            'ps': 1e-12,
-            'ns': 1e-9,
-            's': 1.0
-        }
+    def get_deformation_parameters(self, deform_study, system_config):
+        """Get deformation parameters based on study configuration"""
+        method = deform_study.get("method", "fix_deform")
+        axis = deform_study.get("axis", "x")
+        style_dir = deform_study.get("style_dir", "final")
+        steps = deform_study.get("steps", 10000)
         
-        # Convert input to seconds
-        if timestep_units in to_seconds:
-            timestep_seconds = timestep * to_seconds[timestep_units]
-        else:
-            return timestep  # Unknown units, return as-is
-            
-        # Convert from seconds to target units
-        if system_units in to_seconds:
-            return timestep_seconds / to_seconds[system_units]
-        else:
-            return timestep  # Unknown target units, return as-is
-            
-    def get_deform_parameters(self, deform_config, deform_study=None):
-        """Get deformation parameters based on configuration"""
-        if deform_config.get("use_strain_rate", True):
-            # Use strain rate
-            if deform_study:
-                rate = float(deform_study.get("rate", 0.001))
-                axis = deform_study.get("axis", "x")
-                style = deform_study.get("style", "final")
+        use_strain_rate = self.config.get("multistudy", {}).get("use_strain_rate", True)
+        rate_strain = deform_study.get("rate_strain", 0.001)
+        
+        if method == "fix_deform":
+            if use_strain_rate:
+                # Use strain rate directly
+                return {
+                    'rate': rate_strain,
+                    'axis': axis,
+                    'style': style_dir
+                }
             else:
-                rate = deform_config.get("deform_rate", 0.001)
-                axis = deform_config.get("deform_axis", "x")
-                style = deform_config.get("deform_style", "final")
+                # Use engineering strain - calculate equivalent rate
+                # For engineering strain: rate = strain / time
+                timestep = system_config.get("timestep", 0.001)
+                time = steps * timestep
                 
-            return {
-                'rate': rate,
-                'axis': axis,
-                'style': style
-            }
-        else:
-            # Use engineering strain - calculate equivalent rate
-            if deform_study:
-                engineering_strain = float(deform_study.get("engineering_strain", 0.1))
-                max_strain = float(deform_study.get("max_strain", 0.5))
-                axis = deform_study.get("axis", "x")
-                style = deform_study.get("style", "final")
-                steps = int(deform_study.get("steps", 10000))
+                if time > 0:
+                    rate = rate_strain / time
+                else:
+                    rate = 0.001
+                    
+                return {
+                    'rate': rate,
+                    'axis': axis,
+                    'style': style_dir
+                }
+                    
+        elif method == "wall_movement":
+            if use_strain_rate:
+                # Use wall velocity directly
+                return {
+                    'velocity': rate_strain,
+                    'axis': axis,
+                    'direction': style_dir
+                }
             else:
-                engineering_strain = deform_config.get("engineering_strain", 0.1)
-                max_strain = deform_config.get("max_strain", 0.5)
-                axis = deform_config.get("deform_axis", "x")
-                style = deform_config.get("deform_style", "final")
-                steps = deform_config.get("run_steps", 10000)
-            
-            # Calculate equivalent strain rate
-            # For engineering strain: rate = strain / time
-            # Time = steps * timestep
-            timestep = deform_config.get("run_steps", 10000)  # This will be converted later
-            time = steps * timestep
-            
-            if time > 0:
-                rate = engineering_strain / time
-            else:
-                rate = 0.001
+                # Use engineering strain - calculate equivalent velocity
+                # For wall movement: velocity = (strain * box_length) / time
+                # We need to estimate box length - this is simplified
+                estimated_box_length = 100.0  # Default estimate
+                timestep = system_config.get("timestep", 0.001)
+                time = steps * timestep
                 
-            return {
-                'rate': rate,
-                'axis': axis,
-                'style': style
-            }
+                if time > 0:
+                    velocity = (rate_strain * estimated_box_length) / time
+                else:
+                    velocity = 0.01
+                    
+                return {
+                    'velocity': velocity,
+                    'axis': axis,
+                    'direction': style_dir
+                }
+        
+        return None
+        
+    def generate_job_file(self, data_file, model_name, script_filename, output_dir):
+        """Generate a cluster job submission file"""
+        try:
+            cluster_config = self.config.get("cluster", {})
             
-    def get_wall_parameters(self, deform_config, deform_study=None):
-        """Get wall movement parameters based on configuration"""
-        if deform_config.get("use_strain_rate", True):
-            # Use wall velocity
-            if deform_study:
-                velocity = float(deform_study.get("rate", 0.01))
-                axis = deform_study.get("axis", "x")
-                direction = deform_study.get("style", "positive")  # Using style field for direction
-            else:
-                velocity = deform_config.get("wall_velocity", 0.01)
-                axis = deform_config.get("wall_axis", "x")
-                direction = deform_config.get("wall_direction", "positive")
+            # Get cluster settings
+            partition = cluster_config.get("cluster_partition", "singlenode")
+            nodes = cluster_config.get("cluster_nodes", 1)
+            ntasks = cluster_config.get("cluster_ntasks", 72)
+            time_limit = cluster_config.get("cluster_time", "24:00:00")
+            email = cluster_config.get("cluster_mail", "")
+            
+            # Generate job filename
+            job_filename = os.path.join(output_dir, f"{model_name}.job")
+            
+            # Generate job file content
+            job_lines = [
+                "#!/bin/bash",
+                f"#SBATCH --job-name={model_name}",
+                f"#SBATCH --partition={partition}",
+                f"#SBATCH --nodes={nodes}",
+                f"#SBATCH --ntasks={ntasks}",
+                f"#SBATCH --time={time_limit}",
+            ]
+            
+            if email:
+                job_lines.extend([
+                    f"#SBATCH --mail-type=ALL",
+                    f"#SBATCH --mail-user={email}",
+                ])
+            
+            job_lines.extend([
+                "",
+                "# Load modules",
+                "module load lammps",
+                "",
+                "# Run LAMMPS",
+                f"srun lmp -in {os.path.basename(script_filename)}",
+                ""
+            ])
+            
+            # Write job file
+            with open(job_filename, 'w') as f:
+                f.write("\n".join(job_lines))
+            
+            self.generated_files.append(job_filename)
+            
+            return {"success": True, "message": f"Job file generated: {job_filename}"}
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error generating job file: {str(e)}"}
+        
+    def generate_execution_script(self, base_output_dir, system_files, deform_studies):
+        """Generate execution script for sequential multi-system processing"""
+        try:
+            exec_script_path = os.path.join(base_output_dir, "run_all.sh")
+            
+            script_lines = [
+                "#!/bin/bash",
+                "# Sequential execution script for multiple LAMMPS simulations",
+                "",
+                "echo \"Starting sequential LAMMPS simulations...\"",
+                ""
+            ]
+            
+            # Get execution mode
+            execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
+            
+            for i, system_file in enumerate(system_files):
+                system_name = Path(system_file).stem
+                system_output_dir = os.path.join(base_output_dir, f"system_{i+1}_{system_name}")
                 
-            return {
-                'velocity': velocity,
-                'axis': axis,
-                'direction': direction
-            }
-        else:
-            # Use engineering strain - calculate equivalent velocity
-            if deform_study:
-                engineering_strain = float(deform_study.get("engineering_strain", 0.1))
-                max_strain = float(deform_study.get("max_strain", 0.5))
-                axis = deform_study.get("axis", "x")
-                direction = deform_study.get("style", "positive")
-                steps = int(deform_study.get("steps", 10000))
-            else:
-                engineering_strain = deform_config.get("wall_engineering_strain", 0.1)
-                max_strain = deform_config.get("wall_max_strain", 0.5)
-                axis = deform_config.get("wall_axis", "x")
-                direction = deform_config.get("wall_direction", "positive")
-                steps = deform_config.get("run_steps", 10000)
+                for j, study in enumerate(deform_studies):
+                    study_name = study.get("name", f"study{j+1}")
+                    model_name = f"{system_name}_{study_name}"
+                    
+                    script_filename = os.path.join(system_output_dir, f"{model_name}.in")
+                    
+                    if execution_mode == "local":
+                        # Local execution
+                        script_lines.extend([
+                            f"echo \"Running simulation: {model_name}\"",
+                            f"cd {system_output_dir}",
+                            f"lmp -in {os.path.basename(script_filename)}",
+                            f"cd -",
+                            "echo \"Completed: {model_name}\"",
+                            ""
+                        ])
+                    else:
+                        # Cluster execution
+                        job_filename = os.path.join(system_output_dir, f"{model_name}.job")
+                        script_lines.extend([
+                            f"echo \"Submitting job: {model_name}\"",
+                            f"sbatch {job_filename}",
+                            "echo \"Job submitted: {model_name}\"",
+                            ""
+                        ])
             
-            # Calculate equivalent wall velocity
-            # For wall movement: velocity = (strain * box_length) / time
-            # We need to estimate box length from data file or use a default
-            # This is a simplified calculation - in practice, you'd read box dimensions
-            estimated_box_length = 100.0  # Default estimate
-            time = steps * deform_config.get("run_steps", 10000) * 0.001  # Rough estimate
+            script_lines.extend([
+                "echo \"All simulations completed!\"",
+                ""
+            ])
             
-            if time > 0:
-                velocity = (engineering_strain * estimated_box_length) / time
-            else:
-                velocity = 0.01
-                
-            return {
-                'velocity': velocity,
-                'axis': axis,
-                'direction': direction
-            }
+            # Write execution script
+            with open(exec_script_path, 'w') as f:
+                f.write("\n".join(script_lines))
+            
+            # Make script executable
+            os.chmod(exec_script_path, 0o755)
+            
+            self.generated_files.append(exec_script_path)
+            
+            return {"success": True, "message": f"Execution script generated: {exec_script_path}"}
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error generating execution script: {str(e)}"}
         
     def read_units_from_data_file(self, data_file):
         """Read units from LAMMPS data file"""
@@ -572,44 +630,3 @@ class LammpsScriptGenerator:
         
         # Default units if not found
         return "metal"
-        
-    def generate_job_file(self, data_file, model_name, script_filename):
-        """Generate a cluster job submission file"""
-        try:
-            cluster_config = self.config.get("cluster", {})
-            
-            # Get cluster settings
-            partition = cluster_config.get("cluster_partition", "singlenode")
-            nodes = cluster_config.get("cluster_nodes", 1)
-            ntasks = cluster_config.get("cluster_ntasks", 72)
-            time_limit = cluster_config.get("cluster_time", "24:00:00")
-            email = cluster_config.get("cluster_mail", "")
-            
-            # Generate job file content
-            job_lines = [
-                "#!/bin/bash",
-                f"#SBATCH --job-name={model_name}",
-                f"#SBATCH --partition={partition}",
-                f"#SBATCH --nodes={nodes}",
-                f"#SBATCH --ntasks={ntasks}",
-                f"#SBATCH --time={time_limit}",
-            ]
-            
-            if email:
-                job_lines.append(f"#SBATCH --mail-type=ALL")
-                job_lines.append(f"#SBATCH --mail-user={email}")
-            
-            job_lines.extend([
-                "",
-                "# Load modules",
-                "module load lammps",
-                "",
-                "# Run LAMMPS",
-                f"srun lammps -in {script_filename}",
-                ""
-            ])
-            
-            return "\n".join(job_lines)
-            
-        except Exception as e:
-            return f"# Error generating job file: {str(e)}"
