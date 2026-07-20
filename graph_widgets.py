@@ -349,16 +349,9 @@ class GraphWidget(QWidget):
             if self._dragged_handle_index is None:
                 self._dragged_segment_index = self._get_segment_at(self._drag_start_pos_widget)
                 if self._dragged_segment_index is not None:
-                    # Check if adjacent segments are fixed, which would constrain movement
+                    # Segments can always be selected for dragging, regardless of fixed status
+                    # The movement logic will handle constraints appropriately
                     i = self._dragged_segment_index
-                    prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
-                    next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
-                    
-                    # Cannot move segment if either adjacent segment is fixed
-                    if prev_segment_fixed or next_segment_fixed:
-                        self._dragged_segment_index = None
-                        return
-                        
                     p1_w = self._norm_to_widget(self.points_norm[i])
                     self._drag_mouse_to_p1_offset = self._drag_start_pos_widget - p1_w
                     self._segment_drag_offset_norm = self.points_norm[i+1] - self.points_norm[i]
@@ -552,33 +545,121 @@ class GraphWidget(QWidget):
         elif self._dragged_segment_index is not None:
             i = self._dragged_segment_index
             
-            # Check if adjacent segments are fixed, which would constrain movement
+            # Check if this segment is fixed
+            is_segment_fixed = self._dragged_segment_index in self._fixed_segments
+            
+            # Check if adjacent segments are fixed
             prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
             next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
             
-            # Cannot move segment if either adjacent segment is fixed
+            # If this segment is fixed, check if it can be moved
+            if is_segment_fixed:
+                # Cannot move fixed segment if any adjacent segment is also fixed
+                if prev_segment_fixed or next_segment_fixed:
+                    return
+                # Otherwise, fixed segment can be moved (no adjacent fixed segments)
+            
+            # If adjacent segments are fixed, we need to preserve their slopes while allowing movement
+            # BUT we must preserve the slope of the dragged segment itself
             if prev_segment_fixed or next_segment_fixed:
-                return
+                # Get original positions
+                original_p1_data = self._norm_to_data(self.points_norm[i])
+                original_p2_data = self._norm_to_data(self.points_norm[i+1])
                 
-            if i == 0:
-                p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
-                p1_new_norm.setX(0)  # Ensure first point stays at x=0
-                self.points_norm[i] = p1_new_norm
-            else:
+                # Calculate the original slope and length of the dragged segment
+                original_delta_x = original_p2_data.x() - original_p1_data.x()
+                original_delta_y = original_p2_data.y() - original_p1_data.y()
+                
+                # Calculate the new position based on mouse movement
                 target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
-                p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
+                target_p1_data = self._norm_to_data(self._widget_to_norm(target_p1_w))
+                
+                # Calculate the offset (delta) from original position
+                delta_x = target_p1_data.x() - original_p1_data.x()
+                delta_y = target_p1_data.y() - original_p1_data.y()
+                
+                # Start with unconstrained new positions
+                new_p1_data = QPointF(original_p1_data.x() + delta_x, original_p1_data.y() + delta_y)
+                new_p2_data = QPointF(original_p2_data.x() + delta_x, original_p2_data.y() + delta_y)
+                
                 # Clamp y values to min/max strain
-                p1_new_data.setY(max(self._min_strain, min(self._max_strain, p1_new_data.y())))
-                p1_new_norm = self._data_to_norm(p1_new_data)
-                p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
-                # Also clamp the second point
-                p2_new_data = self._norm_to_data(p2_new_norm)
-                p2_new_data.setY(max(self._min_strain, min(self._max_strain, p2_new_data.y())))
-                p2_new_norm = self._data_to_norm(p2_new_data)
+                new_p1_data.setY(max(self._min_strain, min(self._max_strain, new_p1_data.y())))
+                new_p2_data.setY(max(self._min_strain, min(self._max_strain, new_p2_data.y())))
+                
+                # Handle constraints based on which neighbors are fixed
+                # IMPORTANT: We preserve the ORIGINAL slope of the dragged segment, not calculate new slopes
+                if prev_segment_fixed and next_segment_fixed:
+                    # Both neighbors fixed - this case should have been caught earlier, but handle gracefully
+                    # Preserve both neighbor slopes by adjusting the connecting points
+                    if i > 1:
+                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
+                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
+                        if prev_point_data.x() != prev_prev_point_data.x():
+                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
+                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
+                    if i + 2 < len(self.points_norm):
+                        next_point_data = self._norm_to_data(self.points_norm[i+1])
+                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
+                        if next_next_point_data.x() != next_point_data.x():
+                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
+                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
+                    # Preserve the original slope of the dragged segment
+                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
+                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
+                elif prev_segment_fixed:
+                    # Previous neighbor fixed - preserve its slope
+                    if i > 1:
+                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
+                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
+                        if prev_point_data.x() != prev_prev_point_data.x():
+                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
+                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
+                    # Preserve the original slope of the dragged segment by maintaining delta
+                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
+                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
+                elif next_segment_fixed:
+                    # Next neighbor fixed - preserve its slope
+                    if i + 2 < len(self.points_norm):
+                        next_point_data = self._norm_to_data(self.points_norm[i+1])
+                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
+                        if next_next_point_data.x() != next_point_data.x():
+                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
+                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
+                    # Preserve the original slope of the dragged segment by maintaining delta
+                    new_p1_data.setX(new_p2_data.x() - original_delta_x)
+                    new_p1_data.setY(new_p2_data.y() - original_delta_y)
+                
+                # Convert to normalized coordinates
+                new_p1_norm = self._data_to_norm(new_p1_data)
+                new_p2_norm = self._data_to_norm(new_p2_data)
+                
+                # Check bounds constraints
                 p_prev = self.points_norm[i-1] if i > 0 else None
                 p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
-                if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
-                    self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
+                if (p_prev is None or new_p1_norm.x() >= p_prev.x()) and (p_next is None or new_p2_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [new_p1_norm, new_p2_norm]):
+                    self.points_norm[i] = new_p1_norm
+                    self.points_norm[i+1] = new_p2_norm
+            else:
+                # Normal segment dragging when no adjacent segments are fixed
+                if i == 0:
+                    p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
+                    p1_new_norm.setX(0)  # Ensure first point stays at x=0
+                    self.points_norm[i] = p1_new_norm
+                else:
+                    target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
+                    p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
+                    # Clamp y values to min/max strain
+                    p1_new_data.setY(max(self._min_strain, min(self._max_strain, p1_new_data.y())))
+                    p1_new_norm = self._data_to_norm(p1_new_data)
+                    p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
+                    # Also clamp the second point
+                    p2_new_data = self._norm_to_data(p2_new_norm)
+                    p2_new_data.setY(max(self._min_strain, min(self._max_strain, p2_new_data.y())))
+                    p2_new_norm = self._data_to_norm(p2_new_data)
+                    p_prev = self.points_norm[i-1] if i > 0 else None
+                    p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
+                    if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
+                        self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
         self.update()
     def mouseReleaseEvent(self, event): 
         # Apply snapping when mouse is released
@@ -613,40 +694,43 @@ class GraphWidget(QWidget):
             self._sort_points()
             
         elif self._dragged_segment_index is not None:
-            # Check if adjacent segments are fixed, which would constrain movement
             i = self._dragged_segment_index
+            
+            # Check if adjacent segments are fixed
             prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
             next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
             
-            # Cannot move segment if either adjacent segment is fixed
-            if prev_segment_fixed or next_segment_fixed:
-                return
-                
             if i < len(self.points_norm) - 1:
-                # Apply grid snapping when releasing, EXCEPT when the segment itself is fixed
-                # Grid snapping should ONLY NOT be applied when a node is moved while adjacent slope is fixed
-                if i not in self._fixed_segments:
-                    p1_data = self._norm_to_data(self.points_norm[i])
-                    p2_data = self._norm_to_data(self.points_norm[i+1])
-                    
-                    # Snap both points
-                    snapped_p1_data = self._snap_data_point(p1_data)
-                    snapped_p2_data = self._snap_data_point(p2_data)
-                    
-                    # Convert back to normalized coordinates
-                    snapped_p1_norm = self._data_to_norm(snapped_p1_data)
-                    snapped_p2_norm = self._data_to_norm(snapped_p2_data)
+                # Apply grid snapping when releasing
+                # If adjacent segments are fixed, we preserve exact positions to maintain slopes
+                if prev_segment_fixed or next_segment_fixed:
+                    # Preserve exact positions when adjacent segments are fixed
+                    # to maintain their slopes
+                    pass  # Don't snap, keep exact positions
                 else:
-                    # Preserve exact positions when segment is fixed
-                    snapped_p1_norm = self.points_norm[i]
-                    snapped_p2_norm = self.points_norm[i+1]
-                
-                # Ensure first point stays at x=0 if it's the first segment
-                if i == 0:
-                    snapped_p1_norm.setX(0)
+                    # Normal snapping behavior
+                    if i not in self._fixed_segments:
+                        p1_data = self._norm_to_data(self.points_norm[i])
+                        p2_data = self._norm_to_data(self.points_norm[i+1])
+                        
+                        # Snap both points
+                        snapped_p1_data = self._snap_data_point(p1_data)
+                        snapped_p2_data = self._snap_data_point(p2_data)
+                        
+                        # Convert back to normalized coordinates
+                        snapped_p1_norm = self._data_to_norm(snapped_p1_data)
+                        snapped_p2_norm = self._data_to_norm(snapped_p2_data)
+                    else:
+                        # Preserve exact positions when segment is fixed
+                        snapped_p1_norm = self.points_norm[i]
+                        snapped_p2_norm = self.points_norm[i+1]
                     
-                self.points_norm[i] = snapped_p1_norm
-                self.points_norm[i+1] = snapped_p2_norm
+                    # Ensure first point stays at x=0 if it's the first segment
+                    if i == 0:
+                        snapped_p1_norm.setX(0)
+                        
+                    self.points_norm[i] = snapped_p1_norm
+                    self.points_norm[i+1] = snapped_p2_norm
                 self._sort_points()
         
         # Ensure the first point stays at x=0 for both modes
