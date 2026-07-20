@@ -169,6 +169,17 @@ class LammpsScriptGenerator(QMainWindow):
         except Exception as e:
             pass
     
+    def closeEvent(self, event):
+        """Handle window close event - save all settings"""
+        try:
+            self.save_settings()
+            print("Settings saved successfully")
+        except Exception as e:
+            print(f"Error saving settings on close: {e}")
+        
+        # Accept the close event
+        event.accept()
+    
     def create_system_tab(self):
         """Create the system configuration tab"""
         self.system_tab = QWidget()
@@ -1402,10 +1413,14 @@ class LammpsScriptGenerator(QMainWindow):
         instructions_text.setReadOnly(True)
         instructions_text.setMaximumHeight(100)
         instructions_text.setPlainText(
-            "• run_all.sh: Local execution script. Run with: bash run_all.sh\n"
-            "• lammps_simulation.job: Cluster job submission script. Submit with: sbatch lammps_simulation.job\n"
+            "• run_all.sh: Local execution script for Linux/Mac. Run with: bash run_all.sh\n"
+            "• run_all.bat: Local execution script for Windows. Run with: run_all.bat\n"
+            "• run_cluster_jobs.sh: Cluster job submission script for Linux/Mac. Run with: bash run_cluster_jobs.sh\n"
+            "• run_cluster_jobs.bat: Cluster job submission script for Windows. Run with: run_cluster_jobs.bat\n"
             "• All .in files are located in their respective study/system folders\n"
-            "• Data files are copied to the input_files folder for easy access"
+            "• Data files are copied to the input_files folder with correct relative paths\n"
+            "• Potential files are also copied to input_files folder and referenced correctly\n"
+            "• Each simulation folder contains individual .job files for cluster submission"
         )
         layout.addWidget(instructions_text)
         
