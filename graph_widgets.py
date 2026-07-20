@@ -1906,10 +1906,17 @@ class GraphWidget(QWidget):
 
             # 3. If nothing else is hit, add a new point at the clicked position
             new_p_norm = self._data_to_norm(self._snap_data_point(self._norm_to_data(self._widget_to_norm(event.position()))))
-            self.points_norm.append(new_p_norm)
-            self._sort_points()
-            # A new point was added. It creates a new segment at the end.
-            self.segments.append({'type': 'line'})
+            
+            # Find correct insertion index to maintain segment synchronization
+            insert_idx = len(self.points_norm)
+            for i, p in enumerate(self.points_norm):
+                if new_p_norm.x() < p.x():
+                    insert_idx = i
+                    break
+            
+            self.points_norm.insert(insert_idx, new_p_norm)
+            self.segments.insert(insert_idx, {'type': 'line'})
+            
             self.update()
             self.dataChanged.emit()
     def contextMenuEvent(self, event):
@@ -2286,10 +2293,6 @@ class StudyWidget(QWidget):
         self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
         self.ensemble_combo.setFixedWidth(70)
 
-        ensemble_urls = [QUrl("https://docs.lammps.org/fix_nvt.html"), QUrl("https://docs.lammps.org/fix_nh.html")]
-        ensemble_tooltip = "Click to open LAMMPS documentation for NVT and NPT ensembles"
-        self.ensemble_info_label = create_info_icon_label(ensemble_urls, ensemble_tooltip, "blue")
-
         self.temp_spinbox = QDoubleSpinBox()
         self.temp_spinbox.setPrefix("Temperature: ")
         self.temp_spinbox.setRange(0, 10000)
@@ -2316,8 +2319,8 @@ class StudyWidget(QWidget):
         self.sync_ensemble_checkbox.setToolTip("Synchronize ensemble settings across all studies")
         
         sync_url = QUrl("https://docs.lammps.org/fix_nh.html")
-        sync_tooltip = "Click to open LAMMPS documentation for ensembles (fix nvt/npt)"
-        self.sync_ensemble_info_label = create_info_icon_label([sync_url], sync_tooltip, "blue")
+        sync_tooltip = "Click to open LAMMPS documentation for NVT and NPT ensembles"
+        self.ensemble_info_label = create_info_icon_label([sync_url], sync_tooltip, "blue")
         
         self._rebuild_ensemble_layout()
         
@@ -2404,8 +2407,9 @@ class StudyWidget(QWidget):
         self._last_scheme = "Staircase Loading"
 
         self._is_mode_switching = False
-        self._undo_stack = []
-        self._redo_stack = []
+        self._undo_stacks = {'Deformation': [], 'Temperature': []}
+        self._redo_stacks = {'Deformation': [], 'Temperature': []}
+        self._mode_states = {}
 
         if initial_state:
             self.set_state(initial_state)
@@ -2550,7 +2554,13 @@ class StudyWidget(QWidget):
 
                 self.graph_widget.generate_sinusoidal_scheme(params['equilibration_steps'], params['num_cycles'], params['relax_factor'], params['scheme'])
 
+    @property
+    def _undo_stack(self):
+        return self._undo_stacks[self.mode]
 
+    @property
+    def _redo_stack(self):
+        return self._redo_stacks[self.mode]
 
     def _setup_undo_redo(self):
         self.undo_action = QAction("Undo", self)
@@ -2882,14 +2892,13 @@ class StudyWidget(QWidget):
         if self.mode == 'Temperature':
             self.ensemble_layout.addWidget(QLabel("Ensemble:"))
             self.ensemble_layout.addWidget(self.ensemble_combo)
-            self.ensemble_layout.addWidget(self.ensemble_info_label)
             self.ensemble_layout.addWidget(self.temp_spinbox)
             self.ensemble_layout.addWidget(self.pressure_spinbox)
             self.ensemble_layout.addWidget(self.npt_aniso_label)
             self.ensemble_layout.addWidget(self.npt_aniso_combo)
             self.ensemble_layout.addStretch(1)
             self.ensemble_layout.addWidget(self.sync_ensemble_checkbox)
-            self.ensemble_layout.addWidget(self.sync_ensemble_info_label)
+            self.ensemble_layout.addWidget(self.ensemble_info_label)
             
             # Ensure correct visibility for Temperature mode
             self._update_ensemble_ui_state()
@@ -2927,7 +2936,7 @@ class StudyWidget(QWidget):
             self.ensemble_layout.addWidget(self.temp_spinbox)
             self.ensemble_layout.addStretch(1)
             self.ensemble_layout.addWidget(self.sync_ensemble_checkbox)
-            self.ensemble_layout.addWidget(self.sync_ensemble_info_label)
+            self.ensemble_layout.addWidget(self.ensemble_info_label)
             
             # Initial visibility check for Deformation mode
             self._update_lateral_npt_visibility()
@@ -3050,63 +3059,82 @@ class StudyWidget(QWidget):
         if self.mode == mode:
             return
 
+        # 1. Save current state
+        self._mode_states[self.mode] = self.get_state()
+
+        # 2. Switch mode
         self.mode = mode
-        is_temp_mode = mode == 'Temperature'
+        self.graph_widget.set_mode(mode) # Ensure graph widget mode is updated
+        self._is_mode_switching = True  # Flag to prevent control updates during transition
 
-        # Convert sine segments to linear when switching to Temperature mode
-        if is_temp_mode:
-            for segment in self.graph_widget.segments:
-                if segment['type'] == 'sine':
-                    segment['type'] = 'line'
+        # 3. Restore state or initialize defaults
+        if mode in self._mode_states:
+            # Restore saved state
+            self.set_state(self._mode_states[mode])
+        else:
+            # Initialize defaults for new mode
+            self.graph_widget.set_mode(mode)
+            
+            # Block signals to prevent premature updates
+            self.min_strain_spinbox.blockSignals(True)
+            self.max_strain_spinbox.blockSignals(True)
+            self.max_steps_spinbox.blockSignals(True)
 
+            if mode == 'Temperature':
+                self.min_strain_spinbox.setRange(0.001, 1e9)
+                self.max_strain_spinbox.setRange(0.001, 1e9)
+                
+                # Default Temperature setup
+                self.max_steps_spinbox.setValue(10000)
+                self.min_strain_spinbox.setValue(300.0)
+                self.max_strain_spinbox.setValue(300.0)
+                
+                self.min_strain_spinbox.setPrefix("Min Temp: ")
+                self.max_strain_spinbox.setPrefix("Max Temp: ")
+                
+                # Reset graph for Temperature (linear, 300K)
+                self.graph_widget.set_max_values(10000, 300.0, 300.0)
+                self.graph_widget.points_norm = [QPointF(0, 0.0), QPointF(1.0, 0.0)] # Flat line at min
+                self.graph_widget.segments = [{'type': 'line'}]
+                
+            else: # Deformation
+                self.min_strain_spinbox.setRange(-0.999999, 1e9)
+                self.max_strain_spinbox.setRange(-1e9, 1e9)
+                
+                # Default Deformation setup
+                self.max_steps_spinbox.setValue(10000)
+                self.min_strain_spinbox.setValue(0.0)
+                self.max_strain_spinbox.setValue(1.0)
+                
+                self.min_strain_spinbox.setPrefix("Min Strain: ")
+                self.max_strain_spinbox.setPrefix("Max Strain: ")
+                
+                # Reset graph for Deformation (linear ramp 0->1)
+                self.graph_widget.set_max_values(10000, 0.0, 1.0)
+                self.graph_widget.points_norm = [QPointF(0, 0.0), QPointF(1.0, 1.0)] # Linear ramp
+                self.graph_widget.segments = [{'type': 'line'}]
 
+            self.min_strain_spinbox.blockSignals(False)
+            self.max_strain_spinbox.blockSignals(False)
+            self.max_steps_spinbox.blockSignals(False)
+            
+            # Force update controls to reflect new ranges/values
+            self._update_graph_controls()
+            
+            # Rebuild layout for the new mode (defaults)
+            self._rebuild_ensemble_layout()
 
-        # Set ranges FIRST to avoid clamping issues
-        if is_temp_mode:
-            self.min_strain_spinbox.setRange(0.001, 1e9)
-            self.max_strain_spinbox.setRange(0.001, 1e9)
-        else:  # Deformation mode
-            self.min_strain_spinbox.setRange(-0.999999, 1e9)
-            self.max_strain_spinbox.setRange(-1e9, 1e9)
-
-        # Adjust min/max based on slope only if adjust_values is True
-        if adjust_values:
-            points = self.graph_widget.get_data_points()
-            if len(points) > 1:
-                first_point = points[0]
-                last_point = points[-1]
-
-                dx = last_point.x() - first_point.x()
-                dy = last_point.y() - first_point.y()
-                slope = dy / dx if dx != 0 else 0
-
-                if is_temp_mode:
-                    self.min_strain_spinbox.setValue(1.0)
-                    self.max_strain_spinbox.setValue(300.0)
-                else:  # Deformation mode
-                    if slope >= 0:
-                        self.min_strain_spinbox.setValue(0.0)
-                        self.max_strain_spinbox.setValue(0.5)
-                    else:
-                        self.min_strain_spinbox.setValue(-0.5)
-                        self.max_strain_spinbox.setValue(0.0)
-
-        self.min_strain_spinbox.setPrefix("Min Temp: " if is_temp_mode else "Min Strain: ")
-        self.max_strain_spinbox.setPrefix("Max Temp: " if is_temp_mode else "Max Strain: ")
-
-        self.temp_spinbox.setVisible(not is_temp_mode)
-        self.deform_axis_label.setVisible(not is_temp_mode)
-        self.deform_axis_combo.setVisible(not is_temp_mode)
+        # Final UI updates common to both paths
+        self.temp_spinbox.setVisible(mode == 'Deformation')
+        self.deform_axis_label.setVisible(mode == 'Deformation')
+        self.deform_axis_combo.setVisible(mode == 'Deformation')
         
-        # Update the visibility of the Deform Scenario controls based on the new mode
         self._update_deform_scenario_visibility()
-        # Rebuild ensemble layout to reflect mode change
-        self._rebuild_ensemble_layout()
-
-        self.graph_widget.set_mode(mode)
-        self._update_graph_controls()
-
-        button_style = "background-color: darkorange;" if is_temp_mode else ""
+        
+        # If we restored state, layout rebuild happened in set_state.
+        # If we initialized defaults, layout rebuild happened above.
+        
+        button_style = "background-color: darkorange;" if mode == 'Temperature' else ""
         self.undo_button.setStyleSheet(button_style)
         self.redo_button.setStyleSheet(button_style)
         self.generate_button.setStyleSheet(button_style)
@@ -3116,7 +3144,11 @@ class StudyWidget(QWidget):
         if parent_tab and hasattr(parent_tab, '_update_tab_colors'):
             parent_tab._update_tab_colors()
 
+        # Save the state for the new mode to its undo stack
+        self._save_state_for_undo()
+
         self.dataChanged.emit()
+        self.graph_widget.update()
 
         self._is_mode_switching = False
 

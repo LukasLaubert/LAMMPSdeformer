@@ -1530,7 +1530,7 @@ class LammpsGui(QMainWindow):
         self.avg_nevery_spinbox.editingFinished.connect(self.validate_and_round_nevery)
 
         self.avg_nrepeat_spinbox = QSpinBox()
-        self.avg_nrepeat_spinbox.setToolTip("repeat")
+        self.avg_nrepeat_spinbox.setToolTip("nrepeat")
         self.avg_nrepeat_spinbox.setRange(1, 100000)
         self.avg_nrepeat_spinbox.setValue(10) # Default changed to make it consistent with default thermo_freq and nevery
         self.avg_nrepeat_spinbox.setFixedWidth(80)
