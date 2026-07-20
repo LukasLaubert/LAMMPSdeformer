@@ -302,13 +302,6 @@ class LammpsScriptGenerator(QMainWindow):
         self.atom_style_combo.setToolTip("Specify the atom style for the simulation")
         
         atom_style_label = QLabel("Atom Style:")
-        atom_style_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            atom_style_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        atom_style_label.mousePressEvent = lambda e: self.open_lammps_doc("atom_style")
-        atom_style_label.setToolTip("Click to open LAMMPS atom_style documentation")
         
         basic_layout.addRow(atom_style_label, self.atom_style_combo)
         basic_group.setLayout(basic_layout)
@@ -319,13 +312,6 @@ class LammpsScriptGenerator(QMainWindow):
         units_layout = QHBoxLayout()
         
         units_label = QLabel("Units:")
-        units_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            units_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        units_label.mousePressEvent = lambda e: self.open_lammps_doc("units")
-        units_label.setToolTip("Click to open LAMMPS units documentation")
         
         self.units_combo = QComboBox()
         self.units_combo.addItems(["lj", "real", "metal", "si", "cgs", "electron", "micro", "nano"])
@@ -358,13 +344,6 @@ class LammpsScriptGenerator(QMainWindow):
         self.timestep_unit_label = QLabel("ps")
 
         timestep_label = QLabel("Timestep:")
-        timestep_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            timestep_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        timestep_label.mousePressEvent = lambda e: self.open_lammps_doc("timestep")
-        timestep_label.setToolTip("Click to open LAMMPS timestep documentation")
 
         timestep_layout.addWidget(timestep_label)
         timestep_layout.addWidget(self.timestep)
@@ -451,13 +430,6 @@ class LammpsScriptGenerator(QMainWindow):
         pressure_layout.addWidget(self.pressure_unit_label)
 
         ensemble_label = QLabel("Ensemble:")
-        ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            ensemble_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
-        ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
 
         ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
         ensemble_layout.addRow("Initial Temperature:", self.temp_init)
@@ -640,7 +612,7 @@ class LammpsScriptGenerator(QMainWindow):
 
         self.custom_fixes_text = QTextEdit()
         self.custom_fixes_text.setPlaceholderText("Enter custom fix commands here...")
-        self.custom_fixes_text.setMaximumHeight(100)  # Reduce height to match other custom sections
+        self.custom_fixes_text.setMaximumHeight(80)  # Reduce height to match other custom sections
         self.custom_fixes_text.setEnabled(False)
         self.custom_fixes_text.setToolTip("Custom LAMMPS fix commands")
 
@@ -1167,17 +1139,20 @@ class LammpsScriptGenerator(QMainWindow):
         custom_computes_group = InfoGroupBox("Custom Computes", "compute")
         custom_computes_layout = QVBoxLayout()
         
-        # Add compute commands button
-        compute_commands_layout = QHBoxLayout()
-        self.compute_commands_button = QPushButton("Add Compute Command")
-        self.compute_commands_button.clicked.connect(self.show_compute_commands_dialog)
-        compute_commands_layout.addWidget(self.compute_commands_button)
-        compute_commands_layout.addStretch()
-        
         self.enable_custom_computes = QCheckBox("Enable Custom Computes")
         self.enable_custom_computes.setChecked(False)
         self.enable_custom_computes.setToolTip("Enable custom compute commands")
         self.enable_custom_computes.stateChanged.connect(self.toggle_custom_computes)
+        
+        # Add compute commands button - place it on the same line as the checkbox
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(self.enable_custom_computes)
+        top_layout.addStretch()
+        
+        self.compute_commands_button = QPushButton("Add Compute Command")
+        self.compute_commands_button.clicked.connect(self.show_compute_commands_dialog)
+        self.compute_commands_button.setMaximumWidth(150)  # Limit button width
+        top_layout.addWidget(self.compute_commands_button)
         
         self.custom_computes_text = QTextEdit()
         self.custom_computes_text.setPlaceholderText("Enter custom compute commands here...")
@@ -1185,8 +1160,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.custom_computes_text.setEnabled(False)
         self.custom_computes_text.setToolTip("Custom LAMMPS compute commands")
         
-        custom_computes_layout.addLayout(compute_commands_layout)
-        custom_computes_layout.addWidget(self.enable_custom_computes)
+        custom_computes_layout.addLayout(top_layout)
         custom_computes_layout.addWidget(self.custom_computes_text)
         custom_computes_group.setLayout(custom_computes_layout)
         scroll_layout.addWidget(custom_computes_group)
@@ -1378,11 +1352,15 @@ class LammpsScriptGenerator(QMainWindow):
         layout = QVBoxLayout()
         
         list_widget = QListWidget()
+        list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)  # Allow only single selection
         for command in commands:
             list_widget.addItem(command)
         
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(dialog.accept)
+        button_box = QDialogButtonBox()
+        add_button = QPushButton("Add")
+        button_box.addButton(add_button, QDialogButtonBox.ButtonRole.AcceptRole)
+        button_box.addButton(QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(lambda: self._add_selected_compute_command(list_widget, dialog))
         button_box.rejected.connect(dialog.reject)
         
         layout.addWidget(list_widget)
@@ -1390,20 +1368,24 @@ class LammpsScriptGenerator(QMainWindow):
         
         dialog.setLayout(layout)
         
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            selected_items = list_widget.selectedItems()
-            if selected_items:
-                command = selected_items[0].text()
-                # Enable the custom computes checkbox if it's not already enabled
-                if not self.enable_custom_computes.isChecked():
-                    self.enable_custom_computes.setChecked(True)
-                
-                # Add the command to the text field
-                current_text = self.custom_computes_text.toPlainText()
-                if current_text:
-                    self.custom_computes_text.setPlainText(current_text + "\n" + command)
-                else:
-                    self.custom_computes_text.setPlainText(command)
+        dialog.exec()
+        
+    def _add_selected_compute_command(self, list_widget, dialog):
+        """Add selected compute command to the text field"""
+        selected_items = list_widget.selectedItems()
+        if selected_items:
+            command = selected_items[0].text()
+            # Enable the custom computes checkbox if it's not already enabled
+            if not self.enable_custom_computes.isChecked():
+                self.enable_custom_computes.setChecked(True)
+            
+            # Add the command to the text field
+            current_text = self.custom_computes_text.toPlainText()
+            if current_text:
+                self.custom_computes_text.setPlainText(current_text + "\n" + command)
+            else:
+                self.custom_computes_text.setPlainText(command)
+        dialog.accept()
     
     def toggle_custom_dumps(self, state):
         """Toggle custom dumps settings based on checkbox state"""
@@ -1751,7 +1733,6 @@ class LammpsScriptGenerator(QMainWindow):
                 "trj_output_items": self.trj_output_items.toPlainText(),
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_style": self.thermo_style.toPlainText(),
-                "enable_stress": self.enable_stress.isChecked(),
                 "enable_custom_computes": self.enable_custom_computes.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
                 "enable_custom_dumps": self.enable_custom_dumps.isChecked(),
@@ -1849,7 +1830,6 @@ class LammpsScriptGenerator(QMainWindow):
             self.trj_output_items.setPlainText(self.settings.value("output/trj_output_items", "id type x y z fx fy fz"))
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_style.setPlainText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-            self.enable_stress.setChecked(self.settings.value("output/enable_stress", True, type=bool))
             self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
             self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
@@ -2123,7 +2103,6 @@ class LammpsScriptGenerator(QMainWindow):
                 self.trj_output_items.setPlainText(output.get("trj_output_items", "id type x y z fx fy fz"))
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_style.setPlainText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-                self.enable_stress.setChecked(output.get("enable_stress", True))
                 self.enable_custom_computes.setChecked(output.get("enable_custom_computes", False))
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
                 self.enable_custom_dumps.setChecked(output.get("enable_custom_dumps", False))

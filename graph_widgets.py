@@ -5,9 +5,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QSpinBox, QDialog, QDoubleSpinBox, QMenu,
     QTextEdit, QDialogButtonBox, QFormLayout, QPushButton, QInputDialog,
-    QTabWidget, QComboBox, QScrollArea, QMessageBox, QStackedWidget
+    QTabWidget, QComboBox, QScrollArea, QMessageBox, QStackedWidget, QListWidget
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence
 
 # --- Professional Style & Data ---
@@ -350,6 +350,7 @@ class StudyWidget(QWidget):
 
         self._undo_stack = []
         self._redo_stack = []
+        self._undo_timer = None  # Will be initialized in _setup_undo_redo
 
         if initial_state:
             self.set_state(initial_state)
@@ -398,9 +399,21 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.valueChanged.connect(self._save_state_for_undo)
         self.max_strain_spinbox.valueChanged.connect(self._save_state_for_undo)
 
+        # Add a timer to debounce undo saves
+        self._undo_timer = QTimer()
+        self._undo_timer.setSingleShot(True)
+        self._undo_timer.timeout.connect(self._save_state_for_undo)
+        self.graph_widget.dataChanged.connect(lambda: self._undo_timer.start(100))
+        self.max_steps_spinbox.valueChanged.connect(lambda: self._undo_timer.start(100))
+        self.min_strain_spinbox.valueChanged.connect(lambda: self._undo_timer.start(100))
+        self.max_strain_spinbox.valueChanged.connect(lambda: self._undo_timer.start(100))
+
         self.update_undo_redo_buttons()
 
     def _save_state_for_undo(self):
+        # If timer is active, we're being called from the timer, so don't restart it
+        if self._undo_timer.isActive():
+            self._undo_timer.stop()
         state = self.get_undo_state()
         if not self._undo_stack or self._undo_stack[-1] != state:
             self._undo_stack.append(state)
@@ -494,7 +507,8 @@ class DeformationTab(QWidget):
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.tabBar().setMovable(True)
-        self.tab_widget.setStyleSheet("QTabBar::tab { height: 15px; min-width: 80px; }")
+        self.tab_widget.tabBar().tabMoved.connect(self.update_summaries)  # Add this line
+        self.tab_widget.setStyleSheet("QTabBar::tab { height: 12px; min-width: 60px; padding: 2px 4px; } QTabBar::close-button { padding: 0px; }")
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
 
         add_tab_button = QPushButton("+")
@@ -610,9 +624,10 @@ class DeformationTab(QWidget):
             study_widget = self.tab_widget.widget(i)
             self.summary_layout.addWidget(QLabel(f"<b>Summary for {self.tab_widget.tabText(i)}</b>"))
             summary_text = QTextEdit(readOnly=True, font=QFont("Courier New", 10))
-            summary_text.setFixedHeight(200)  # Set a fixed height to prevent scrolling
             summary_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             summary_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            # Disable text interaction to prevent scrolling
+            summary_text.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
             points = study_widget.graph_widget.get_data_points()
             header = "{:<10} | {:<18} | {:<18} | {:<18} | {:<20} | {}".format("Segment", "Time Step", "Time", "Strain", "Slope (ε/step)", "Strain Rate (ε/t)")
             lines = [header, "-" * (len(header)+2)]
@@ -629,6 +644,11 @@ class DeformationTab(QWidget):
                         break
                 lines.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
             summary_text.setText("\n".join(lines))
+            # Calculate height based on number of lines
+            font_metrics = QFontMetrics(summary_text.font())
+            line_height = font_metrics.lineSpacing()
+            total_height = line_height * (len(lines) + 2)  # +2 for padding
+            summary_text.setFixedHeight(total_height)
             self.summary_layout.addWidget(summary_text)
         self.summary_layout.addStretch()
 

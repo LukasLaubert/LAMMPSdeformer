@@ -379,14 +379,6 @@ class LammpsScriptGenerator:
                     ""
                 ])
 
-            if output_config.get("enable_stress", True):
-                script_lines.extend([
-                    "# Stress calculations",
-                    "compute stress all stress/atom NULL",
-                    "compute pstress all reduce sum c_stress[1] c_stress[2] c_stress[3] c_stress[4] c_stress[5] c_stress[6]",
-                    ""
-                ])
-
             if output_config.get("enable_custom_computes", False):
                 custom_computes = output_config.get("custom_computes", "")
                 if custom_computes:
