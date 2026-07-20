@@ -484,6 +484,21 @@ class LammpsScriptGenerator:
 
                     script_lines.append("")
             
+            # Add write_data at the end if enabled
+            if output_config.get("enable_write_data", False):
+                # Extract the base name from the data_file and use wildcard for timestep
+                base_name = Path(data_file).stem
+                
+                write_data_filename = f"{base_name}_*.data"
+                
+                script_lines.extend([
+                    "#------------------------",
+                    "# Write final state to data file",
+                    "#------------------------",
+                    f"write_data {write_data_filename}",
+                    ""
+                ])
+            
             full_script = "\n".join(script_lines)
             
             return full_script

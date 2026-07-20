@@ -1154,6 +1154,18 @@ class LammpsScriptGenerator(QMainWindow):
         path_group.setLayout(path_layout)
         scroll_layout.addWidget(path_group)
         
+        # Write data at end setting - moved to top position
+        write_data_group = InfoGroupBox("Write Data", "write_data")
+        write_data_layout = QVBoxLayout()
+        
+        self.enable_write_data = QCheckBox("Write final atom data at end of stimulation")
+        self.enable_write_data.setChecked(False)
+        self.enable_write_data.setToolTip("Write the final state of the simulation (atom locations, velocities, bonds, ...) to a data file at the end")
+        
+        write_data_layout.addWidget(self.enable_write_data)
+        write_data_group.setLayout(write_data_layout)
+        scroll_layout.addWidget(write_data_group)
+        
         # Trajectory output settings
         traj_group = InfoGroupBox("Trajectory Output Settings", "dump")
         traj_layout = QVBoxLayout()
@@ -1171,7 +1183,7 @@ class LammpsScriptGenerator(QMainWindow):
         
         self.trj_output_items = QTextEdit()
         self.trj_output_items.setPlainText("id type x y z fx fy fz")
-        self.trj_output_items.setMaximumHeight(100)
+        self.trj_output_items.setMaximumHeight(60)  # Reduced height (about 3 lines)
         self.trj_output_items.setToolTip("Items to include in trajectory output")
         
         traj_form_layout.addRow("Trajectory Format:", self.traj_format)
@@ -1203,7 +1215,7 @@ class LammpsScriptGenerator(QMainWindow):
         
         self.thermo_style = QTextEdit()
         self.thermo_style.setPlainText("step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
-        self.thermo_style.setMaximumHeight(100)
+        self.thermo_style.setMaximumHeight(60)  # Reduced height (about 3 lines)
         self.thermo_style.setToolTip("Thermo style specification")
         
         thermo_form_layout.addRow("Thermo Style:", self.thermo_style)
@@ -1224,7 +1236,7 @@ class LammpsScriptGenerator(QMainWindow):
         
         self.custom_dumps_text = QTextEdit()
         self.custom_dumps_text.setPlaceholderText("Enter custom dump commands here...")
-        self.custom_dumps_text.setMaximumHeight(100)
+        self.custom_dumps_text.setMaximumHeight(60)  # Reduced height (about 3 lines)
         self.custom_dumps_text.setEnabled(False)
         self.custom_dumps_text.setToolTip("Custom LAMMPS dump commands")
         
@@ -1852,7 +1864,8 @@ class LammpsScriptGenerator(QMainWindow):
                 "enable_custom_computes": self.enable_custom_computes.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
                 "enable_custom_dumps": self.enable_custom_dumps.isChecked(),
-                "custom_dumps": self.custom_dumps_text.toPlainText()
+                "custom_dumps": self.custom_dumps_text.toPlainText(),
+                "enable_write_data": self.enable_write_data.isChecked()
             },
             
             "multistudy": {
@@ -1967,6 +1980,7 @@ class LammpsScriptGenerator(QMainWindow):
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
             self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
+            self.enable_write_data.setChecked(self.settings.value("output/enable_write_data", False, type=bool))
 
             # Job submission settings
             self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
@@ -2266,6 +2280,7 @@ class LammpsScriptGenerator(QMainWindow):
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
                 self.enable_custom_dumps.setChecked(output.get("enable_custom_dumps", False))
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
+                self.enable_write_data.setChecked(output.get("enable_write_data", False))
 
             # Job submission settings
             if "job_submission" in config:
