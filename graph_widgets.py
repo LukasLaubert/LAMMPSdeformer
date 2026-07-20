@@ -965,119 +965,121 @@ class GraphWidget(QWidget):
         # The midpoint slope occurs where the sine crosses zero (or at the starting phase)
         
         num_cycles = segment_info['num_cycles']
-        
-        # First, find the first zero crossing (midpoint slope starting point)
-        first_zero_x = -1
-        n = 0
-        while True:
-            x_d_offset = (n * math.pi - phi_start) / k if k != 0 else -1
-            if x_d_offset >= -1e-9 and x_d_offset <= x_range_d + 1e-9:
-                first_zero_x = p1_d.x() + x_d_offset
-                break
-            n += 1
-            if n > 1000: break # Safety break
 
-        # Position the amplitude handle at one quarter period after the first zero crossing
-        quarter_period = x_range_d / (4 * num_cycles) if num_cycles > 0 else 0
-        peak_trough_x = first_zero_x + quarter_period if first_zero_x != -1 else p1_d.x() + quarter_period
+        # Only draw the handle if the segment is longer than a quarter cycle
+        if num_cycles > 0.25:
+            # First, find the first zero crossing (midpoint slope starting point)
+            first_zero_x = -1
+            n = 0
+            while True:
+                x_d_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+                if x_d_offset >= -1e-9 and x_d_offset <= x_range_d + 1e-9:
+                    first_zero_x = p1_d.x() + x_d_offset
+                    break
+                n += 1
+                if n > 1000: break # Safety break
 
-        # Make sure it's within the segment bounds
-        if peak_trough_x >= p1_d.x() - 1e-9 and peak_trough_x <= p2_d.x() + 1e-9:
-            peak_trough_y_d = y_center + amplitude * math.sin(k * (peak_trough_x - p1_d.x()) + phi_start)
-            peak_trough_pos_d = QPointF(peak_trough_x, peak_trough_y_d)
-            peak_trough_pos_w = self._norm_to_widget(self._data_to_norm(peak_trough_pos_d))
+            # Position the amplitude handle at one quarter period after the first zero crossing
+            quarter_period = x_range_d / (4 * num_cycles) if num_cycles > 0 else 0
+            peak_trough_x = first_zero_x + quarter_period if first_zero_x != -1 else p1_d.x() + quarter_period
 
-            # Store this for mouse events - only for even multiples of quarter periods
-            # Always store the amplitude handle position for display
-            self._sine_amplitude_handles[segment_index] = peak_trough_pos_w
+            # Make sure it's within the segment bounds
+            if peak_trough_x >= p1_d.x() - 1e-9 and peak_trough_x <= p2_d.x() + 1e-9:
+                peak_trough_y_d = y_center + amplitude * math.sin(k * (peak_trough_x - p1_d.x()) + phi_start)
+                peak_trough_pos_d = QPointF(peak_trough_x, peak_trough_y_d)
+                peak_trough_pos_w = self._norm_to_widget(self._data_to_norm(peak_trough_pos_d))
 
-            # Draw the handle (e.g., a diamond shape)
-            painter.setPen(QPen(self.STYLE_HANDLE, 2))
-            painter.setBrush(QBrush(QColor("white")))
-            poly = QPolygonF([
-                peak_trough_pos_w + QPointF(0, -HANDLE_RADIUS),
-                peak_trough_pos_w + QPointF(HANDLE_RADIUS, 0),
-                peak_trough_pos_w + QPointF(0, HANDLE_RADIUS),
-                peak_trough_pos_w + QPointF(-HANDLE_RADIUS, 0),
-            ])
-            painter.drawPolygon(poly)
-            
-            # Draw amplitude value label - using actual stored amplitude if available
-            fm = QFontMetrics(QFont("Arial", 10))
-            # Use the stored amplitude value if available, otherwise calculate from the drawn position
-            stored_amplitude = self.segments[segment_index].get('amplitude')
-            if stored_amplitude is not None:
-                # Calculate the actual Y-value that the amplitude handle represents based on the stored amplitude
-                # This is where the handle is drawn on the screen: y_center + A*sin(angle_at_handle)
-                # Calculate the angle at the point where the amplitude handle is drawn
-                k_for_calc = segment_info['num_cycles'] * 2 * math.pi / x_range_d if x_range_d != 0 else 0
-                angle_at_handle = k_for_calc * (peak_trough_x - p1_d.x()) + phi_start
-                y_at_handle = y_center + stored_amplitude * math.sin(angle_at_handle)
+                # Store this for mouse events - only for even multiples of quarter periods
+                # Always store the amplitude handle position for display
+                self._sine_amplitude_handles[segment_index] = peak_trough_pos_w
+
+                # Draw the handle (e.g., a diamond shape)
+                painter.setPen(QPen(self.STYLE_HANDLE, 2))
+                painter.setBrush(QBrush(QColor("white")))
+                poly = QPolygonF([
+                    peak_trough_pos_w + QPointF(0, -HANDLE_RADIUS),
+                    peak_trough_pos_w + QPointF(HANDLE_RADIUS, 0),
+                    peak_trough_pos_w + QPointF(0, HANDLE_RADIUS),
+                    peak_trough_pos_w + QPointF(-HANDLE_RADIUS, 0),
+                ])
+                painter.drawPolygon(poly)
                 
-                amplitude_text = f"{y_at_handle:.3f}"
-            else:
-                amplitude_text = f"{peak_trough_y_d:.3f}"  # Fallback to drawn position
-            
-            amplitude_rect = QRectF(fm.boundingRect(amplitude_text).adjusted(-4,-2,4,2))
-            amplitude_rect.moveCenter(QPointF(peak_trough_pos_w.x() + 35, peak_trough_pos_w.y()))
-            painter.setPen(QPen(STYLE_TEXT_PRIMARY, 1))
-            painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
-            painter.drawText(amplitude_rect, Qt.AlignmentFlag.AlignCenter, amplitude_text)
-            
-            # Add amplitude label to clickable regions for both even multiple alternating schemes and integer full period pulsating schemes
-            is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
-            is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
-            if is_even_multiple_alternating or is_integer_full_period_pulsating:
-                self._clickable_regions.append((amplitude_rect, "amplitude_label", segment_index))
-
-            # Only draw the second amplitude handle if we have 5 or more quarter periods (to avoid coincidence at 4 quarters)
-            num_quarters = segment_info['num_cycles'] * 4
-            if num_quarters >= 5:
-                second_peak_trough_x = peak_trough_x + 2 * quarter_period  # One full period after the first
+                # Draw amplitude value label - using actual stored amplitude if available
+                fm = QFontMetrics(QFont("Arial", 10))
+                # Use the stored amplitude value if available, otherwise calculate from the drawn position
+                stored_amplitude = self.segments[segment_index].get('amplitude')
+                if stored_amplitude is not None:
+                    # Calculate the actual Y-value that the amplitude handle represents based on the stored amplitude
+                    # This is where the handle is drawn on the screen: y_center + A*sin(angle_at_handle)
+                    # Calculate the angle at the point where the amplitude handle is drawn
+                    k_for_calc = segment_info['num_cycles'] * 2 * math.pi / x_range_d if x_range_d != 0 else 0
+                    angle_at_handle = k_for_calc * (peak_trough_x - p1_d.x()) + phi_start
+                    y_at_handle = y_center + stored_amplitude * math.sin(angle_at_handle)
+                    
+                    amplitude_text = f"{y_at_handle:.3f}"
+                else:
+                    amplitude_text = f"{peak_trough_y_d:.3f}"  # Fallback to drawn position
                 
-                # Condition: Draw if the next peak/trough is also within the segment bounds.
-                if second_peak_trough_x <= p2_d.x() + 1e-9:
-                    # Calculate the Y position for the second handle
-                    second_peak_trough_y_d = y_center + amplitude * math.sin(k * (second_peak_trough_x - p1_d.x()) + phi_start)
-                    second_peak_trough_pos_d = QPointF(second_peak_trough_x, second_peak_trough_y_d)
-                    second_peak_trough_pos_w = self._norm_to_widget(self._data_to_norm(second_peak_trough_pos_d))
+                amplitude_rect = QRectF(fm.boundingRect(amplitude_text).adjusted(-4,-2,4,2))
+                amplitude_rect.moveCenter(QPointF(peak_trough_pos_w.x() + 35, peak_trough_pos_w.y()))
+                painter.setPen(QPen(STYLE_TEXT_PRIMARY, 1))
+                painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+                painter.drawText(amplitude_rect, Qt.AlignmentFlag.AlignCenter, amplitude_text)
+                
+                # Add amplitude label to clickable regions for both even multiple alternating schemes and integer full period pulsating schemes
+                is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
+                is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
+                if is_even_multiple_alternating or is_integer_full_period_pulsating:
+                    self._clickable_regions.append((amplitude_rect, "amplitude_label", segment_index))
+
+                # Only draw the second amplitude handle if we have 5 or more quarter periods (to avoid coincidence at 4 quarters)
+                num_quarters = segment_info['num_cycles'] * 4
+                if num_quarters >= 5:
+                    second_peak_trough_x = peak_trough_x + 2 * quarter_period  # One full period after the first
                     
-                    # Draw the second handle (e.g., a diamond shape)
-                    painter.setPen(QPen(self.STYLE_HANDLE, 2))
-                    painter.setBrush(QBrush(QColor("white")))
-                    second_poly = QPolygonF([
-                        second_peak_trough_pos_w + QPointF(0, -HANDLE_RADIUS),
-                        second_peak_trough_pos_w + QPointF(HANDLE_RADIUS, 0),
-                        second_peak_trough_pos_w + QPointF(0, HANDLE_RADIUS),
-                        second_peak_trough_pos_w + QPointF(-HANDLE_RADIUS, 0),
-                    ])
-                    painter.drawPolygon(second_poly)
-                    
-                    # Draw the second amplitude value label - using actual stored amplitude if available
-                    stored_amplitude = self.segments[segment_index].get('amplitude')
-                    if stored_amplitude is not None:
-                        # Calculate the actual Y-value that the second amplitude handle represents based on the stored amplitude
-                        # This is where the handle is drawn on the screen: y_center + A*sin(angle_at_second_handle)
-                        # Calculate the angle at the point where the second amplitude handle is drawn
-                        k_for_calc = segment_info['num_cycles'] * 2 * math.pi / x_range_d if x_range_d != 0 else 0
-                        angle_at_second_handle = k_for_calc * (second_peak_trough_x - p1_d.x()) + phi_start
-                        y_at_second_handle = y_center + stored_amplitude * math.sin(angle_at_second_handle)
+                    # Condition: Draw if the next peak/trough is also within the segment bounds.
+                    if second_peak_trough_x <= p2_d.x() + 1e-9:
+                        # Calculate the Y position for the second handle
+                        second_peak_trough_y_d = y_center + amplitude * math.sin(k * (second_peak_trough_x - p1_d.x()) + phi_start)
+                        second_peak_trough_pos_d = QPointF(second_peak_trough_x, second_peak_trough_y_d)
+                        second_peak_trough_pos_w = self._norm_to_widget(self._data_to_norm(second_peak_trough_pos_d))
                         
-                        second_amplitude_text = f"{y_at_second_handle:.3f}"
-                    else:
-                        second_amplitude_text = f"{second_peak_trough_y_d:.3f}"  # Fallback to drawn position
-                    
-                    second_amplitude_rect = QRectF(fm.boundingRect(second_amplitude_text).adjusted(-4,-2,4,2))
-                    second_amplitude_rect.moveCenter(QPointF(second_peak_trough_pos_w.x() + 35, second_peak_trough_pos_w.y()))
-                    painter.setPen(QPen(STYLE_TEXT_PRIMARY, 1))
-                    painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
-                    painter.drawText(second_amplitude_rect, Qt.AlignmentFlag.AlignCenter, second_amplitude_text)
-                    
-                    # Add second amplitude label to clickable regions for both even multiple alternating and integer full period pulsating schemes
-                    is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
-                    is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
-                    if is_even_multiple_alternating or is_integer_full_period_pulsating:
-                        self._clickable_regions.append((second_amplitude_rect, "amplitude_label", segment_index))
+                        # Draw the second handle (e.g., a diamond shape)
+                        painter.setPen(QPen(self.STYLE_HANDLE, 2))
+                        painter.setBrush(QBrush(QColor("white")))
+                        second_poly = QPolygonF([
+                            second_peak_trough_pos_w + QPointF(0, -HANDLE_RADIUS),
+                            second_peak_trough_pos_w + QPointF(HANDLE_RADIUS, 0),
+                            second_peak_trough_pos_w + QPointF(0, HANDLE_RADIUS),
+                            second_peak_trough_pos_w + QPointF(-HANDLE_RADIUS, 0),
+                        ])
+                        painter.drawPolygon(second_poly)
+                        
+                        # Draw the second amplitude value label - using actual stored amplitude if available
+                        stored_amplitude = self.segments[segment_index].get('amplitude')
+                        if stored_amplitude is not None:
+                            # Calculate the actual Y-value that the second amplitude handle represents based on the stored amplitude
+                            # This is where the handle is drawn on the screen: y_center + A*sin(angle_at_second_handle)
+                            # Calculate the angle at the point where the second amplitude handle is drawn
+                            k_for_calc = segment_info['num_cycles'] * 2 * math.pi / x_range_d if x_range_d != 0 else 0
+                            angle_at_second_handle = k_for_calc * (second_peak_trough_x - p1_d.x()) + phi_start
+                            y_at_second_handle = y_center + stored_amplitude * math.sin(angle_at_second_handle)
+                            
+                            second_amplitude_text = f"{y_at_second_handle:.3f}"
+                        else:
+                            second_amplitude_text = f"{second_peak_trough_y_d:.3f}"  # Fallback to drawn position
+                        
+                        second_amplitude_rect = QRectF(fm.boundingRect(second_amplitude_text).adjusted(-4,-2,4,2))
+                        second_amplitude_rect.moveCenter(QPointF(second_peak_trough_pos_w.x() + 35, second_peak_trough_pos_w.y()))
+                        painter.setPen(QPen(STYLE_TEXT_PRIMARY, 1))
+                        painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+                        painter.drawText(second_amplitude_rect, Qt.AlignmentFlag.AlignCenter, second_amplitude_text)
+                        
+                        # Add second amplitude label to clickable regions for both even multiple alternating and integer full period pulsating schemes
+                        is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
+                        is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
+                        if is_even_multiple_alternating or is_integer_full_period_pulsating:
+                            self._clickable_regions.append((second_amplitude_rect, "amplitude_label", segment_index))
 
     def get_y_unit(self):
         return "ΔT" if self.mode == 'Temperature' else "ε"
@@ -1085,6 +1087,85 @@ class GraphWidget(QWidget):
     def count_sine_segments(self):
         """Count the number of sine segments in the graph"""
         return sum(1 for segment in self.segments if segment.get('type') == 'sine')
+
+    def get_sine_segment_info(self, segment_index):
+        """
+        Calculates and returns a dictionary of sine wave parameters for script generation.
+        These parameters are derived from the segment's properties and the graph's current state.
+        """
+        if segment_index < 0 or segment_index >= len(self.segments):
+            return None
+        
+        segment_info = self.segments[segment_index]
+        if segment_info['type'] != 'sine':
+            return None
+
+        p1_d = self._norm_to_data(self.points_norm[segment_index])
+        p2_d = self._norm_to_data(self.points_norm[segment_index+1])
+
+        amplitude_strain, y_center_strain, phi_start_rad = self._get_sine_parameters_with_stored_amp(p1_d, p2_d, segment_info, segment_index)
+
+        if amplitude_strain is None:
+            return None
+
+        num_cycles = segment_info['num_cycles']
+        scheme = segment_info['scheme']
+        x_range_d = p2_d.x() - p1_d.x() # Total steps for this segment
+
+        # Calculate period in steps (Sp in LAMMPS script)
+        period_steps = x_range_d / num_cycles if num_cycles > 0 else 0
+
+        # Determine Ashift_factor and LAMMPS-equivalent phi_start based on scheme
+        ashift_factor = 0
+        lammps_phi_start_rad = 0 # This is the phase of the sine function in LAMMPS, relative to the start of the segment
+
+        if "Alternating" in scheme:
+            ashift_factor = 0
+            if "compressive start" in scheme:
+                lammps_phi_start_rad = math.pi # Starts at -A
+            else: # Alternating (tensile start)
+                lammps_phi_start_rad = 0 # Starts at 0, goes to +A
+        elif "Pulsating tensile" in scheme:
+            ashift_factor = 1 # A + A*sin(...) -> oscillates between 0 and 2A
+            lammps_phi_start_rad = -math.pi / 2 # sin(-pi/2) = -1, so A + A*(-1) = 0 at start
+        elif "Pulsating compressive" in scheme:
+            ashift_factor = -1 # -A + A*sin(...) -> oscillates between -2A and 0
+            lammps_phi_start_rad = math.pi / 2 # sin(pi/2) = 1, so -A + A*(1) = 0 at start
+
+        # Calculate phaseShift in steps (phaseShift in LAMMPS script)
+        # The LAMMPS sine function is A * sin(2*PI * (step-v_phaseShift)/v_Sp) + Ashift
+        # We want this to match amplitude_strain * sin(k * (step - p1_d.x()) + phi_start_rad) + y_center_strain
+        # After careful derivation, the phaseShift in LAMMPS is:
+        # v_phaseShift = p1_d.x() - (lammps_phi_start_rad * period_steps / (2 * math.pi))
+        # Note: The y_center_strain is handled by Ashift_factor * amplitude_strain in LAMMPS
+        
+        # The LAMMPS formula is: A * sin(2*PI * (step-v_phaseShift)/v_Sp) + Ashift
+        # The Python formula is: y_center + amplitude * sin(k * (x_d - p1_d.x()) + phi_start)
+        # Where k = num_cycles * 2 * math.pi / x_range_d = 2 * math.pi / period_steps
+        # So, Python: y_center + amplitude * sin(2*PI/period_steps * (x_d - p1_d.x()) + phi_start)
+        # We need to match the phase part:
+        # 2*PI/period_steps * (step - phaseShift)  ==  2*PI/period_steps * (step - p1_d.x()) + phi_start
+        # (step - phaseShift) == (step - p1_d.x()) + phi_start * period_steps / (2*PI)
+        # -phaseShift == -p1_d.x() + phi_start * period_steps / (2*PI)
+        # phaseShift = p1_d.x() - (phi_start * period_steps / (2*PI))
+        
+        # Use the lammps_phi_start_rad for the phaseShift calculation
+        phase_shift_steps = p1_d.x() - (lammps_phi_start_rad * period_steps / (2 * math.pi))
+
+        return {
+            'amplitude_strain': abs(amplitude_strain), # Always positive for LAMMPS A variable
+            'period_steps': period_steps,
+            'phase_shift_steps': phase_shift_steps,
+            'ashift_factor': ashift_factor,
+            'num_cycles': num_cycles,
+            'scheme': scheme,
+            'start_step': p1_d.x(),
+            'end_step': p2_d.x(),
+            'start_y': p1_d.y(),
+            'end_y': p2_d.y(),
+            'y_center_strain': y_center_strain # For debugging/verification
+        }
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos_widget = event.position()
@@ -2667,17 +2748,15 @@ class StudyWidget(QWidget):
             }
         }
     def set_state(self, state):
-        # Set the spinbox values first
+        # Block signals to prevent feedback loops and unwanted updates
         self.max_steps_spinbox.blockSignals(True)
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
-        # Block signals for ensemble controls
         self.ensemble_combo.blockSignals(True)
         self.temp_spinbox.blockSignals(True)
         self.pressure_spinbox.blockSignals(True)
         self.npt_aniso_combo.blockSignals(True)
         self.sync_ensemble_checkbox.blockSignals(True)
-        # Block signals for bond breakage controls
         self.enable_bond_breakage_checkbox.blockSignals(True)
         self.nevery_spinbox.blockSignals(True)
         self.bondtype_spinbox.blockSignals(True)
@@ -2687,13 +2766,36 @@ class StudyWidget(QWidget):
         self.prob_seed_spinbox.blockSignals(True)
         self.sync_bond_break_checkbox.blockSignals(True)
 
-        self.max_steps_spinbox.setValue(state.get('max_steps', 100))
-        self.min_strain_spinbox.setValue(state.get('min_strain', 0.0))
-        self.max_strain_spinbox.setValue(state.get('max_strain', 1.0))
+        # 1. Set mode and update mode-dependent UI without triggering corrective logic
+        new_mode = state.get('mode', 'Deformation')
+        if self.mode != new_mode:
+            self.mode = new_mode
+            self.graph_widget.set_mode(new_mode)
+        
+        is_temp_mode = self.mode == 'Temperature'
+        self.min_strain_spinbox.setPrefix("Min Temp: " if is_temp_mode else "Min Strain: ")
+        self.max_strain_spinbox.setPrefix("Max Temp: " if is_temp_mode else "Max Strain: ")
+        self.temp_spinbox.setVisible(not is_temp_mode)
+        self.deform_axis_label.setVisible(not is_temp_mode)
+        self.deform_axis_combo.setVisible(not is_temp_mode)
+
+        # 2. Set spinbox ranges based on mode
+        if is_temp_mode:
+            self.min_strain_spinbox.setRange(0.001, 1e9)
+            self.max_strain_spinbox.setRange(0.001, 1e9)
+        else:
+            self.min_strain_spinbox.setRange(-0.999999, 1e9)
+            self.max_strain_spinbox.setRange(-1e9, 1e9)
+
+        # 3. Set control values directly from state
+        max_steps = state.get('max_steps', 100)
+        min_strain = state.get('min_strain', 0.0)
+        max_strain = state.get('max_strain', 1.0)
+        self.max_steps_spinbox.setValue(max_steps)
+        self.min_strain_spinbox.setValue(min_strain)
+        self.max_strain_spinbox.setValue(max_strain)
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
         self.deform_scenario_combo.setCurrentText(state.get('deform_scenario', 'symmetric'))
-
-        self.set_mode(state.get('mode', 'Deformation'), adjust_values=False)
 
         ensemble_state = state.get('ensemble', {})
         self.ensemble_combo.setCurrentText(ensemble_state.get('ensemble', 'NVT'))
@@ -2712,16 +2814,34 @@ class StudyWidget(QWidget):
         self.prob_seed_spinbox.setValue(bond_breakage_state.get('prob_seed', 12345))
         self.sync_bond_break_checkbox.setChecked(bond_breakage_state.get('sync_bond_break', False))
 
+        # 4. Directly update the graph's axes with the loaded values
+        self.graph_widget.set_max_values(max_steps, min_strain, max_strain)
+
+        # 5. Load graph data
+        self.graph_widget._fixed_segments = set(state.get('fixed_segments', []))
+        self.graph_widget.segments = state.get('segments', [{'type': 'line'} for _ in range(len(state.get('data_points', [])) - 1)])
+        
+        data_points_list = state.get('data_points', [])
+        if not data_points_list and 'points' in state:
+            data_points_list = state.get('points', [])
+
+        if not data_points_list and 'points_norm' in state:
+            points_norm = state.get('points_norm', [])
+            self.graph_widget.points_norm = [QPointF(p[0], p[1]) if isinstance(p, list) else QPointF(p.x(), p.y()) for p in points_norm]
+        else:
+            data_points = [QPointF(p[0], p[1]) for p in data_points_list]
+            if data_points:
+                self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in data_points]
+        
+        # 6. Unblock signals
         self.max_steps_spinbox.blockSignals(False)
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
-        # Unblock signals for ensemble controls
         self.ensemble_combo.blockSignals(False)
         self.temp_spinbox.blockSignals(False)
         self.pressure_spinbox.blockSignals(False)
         self.npt_aniso_combo.blockSignals(False)
         self.sync_ensemble_checkbox.blockSignals(False)
-        # Unblock signals for bond breakage controls
         self.enable_bond_breakage_checkbox.blockSignals(False)
         self.nevery_spinbox.blockSignals(False)
         self.bondtype_spinbox.blockSignals(False)
@@ -2731,38 +2851,12 @@ class StudyWidget(QWidget):
         self.prob_seed_spinbox.blockSignals(False)
         self.sync_bond_break_checkbox.blockSignals(False)
         
-        # Update graph controls to set the correct axis limits
-        self._update_graph_controls()
-        
-        # Load fixed segments
-        fixed_segments = state.get('fixed_segments', [])
-        self.graph_widget._fixed_segments = set(fixed_segments)
-
-        # Load segments
-        self.graph_widget.segments = state.get('segments', [{'type': 'line'} for _ in range(len(state.get('data_points', [])) - 1)])
-        
-        # Now set the data points
-        data_points_list = state.get('data_points', [])
-        if not data_points_list and 'points' in state:  # For backward compatibility with old save format
-            data_points_list = state.get('points', [])
-
-        # Handle old format where points_norm was saved
-        if not data_points_list and 'points_norm' in state:
-            points_norm = state.get('points_norm', [])
-            self.graph_widget.points_norm = [QPointF(p[0], p[1]) if isinstance(p, list) else QPointF(p.x(), p.y()) for p in points_norm]
-        else:
-            data_points = [QPointF(p[0], p[1]) for p in data_points_list]
-            if data_points:
-                # Convert data points to normalized coordinates using the current axis limits
-                self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in data_points]
-        
+        # 7. Final UI refresh
         self.graph_widget.update()
-        self.dataChanged.emit()  # Emit the dataChanged signal to update summaries
-        
-        # Update bond breakage UI state to ensure fields are enabled/disabled correctly
+        self.dataChanged.emit()
         self._update_ensemble_ui_state()
         self._update_bond_breakage_ui_state()
-
+        self._update_deform_scenario_visibility()
         self.set_enabled(state.get('is_enabled', True))
 
     def _update_bond_breakage_ui_state(self):

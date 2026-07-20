@@ -69,9 +69,10 @@ except ImportError as e:
 
 # Import the new graph widgets
 try:
-    from graph_widgets import DeformationTab
+    from graph_widgets import DeformationTab, GraphWidget
 except ImportError as e:
     DeformationTab = None
+    GraphWidget = None
 
 class Chip(QFrame):
     """A custom chip widget to display a removable item."""
@@ -2505,6 +2506,27 @@ class LammpsGui(QMainWindow):
                     # Get the full state from the study widget
                     study_state = study_widget.get_state()
                     study_state["name"] = study_name # Add the name to the state
+
+                    # Pre-process segments to add detailed sine parameters
+                    graph = study_widget.graph_widget
+                    raw_segments = study_state.get('segments', [])
+                    processed_segments = []
+                    for i, segment in enumerate(raw_segments):
+                        if segment.get('type') == 'sine':
+                            sine_params = graph.get_sine_segment_info(i)
+                            if sine_params:
+                                # Merge original segment info with new calculated params
+                                processed_segment = {**segment, **sine_params}
+                                processed_segments.append(processed_segment)
+                            else:
+                                # Handle error or fallback
+                                processed_segments.append(segment)
+                        else:
+                            processed_segments.append(segment)
+                    
+                    # Replace original segments with processed ones
+                    study_state['segments'] = processed_segments
+                    
                     config["multistudy"]["deform_studies"].append(study_state)
 
         return config
@@ -2670,11 +2692,21 @@ class LammpsGui(QMainWindow):
                     self.deformation_tab_widget.mode_combo.setCurrentText(current_widget.mode)
                     self.deformation_tab_widget.mode_combo.blockSignals(False)
 
+                # Restore active deformation tab
+                deform_tab_index = self.settings.value("gui/active_deformation_tab_index", 0, type=int)
+                if 0 <= deform_tab_index < self.deformation_tab_widget.tab_widget.count():
+                    self.deformation_tab_widget.tab_widget.setCurrentIndex(deform_tab_index)
+
                 # Plus tab is handled by the corner widget button, no need to add it here
                 pass
 
         except Exception as e:
             print(f"Error loading settings: {e}")
+
+        # Restore active main tab at the very end
+        main_tab_index = self.settings.value("gui/active_main_tab_index", 0, type=int)
+        if 0 <= main_tab_index < self.tab_widget.count():
+            self.tab_widget.setCurrentIndex(main_tab_index)
             
         self._update_output_tab_visibility()
 
@@ -2752,6 +2784,11 @@ class LammpsGui(QMainWindow):
                 else:
                     self.settings.setValue(f"multistudy/{key}", value)
             
+            # Save active tab indices
+            self.settings.setValue("gui/active_main_tab_index", self.tab_widget.currentIndex())
+            if hasattr(self, 'deformation_tab_widget'):
+                self.settings.setValue("gui/active_deformation_tab_index", self.deformation_tab_widget.tab_widget.currentIndex())
+
         except Exception as e:
             print(f"Error saving settings: {e}")
     

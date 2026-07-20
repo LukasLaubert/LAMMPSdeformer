@@ -276,6 +276,18 @@ class LammpsScriptGenerator:
                 "#------------------------", "# Base settings", "#------------------------", "include ../../base_input.in", ""
             ]
 
+            # Check for sine segments to add global sine variables
+            has_sine_segment = any(s.get("type") == "sine" for s in deform_study.get("segments", []))
+            if has_sine_segment:
+                script_lines.extend([
+                    "#------------------------",
+                    "# Global Sine Variables",
+                    "#------------------------",
+                    "variable started equal 1",
+                    "variable sinState equal 0",
+                    ""
+                ])
+
             if enable_restart:
                 script_lines.extend([
                     "#------------------------", "# Restart Setup", "#------------------------",
@@ -353,6 +365,7 @@ class LammpsScriptGenerator:
 					""
                 ])
                 script_lines.extend(["# --- Jump to correct segment based on restart step ---"])
+                script_lines.append("label segment_distribution")
                 restart_steps = sorted(list(set([block['start_step'] for block in execution_blocks])))
                 for step in restart_steps:
                     block = next((b for b in execution_blocks if b['start_step'] == step), None)
@@ -363,7 +376,10 @@ class LammpsScriptGenerator:
                 
                 script_lines.extend(["if \"${curstep} > 0\" then \"print 'ERROR: Restart step ${curstep} does not match any known segment start. Aborting.' ; quit\"", ""])
 
+                # --- Main Execution Loop ---
+                processed_sine_segments = set()
                 for block in execution_blocks:
+                    # Generate restart chunk if necessary
                     start_step = block['start_step']
                     if start_step > 0 and start_step % restart_freq == 0:
                         script_lines.extend([
@@ -383,8 +399,40 @@ class LammpsScriptGenerator:
                             "  \"print 'Time check: OK.'\"",
                             "variable chunk_start_time timer"
                         ])
+
+                    # If this is the first time we're seeing a sine segment, generate its init block.
+                    segment_info = block.get("segment_info", {})
+                    user_segment_id = block.get("user_segment_id")
+                    if segment_info.get("type") == "sine" and user_segment_id not in processed_sine_segments:
+                        
+                        amp = segment_info.get('amplitude_strain', 0)
+                        period = segment_info.get('period_steps', 0)
+                        phase = segment_info.get('phase_shift_steps', 0)
+                        ashift = segment_info.get('ashift_factor', 0)
+                        
+                        shear_dim_map = {'xy': 'y', 'xz': 'z', 'yz': 'z'}
+                        if is_shear:
+                            ref_len_var = f"v_L0{shear_dim_map[deform_axis]}"
+                        else:
+                            ref_len_var = f"v_L0{deform_axis}"
+
+                        init_block = [
+                            f"\n# --- Segment {user_segment_id} Init ---",
+                            f"label segment_{user_segment_id}_init",
+                            f"variable A equal {amp}*{ref_len_var}",
+                            f"variable Sp equal {period}",
+                            f"variable phaseShift equal {phase}",
+                            f"variable Ashift equal {ashift}*v_A",
+                            'variable displace equal "v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift - v_sinState"',
+                            'variable rate equal "2*PI/v_Sp * v_A * cos(2*PI * (step-v_phaseShift)/v_Sp)"',
+                            'if "$(v_started) == 1" then &',
+                            '  "variable started equal 0" &',
+                            '  "jump SELF segment_distribution"'
+                        ]
+                        script_lines.extend(init_block)
+                        processed_sine_segments.add(user_segment_id)
                     
-                    script_lines.extend(self._generate_segment_block(block, deform_study, system_config, is_shear))
+                    script_lines.extend(self._generate_segment_block(block, deform_study, system_config, is_shear, has_sine_segment))
 
                     if write_data_option == "After each deformation/temperature step":
                         if block['end_step'] in user_handle_steps:
@@ -406,7 +454,7 @@ class LammpsScriptGenerator:
                     p1, p2 = points[i], points[i+1]
                     if int(p1[0]) >= int(p2[0]): continue
                     block_info = { "start_step": int(p1[0]), "end_step": int(p2[0]), "sub_start_y": p1[1], "sub_end_y": p2[1], "user_segment_id": i + 1 }
-                    script_lines.extend(self._generate_segment_block(block_info, deform_study, system_config, is_shear))
+                    script_lines.extend(self._generate_segment_block(block_info, deform_study, system_config, is_shear, has_sine_segment))
                     if write_data_option == "After each deformation/temperature step":
                         script_lines.extend(["", f"# Write data after segment {i+1}", f"write_data {write_data_filename}"])
 
@@ -428,6 +476,7 @@ class LammpsScriptGenerator:
         job_config = self.config.get("job_submission", {})
         restart_freq = job_config.get("restart_freq", 100000)
         points = deform_study.get("data_points", []).copy()
+        segments = deform_study.get("segments", [])
         max_steps = deform_study.get("max_steps", 0)
 
         if not points: return []
@@ -451,31 +500,40 @@ class LammpsScriptGenerator:
             while (user_segment_idx + 1 < len(points) and end_step > int(points[user_segment_idx + 1][0])):
                 user_segment_idx += 1
             
-            p1 = points[user_segment_idx]
-            p2 = points[user_segment_idx + 1] if user_segment_idx + 1 < len(points) else p1
-            start_step_orig, end_step_orig = int(p1[0]), int(p2[0])
-            start_y_orig, end_y_orig = p1[1], p2[1]
-            total_duration = end_step_orig - start_step_orig
-            
-            if total_duration > 0:
-                sub_start_y = start_y_orig + (end_y_orig - start_y_orig) * ((start_step - start_step_orig) / total_duration)
-                sub_end_y = start_y_orig + (end_y_orig - start_y_orig) * ((end_step - start_step_orig) / total_duration)
-            else:
-                sub_start_y = start_y_orig; sub_end_y = end_y_orig
-            
-            blocks.append({
-                "start_step": start_step, "end_step": end_step,
-                "sub_start_y": sub_start_y, "sub_end_y": sub_end_y,
+            segment_info = segments[user_segment_idx] if user_segment_idx < len(segments) else {'type': 'line'}
+
+            block_info = {
+                "start_step": start_step,
+                "end_step": end_step,
                 "user_segment_id": user_segment_idx + 1,
+                "segment_info": segment_info,
                 "write_restart_at_end": (end_step % restart_freq == 0 and end_step > 0)
-            })
+            }
+
+            if segment_info.get('type') == 'line':
+                p1 = points[user_segment_idx]
+                p2 = points[user_segment_idx + 1] if user_segment_idx + 1 < len(points) else p1
+                start_step_orig, end_step_orig = int(p1[0]), int(p2[0])
+                start_y_orig, end_y_orig = p1[1], p2[1]
+                total_duration = end_step_orig - start_step_orig
+                
+                if total_duration > 0:
+                    sub_start_y = start_y_orig + (end_y_orig - start_y_orig) * ((start_step - start_step_orig) / total_duration)
+                    sub_end_y = start_y_orig + (end_y_orig - start_y_orig) * ((end_step - start_step_orig) / total_duration)
+                else:
+                    sub_start_y = start_y_orig
+                    sub_end_y = end_y_orig
+                
+                block_info["sub_start_y"] = sub_start_y
+                block_info["sub_end_y"] = sub_end_y
+
+            blocks.append(block_info)
         return blocks
 
-    def _generate_segment_block(self, block_info, deform_study, system_config, is_shear):
+    def _generate_segment_block(self, block_info, deform_study, system_config, is_shear, has_sine_segment):
         """Generates the core physics commands for a single execution block or user segment."""
         lines = []
         start_step, end_step = block_info['start_step'], block_info['end_step']
-        sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
         duration = end_step - start_step
         
         mode = deform_study.get("mode", "Deformation")
@@ -483,10 +541,21 @@ class LammpsScriptGenerator:
         ensemble_config = deform_study.get("ensemble", {})
         ensemble = ensemble_config.get("ensemble", "NVT")
         
+        segment_info = block_info.get("segment_info", {'type': 'line'})
+
         lines.append(f"\n# --- Segment {block_info['user_segment_id']}: from step {start_step} to {end_step} ---")
         lines.append(f"label segment_{block_info['user_segment_id']}_{start_step}")
-        
-        if mode == "Deformation":
+
+        if has_sine_segment and segment_info.get('type') == 'line':
+            lines.append("variable started equal 0")
+
+        if segment_info.get('type') == 'sine' and mode == "Deformation":
+            lines.append(f"if \"$(v_started) == 1\" then \"jump SELF segment_{block_info['user_segment_id']}_init\"")
+            lines.append(f"variable sinState equal $(v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift)")
+            lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap x flip no")
+
+        elif mode == "Deformation": # This is now the 'line' segment case
+            sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
             final_target_y = sub_end_y
             if is_shear:
                 lines.append(f"variable tilt_target equal \"{final_target_y} * v_L0{deform_axis[1]}\"")
@@ -502,6 +571,7 @@ class LammpsScriptGenerator:
                 lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap x flip no")
         
         elif mode == "Temperature":
+            sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
             slope = (sub_end_y - sub_start_y) / duration if duration > 0 else 0
             lines.extend([f"variable ramp_slope equal {slope}", f"variable set_temp equal \"{sub_start_y} + (step - {start_step}) * v_ramp_slope\""])
 
@@ -509,7 +579,7 @@ class LammpsScriptGenerator:
         pressure = ensemble_config.get("pressure", 1.0)
         damping = system_config.get("damping_factor", 100.0)
         
-        temp_start_ens, temp_end_ens = (sub_start_y, sub_end_y) if mode == "Temperature" else (temp, temp)
+        temp_start_ens, temp_end_ens = (block_info.get('sub_start_y', temp), block_info.get('sub_end_y', temp)) if mode == "Temperature" else (temp, temp)
         
         if ensemble == "NVT":
             lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
