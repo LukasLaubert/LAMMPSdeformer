@@ -430,9 +430,59 @@ class SinePropertiesDialog(QDialog):
             'scheme': self.scheme.currentText()
         }
 
+class LateralContractDialog(QDialog):
+    def __init__(self, current_overrides, study_settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Modify Lateral Contraction")
+        self.widgets = {}
+        
+        layout = QFormLayout(self)
+        
+        for axis, setting in study_settings.items():
+            combo = QComboBox()
+            
+            # Determine options based on study-wide setting
+            # setting is either "free (NPT)" or "constrained"
+            
+            keep_display_text = f"keep ({setting})"
+            combo.addItem(keep_display_text, "keep") # Store actual value in UserData
+            
+            if setting == "free (NPT)":
+                combo.addItem("constrained", "constrained")
+            else:
+                combo.addItem("free (NPT)", "free (NPT)")
+            
+            # Set current value
+            current_val = current_overrides.get(axis, "keep")
+            
+            # Find index matching current value
+            # If current_val matches the data of the second item, select it. Else select "keep".
+            if current_val == combo.itemData(1): # Check if it matches the non-keep option
+                combo.setCurrentIndex(1)
+            else:
+                combo.setCurrentIndex(0) # Default to keep
+            
+            self.widgets[axis] = combo
+            layout.addRow(f"Lateral {axis}:", combo) # Label remains simple
+            
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+    def get_overrides(self):
+        result = {}
+        for axis, combo in self.widgets.items():
+            val = combo.currentData()
+            if val != "keep":
+                result[axis] = val
+        return result
+
 # --- Main Graph Widget ---
 class GraphWidget(QWidget):
     dataChanged = pyqtSignal()
+    handleInserted = pyqtSignal(int)
+    handleDeleted = pyqtSignal(int)
     def __init__(self, parent=None):
         super().__init__(parent); self.setMinimumSize(600, 320); self.setMouseTracking(True)
         self.mode = "Deformation"
@@ -483,6 +533,30 @@ class GraphWidget(QWidget):
             self.STYLE_LINE = QColor("#007BFF")
             self.STYLE_HANDLE = QColor("#007BFF")
         self.update()
+    def update_cache_insert(self, index):
+        """Update all cached segment overrides by inserting an empty entry at index."""
+        for axis in self._segment_overrides_cache:
+            overrides_list = self._segment_overrides_cache[axis]
+            # Always insert; list.insert handles index >= len by appending
+            overrides_list.insert(index, {})
+            
+            # Reset the previous segment if we inserted inside the graph (split)
+            # This matches the logic in GraphWidget for the current view
+            # If we split segment i (now i and i+1), i is reset.
+            if 0 < index < len(overrides_list):
+                 overrides_list[index-1] = {}
+
+    def update_cache_delete(self, seg_idx):
+        """Update all cached segment overrides by removing entry at seg_idx and resetting the new entry at that position."""
+        for axis in self._segment_overrides_cache:
+            overrides_list = self._segment_overrides_cache[axis]
+            if 0 <= seg_idx < len(overrides_list):
+                overrides_list.pop(seg_idx)
+                # Reset the segment that moved into this position (merged result)
+                # This corresponds to the 'merged' segment after deletion
+                if seg_idx < len(overrides_list):
+                    overrides_list[seg_idx] = {}
+
     def reset_graph(self):
         y_start = self.get_y_start()
         self.points_norm = [self._data_to_norm(QPointF(0, y_start)), self._data_to_norm(QPointF(self._max_steps, self._max_strain))]
@@ -690,6 +764,11 @@ class GraphWidget(QWidget):
         return QPointF(round(p.x()), snapped_y)
     def _get_handle_at(self, pos):
         for i, p in enumerate(self.points_norm):
+            # If it's the last handle and strain recovery is active, don't make it clickable
+            if i == len(self.points_norm) - 1 and i > 0:
+                if self.segments[i-1].get('strain_recovery', False):
+                    continue
+            
             if (pos - self._norm_to_widget(p)).manhattanLength() < HANDLE_RADIUS * 1.5: return i
         return None
     def _get_amplitude_handle_at(self, pos):
@@ -724,8 +803,26 @@ class GraphWidget(QWidget):
             for i in range(len(self.points_norm) - 1):
                 p1_w, p2_w = self._norm_to_widget(self.points_norm[i]), self._norm_to_widget(self.points_norm[i+1])
                 segment_info = self.segments[i]
-                if segment_info['type'] == 'line':
-                    painter.setPen(QPen(self.STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
+                is_recovery = segment_info.get('strain_recovery', False)
+                
+                # Check for overrides
+                line_color = self.STYLE_LINE
+                overrides = segment_info.get('lateral_overrides', {})
+                if overrides:
+                    line_color = QColor("purple")
+
+                if is_recovery:
+                    # Force segment type to line
+                    segment_info['type'] = 'line'
+                    
+                    # Draw dashed line instead of gradient
+                    painter.setPen(QPen(line_color, 2, Qt.PenStyle.DashLine))
+                    painter.drawLine(p1_w, p2_w)
+                    
+                    # Skip slope text for recovery segment (no fixed rate target)
+                    
+                elif segment_info['type'] == 'line':
+                    painter.setPen(QPen(line_color, 2)); painter.drawLine(p1_w, p2_w)
                     p1_d, p2_d = self._norm_to_data(self.points_norm[i]), self._norm_to_data(self.points_norm[i+1])
                     dx_s, dy_e, dx_t = p2_d.x() - p1_d.x(), p2_d.y() - p1_d.y(), (p2_d.x() - p1_d.x()) * self._timestep
                     slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
@@ -745,8 +842,44 @@ class GraphWidget(QWidget):
                     painter.drawText(rate_rect, rate_text)
                     self._clickable_regions.append((slope_rect.united(rate_rect), "slope", i))
                 elif segment_info['type'] == 'sine':
-                    self._draw_sine_segment(painter, i, p1_w, p2_w, segment_info)            # Draw the handles and labels
+                    self._draw_sine_segment(painter, i, p1_w, p2_w, segment_info, line_color)            
+            
+                # Draw lateral override labels
+                if overrides:
+                    line_segment_center_x = (p1_w.x() + p2_w.x()) / 2
+                    # Position slightly below the line itself. Adjust vertical offset based on whether slope text is drawn
+                    y_pos_below_line = ((p1_w.y() + p2_w.y()) / 2) + 15
+                    
+                    font = QFont("Arial", 9, QFont.Weight.Bold)
+                    painter.setFont(font)
+                    
+                    sorted_axes = sorted(overrides.keys())
+                    
+                    # Calculate total width for centering
+                    total_text_width = 0
+                    for axis in sorted_axes:
+                        total_text_width += fm.horizontalAdvance(axis)
+                    total_text_width += (len(sorted_axes) - 1) * 5 # Add 5px space between letters
+                    
+                    current_x = line_segment_center_x - (total_text_width / 2)
+                    
+                    for axis in sorted_axes:
+                        val = overrides[axis]
+                        if val == "free (NPT)": color = QColor("green")
+                        else: color = QColor("red")
+                        
+                        painter.setPen(color)
+                        text_width = fm.horizontalAdvance(axis)
+                        text_rect = QRectF(current_x, y_pos_below_line, text_width, fm.height())
+                        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, axis)
+                        current_x += text_width + 5 # Move to next position with spacing
+
             for i, p_norm in enumerate(self.points_norm):
+                # Hide last handle if recovery enabled
+                if i == len(self.points_norm) - 1 and i > 0:
+                    if self.segments[i-1].get('strain_recovery', False):
+                        continue
+
                 p_data, p_w = self._norm_to_data(p_norm), self._norm_to_widget(p_norm)
                 painter.setPen(QPen(STYLE_HANDLE_OUTLINE, 2)); painter.setBrush(self.STYLE_HANDLE); painter.drawEllipse(p_w, HANDLE_RADIUS, HANDLE_RADIUS)
                 y_text = f"{p_data.y():.3f}"; y_rect = QRectF(fm.boundingRect(y_text)); y_rect.moveCenter(QPointF(p_w.x() + 35, p_w.y()))
@@ -894,7 +1027,7 @@ class GraphWidget(QWidget):
         
         return amplitude, y_center, phi_start
 
-    def _draw_sine_segment(self, painter, segment_index, p1_w, p2_w, segment_info):
+    def _draw_sine_segment(self, painter, segment_index, p1_w, p2_w, segment_info, line_color=None):
         p1_d = self._norm_to_data(self.points_norm[segment_index])
         p2_d = self._norm_to_data(self.points_norm[segment_index+1])
 
@@ -924,8 +1057,8 @@ class GraphWidget(QWidget):
             y_d = y_center + amplitude * math.sin(k * (x_d - p1_d.x()) + phi_start)
             points_to_draw.append(self._norm_to_widget(self._data_to_norm(QPointF(x_d, y_d))))
 
-        # Draw the sine wave in the normal style color
-        painter.setPen(QPen(self.STYLE_LINE, 2))
+        # Draw the sine wave in the normal style color or override
+        painter.setPen(QPen(line_color if line_color else self.STYLE_LINE, 2))
         painter.drawPolyline(QPolygonF(points_to_draw))
 
         # 2. Draw the ghost slope indicator
@@ -1235,12 +1368,15 @@ class GraphWidget(QWidget):
                 if self._dragged_amplitude_handle_index is None:
                     self._dragged_segment_index = self._get_segment_at(self._drag_start_pos_widget)
                     if self._dragged_segment_index is not None:
-                        # Segments can always be selected for dragging, regardless of fixed status
-                        # The movement logic will handle constraints appropriately
-                        i = self._dragged_segment_index
-                        p1_w = self._norm_to_widget(self.points_norm[i])
-                        self._drag_mouse_to_p1_offset = self._drag_start_pos_widget - p1_w
-                        self._segment_drag_offset_norm = self.points_norm[i+1] - self.points_norm[i]
+                        # Prevent dragging if strain recovery is active for this segment
+                        if self.segments[self._dragged_segment_index].get('strain_recovery', False):
+                            self._dragged_segment_index = None
+                        else:
+                            # Segments can always be selected for dragging...
+                            i = self._dragged_segment_index
+                            p1_w = self._norm_to_widget(self.points_norm[i])
+                            self._drag_mouse_to_p1_offset = self._drag_start_pos_widget - p1_w
+                            self._segment_drag_offset_norm = self.points_norm[i+1] - self.points_norm[i]
         elif event.button() == Qt.MouseButton.RightButton:
             # Handle right-click for locking/unlocking x-axis ticks, y-value labels, and slope segments
             pos = event.position()
@@ -1760,6 +1896,12 @@ class GraphWidget(QWidget):
                     p1_new_data.setX(round(p1_new_data.x()))
                     p1_new_norm = self._data_to_norm(p1_new_data)
                     
+                    # Special handling for the last segment to mimic first segment behavior (mirrored)
+                    # Ensure the right-most point stays at x=max (normalized 1.0)
+                    if i == len(self.points_norm) - 2:
+                        p1_new_norm.setX(1.0 - self._segment_drag_offset_norm.x())
+                        p1_new_data = self._norm_to_data(p1_new_norm) # Sync data for subsequent Y clamping
+                    
                     # --- Start: NEW logic for boundary clamping for SINE segments ---
                     p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
                     p2_new_data = self._norm_to_data(p2_new_norm)
@@ -1889,19 +2031,30 @@ class GraphWidget(QWidget):
             # 2. Check if a segment is hit
             seg_idx = self._get_segment_at(event.position())
             if seg_idx is not None:
-                segment_info = self.segments[seg_idx]
-                if segment_info['type'] == 'line':
-                    # Split the line segment by adding a new point
-                    new_p_norm = self._data_to_norm(self._snap_data_point(self._norm_to_data(self._widget_to_norm(event.position()))))
-                    self.points_norm.append(new_p_norm)
-                    self._sort_points()
-                    # The segment at seg_idx was split. Replace it with a line and insert another line.
-                    self.segments[seg_idx] = {'type': 'line'}
-                    self.segments.insert(seg_idx + 1, {'type': 'line'})
-                    self.update()
-                    self.dataChanged.emit()
-                elif segment_info['type'] == 'sine':
-                    self._show_sine_properties_dialog(seg_idx)
+                # --- Topology Change: Splitting a segment (seg_idx) ---
+                # This original segment at seg_idx is being replaced by two new segments.
+                # Reset overrides and strain_recovery for these two new parts.
+                
+                # Check if original seg_idx was the last segment.
+                was_original_last_segment = (seg_idx == len(self.segments) - 1)
+
+                new_p_norm = self._data_to_norm(self._snap_data_point(self._norm_to_data(self._widget_to_norm(event.position()))))
+                self.points_norm.insert(seg_idx + 1, new_p_norm) # Insert new point at original seg_idx+1
+                
+                # Reset left part of split (implicitly clears overrides and strain_recovery)
+                self.segments[seg_idx] = {'type': 'line'}
+                # Reset right part of split (implicitly clears overrides and strain_recovery)
+                self.segments.insert(seg_idx + 1, {'type': 'line'})
+                
+                # Emit signal for cache update
+                self.handleInserted.emit(seg_idx + 1)
+                
+                # If original seg_idx was the last segment, clear strain_recovery on the new last segment
+                if was_original_last_segment and seg_idx + 1 < len(self.segments):
+                    if 'strain_recovery' in self.segments[seg_idx + 1]:
+                        del self.segments[seg_idx + 1]['strain_recovery']
+                
+                self.update(); self.dataChanged.emit()
                 return # Event handled
 
             # 3. If nothing else is hit, add a new point at the clicked position
@@ -1914,11 +2067,27 @@ class GraphWidget(QWidget):
                     insert_idx = i
                     break
             
-            self.points_norm.insert(insert_idx, new_p_norm)
-            self.segments.insert(insert_idx, {'type': 'line'})
+            # --- Topology Change: Adding a new point ---
+            # Check if insertion point affects the last segment (i.e., new point is inside or becomes the end of the last segment)
+            was_last_segment_affected = (insert_idx == len(self.segments))
             
-            self.update()
-            self.dataChanged.emit()
+            self.points_norm.insert(insert_idx, new_p_norm)
+            self.segments.insert(insert_idx, {'type': 'line'}) # New segment is clean
+            
+            # Emit signal for cache update
+            self.handleInserted.emit(insert_idx)
+            
+            # If inserting inside an existing segment (not at start/end of graph), reset the left part
+            if 0 < insert_idx < len(self.points_norm) - 1:
+                self.segments[insert_idx - 1] = {'type': 'line'} # Left part of split is reset
+            
+            # If the new point affected the last segment (either by splitting it or appending to it), 
+            # clear strain_recovery on the new last segment
+            if was_last_segment_affected:
+                if 'strain_recovery' in self.segments[insert_idx]:
+                    del self.segments[insert_idx]['strain_recovery']
+            
+            self.update(); self.dataChanged.emit()
     def contextMenuEvent(self, event):
         idx = self._get_handle_at(QPointF(event.pos()))
         if idx is not None:
@@ -1935,7 +2104,53 @@ class GraphWidget(QWidget):
                 elif self.segments[seg_idx]['type'] == 'sine':
                     menu.addAction("Edit Sine Properties...", lambda: self._show_sine_properties_dialog(seg_idx))
                     menu.addAction("Change to Line", lambda: self._change_segment_type(seg_idx, 'line'))
+                
+                if self.mode == 'Deformation':
+                    menu.addAction("Modify lateral contract.", lambda: self._show_lateral_contract_dialog(seg_idx))
+                    
+                    if seg_idx == len(self.segments) - 1:
+                        recovery_action = menu.addAction("Strain recovery")
+                        recovery_action.setCheckable(True)
+                        recovery_action.setChecked(self.segments[seg_idx].get('strain_recovery', False))
+                        recovery_action.triggered.connect(lambda: self._toggle_strain_recovery(seg_idx))
+                    
                 menu.exec(event.globalPos())
+
+    def _show_lateral_contract_dialog(self, seg_idx):
+        study_widget = self.parent()
+        if not study_widget or not hasattr(study_widget, 'lateral_widgets'):
+            return
+            
+        study_settings = {axis: w.currentText() for axis, w in study_widget.lateral_widgets.items()}
+        current_overrides = self.segments[seg_idx].get('lateral_overrides', {})
+        
+        dialog = LateralContractDialog(current_overrides, study_settings, self)
+        if dialog.exec():
+            new_overrides = dialog.get_overrides()
+            if new_overrides:
+                self.segments[seg_idx]['lateral_overrides'] = new_overrides
+            else:
+                # Remove key if empty to keep dict clean
+                if 'lateral_overrides' in self.segments[seg_idx]:
+                    del self.segments[seg_idx]['lateral_overrides']
+            self.update()
+            self.dataChanged.emit()
+
+    def _toggle_strain_recovery(self, seg_idx):
+        current = self.segments[seg_idx].get('strain_recovery', False)
+        self.segments[seg_idx]['strain_recovery'] = not current
+        
+        # If enabling recovery, force the last handle to Y=0
+        if not current:
+             if seg_idx < len(self.points_norm) - 1:
+                 last_point_idx = seg_idx + 1
+                 p_norm = self.points_norm[last_point_idx]
+                 p_data = self._norm_to_data(p_norm)
+                 p_data.setY(0.0)
+                 self.points_norm[last_point_idx] = self._data_to_norm(p_data)
+
+        self.update()
+        self.dataChanged.emit()
 
     def _change_segment_type(self, seg_idx, new_type):
         self.segments[seg_idx]['type'] = new_type
@@ -2165,6 +2380,10 @@ class GraphWidget(QWidget):
             # and replace them with a single line segment.
             if index -1 < len(self.segments):
                 del self.segments[index-1] # remove the second segment first
+            
+            # Emit signal for cache update
+            self.handleDeleted.emit(index - 1)
+
             if index -1 < len(self.segments):
                 self.segments[index-1] = {'type': 'line'} # replace the first segment
 
@@ -2272,6 +2491,8 @@ class StudyWidget(QWidget):
         deform_direc_thermo_layout.addStretch()
 
         self.graph_widget = GraphWidget(self)
+        self.graph_widget.handleInserted.connect(self.update_cache_insert)
+        self.graph_widget.handleDeleted.connect(self.update_cache_delete)
 
         layout.addLayout(controls_layout)
         layout.addLayout(deform_direc_thermo_layout)
@@ -2281,6 +2502,8 @@ class StudyWidget(QWidget):
         self.lateral_widgets = {}
         self._lateral_settings_cache = {}
         self._tensile_npt_aniso_cache = "aniso"
+        self._segment_overrides_cache = {}
+        self._last_deform_axis = "x" # Default for tracking
         
         self.ensemble_container = QWidget()
         self.ensemble_layout = QHBoxLayout(self.ensemble_container)
@@ -2292,6 +2515,10 @@ class StudyWidget(QWidget):
         self.ensemble_combo.addItems(["NVT", "NPT"])
         self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
         self.ensemble_combo.setFixedWidth(70)
+
+        ensemble_urls = [QUrl("https://docs.lammps.org/fix_nvt.html"), QUrl("https://docs.lammps.org/fix_nh.html")]
+        ensemble_tooltip = "Click to open LAMMPS documentation for NVT and NPT ensembles"
+        self.ensemble_info_label = create_info_icon_label(ensemble_urls, ensemble_tooltip, "blue")
 
         self.temp_spinbox = QDoubleSpinBox()
         self.temp_spinbox.setPrefix("Temperature: ")
@@ -2319,8 +2546,8 @@ class StudyWidget(QWidget):
         self.sync_ensemble_checkbox.setToolTip("Synchronize ensemble settings across all studies")
         
         sync_url = QUrl("https://docs.lammps.org/fix_nh.html")
-        sync_tooltip = "Click to open LAMMPS documentation for NVT and NPT ensembles"
-        self.ensemble_info_label = create_info_icon_label([sync_url], sync_tooltip, "blue")
+        sync_tooltip = "Click to open LAMMPS documentation for ensembles (fix nvt/npt)"
+        self.sync_ensemble_info_label = create_info_icon_label([sync_url], sync_tooltip, "blue")
         
         self._rebuild_ensemble_layout()
         
@@ -2734,7 +2961,8 @@ class StudyWidget(QWidget):
             'bond_commands': {
                 'commands': self.custom_commands_text.toPlainText(),
                 'sync_bond_commands': self.sync_custom_commands_checkbox.isChecked()
-            }
+            },
+            'segment_overrides_cache': copy.deepcopy(self._segment_overrides_cache)
         }
 
     def set_state(self, state):
@@ -2771,6 +2999,9 @@ class StudyWidget(QWidget):
             self.min_strain_spinbox.setRange(-0.999999, 1e9)
             self.max_strain_spinbox.setRange(-1e9, 1e9)
 
+        # Restore segment overrides cache
+        self._segment_overrides_cache = copy.deepcopy(state.get('segment_overrides_cache', {}))
+
         # 3. Set control values directly from state
         max_steps = state.get('max_steps', 100)
         min_strain = state.get('min_strain', 0.0)
@@ -2781,6 +3012,9 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
         self.deform_scenario_combo.setCurrentText(state.get('deform_scenario', 'symmetric'))
         self.remap_combo.setCurrentText(state.get('remap', 'x'))
+
+        # Set last deform axis before rebuilding to ensure cache consistency
+        self._last_deform_axis = state.get('deform_axis', 'x')
 
         # Rebuild the ensemble layout before setting values (crucial for dynamic widgets)
         self._rebuild_ensemble_layout()
@@ -2880,6 +3114,30 @@ class StudyWidget(QWidget):
         for axis, widget in self.lateral_widgets.items():
             self._lateral_settings_cache[axis] = widget.currentText()
 
+        # Cache segment overrides for the OLD axis
+        if hasattr(self, '_last_deform_axis'):
+            current_overrides_list = [copy.deepcopy(s.get('lateral_overrides', {})) for s in self.graph_widget.segments]
+            self._segment_overrides_cache[self._last_deform_axis] = current_overrides_list
+        
+        new_axis = self.deform_axis_combo.currentText()
+        self._last_deform_axis = new_axis
+        
+        # Restore segment overrides for the NEW axis if available and topology matches
+        cached_overrides = self._segment_overrides_cache.get(new_axis, [])
+        if len(cached_overrides) == len(self.graph_widget.segments):
+            for i, overrides in enumerate(cached_overrides):
+                if overrides:
+                    self.graph_widget.segments[i]['lateral_overrides'] = copy.deepcopy(overrides)
+                elif 'lateral_overrides' in self.graph_widget.segments[i]:
+                    del self.graph_widget.segments[i]['lateral_overrides']
+        else:
+            # Reset/Clear if no cache or mismatch
+            for s in self.graph_widget.segments:
+                if 'lateral_overrides' in s:
+                    del s['lateral_overrides']
+        
+        self.graph_widget.update()
+
         # Clear existing layout items
         while self.ensemble_layout.count():
             item = self.ensemble_layout.takeAt(0)
@@ -2892,13 +3150,14 @@ class StudyWidget(QWidget):
         if self.mode == 'Temperature':
             self.ensemble_layout.addWidget(QLabel("Ensemble:"))
             self.ensemble_layout.addWidget(self.ensemble_combo)
+            self.ensemble_layout.addWidget(self.ensemble_info_label)
             self.ensemble_layout.addWidget(self.temp_spinbox)
             self.ensemble_layout.addWidget(self.pressure_spinbox)
             self.ensemble_layout.addWidget(self.npt_aniso_label)
             self.ensemble_layout.addWidget(self.npt_aniso_combo)
             self.ensemble_layout.addStretch(1)
             self.ensemble_layout.addWidget(self.sync_ensemble_checkbox)
-            self.ensemble_layout.addWidget(self.ensemble_info_label)
+            self.ensemble_layout.addWidget(self.sync_ensemble_info_label)
             
             # Ensure correct visibility for Temperature mode
             self._update_ensemble_ui_state()
@@ -2936,11 +3195,33 @@ class StudyWidget(QWidget):
             self.ensemble_layout.addWidget(self.temp_spinbox)
             self.ensemble_layout.addStretch(1)
             self.ensemble_layout.addWidget(self.sync_ensemble_checkbox)
-            self.ensemble_layout.addWidget(self.ensemble_info_label)
+            self.ensemble_layout.addWidget(self.sync_ensemble_info_label)
             
             # Initial visibility check for Deformation mode
             self._update_lateral_npt_visibility()
             self._update_ensemble_ui_state()
+
+    def update_cache_insert(self, index):
+        """Update all cached segment overrides by inserting an empty entry at index."""
+        for axis in self._segment_overrides_cache:
+            overrides_list = self._segment_overrides_cache[axis]
+            # Always insert; list.insert handles index >= len by appending
+            overrides_list.insert(index, {})
+            
+            # Reset the previous segment if we inserted inside the graph (split)
+            # If we split segment i (now i and i+1), i is reset.
+            if 0 < index < len(overrides_list):
+                 overrides_list[index-1] = {}
+
+    def update_cache_delete(self, seg_idx):
+        """Update all cached segment overrides by removing entry at seg_idx and resetting the new entry at that position."""
+        for axis in self._segment_overrides_cache:
+            overrides_list = self._segment_overrides_cache[axis]
+            if 0 <= seg_idx < len(overrides_list):
+                overrides_list.pop(seg_idx)
+                # Reset the segment that moved into this position (merged result)
+                if seg_idx < len(overrides_list):
+                    overrides_list[seg_idx] = {}
 
     def _on_lateral_contraction_changed(self, text):
         self._update_lateral_npt_visibility()
@@ -3657,8 +3938,7 @@ class DeformationTab(QWidget):
             study_name = self.tab_widget.tabText(i)
             mode = study_widget.mode
             study_state = study_widget.get_state()
-            bond_commands_status = "Custom Commands" if study_state.get('bond_commands', {}).get('commands', '').strip() else "None"
-            all_summaries.append(f'--- Summary for {study_name} | Mode: {mode} | Bond Commands: {bond_commands_status} ---')
+            all_summaries.append(f'--- Summary for {study_name} | Mode: {mode} ---')
 
             points = study_widget.graph_widget.get_data_points()
             segments = study_widget.graph_widget.segments
@@ -3670,21 +3950,41 @@ class DeformationTab(QWidget):
             for j, segment_info in enumerate(segments):
                 if j + 1 < len(points):
                     p1, p2 = points[j], points[j+1]
+                    is_recovery = segment_info.get('strain_recovery', False) # Check recovery status
+                    
+                    # For recovery segments, p2.y is forced to 0.0, so use that value in summary
+                    effective_p2_y = 0.0 if is_recovery else p2.y()
+
                     if segment_info['type'] == 'line':
-                        linear_segments_data.append({'index': j, 'p1': p1, 'p2': p2})
+                        linear_segments_data.append({'index': j, 'p1': p1, 'p2': QPointF(p2.x(), effective_p2_y), 'is_recovery': is_recovery})
                     elif segment_info['type'] == 'sine':
-                        sine_segments_data.append({'index': j, 'p1': p1, 'p2': p2, 'info': segment_info})
+                        # Sine segments in recovery mode are treated as line segments for summary and script
+                        if is_recovery:
+                            linear_segments_data.append({'index': j, 'p1': p1, 'p2': QPointF(p2.x(), effective_p2_y), 'is_recovery': is_recovery})
+                        else:
+                            sine_segments_data.append({'index': j, 'p1': p1, 'p2': QPointF(p2.x(), effective_p2_y), 'info': segment_info})
 
             if linear_segments_data:
                 header = f"{ 'Lin Seg':<8} | {'Time Step':<20} | {'Time':<30} | {y_header:<16} | {f'Slope ({y_unit}/step)':<14} | {f'Rate ({y_unit}/t)':<14}"
                 all_summaries.append(header)
                 all_summaries.append("-" * len(header))
                 for data in linear_segments_data:
-                    j, p1, p2 = data['index'], data['p1'], data['p2']
+                    j, p1, p2, is_recovery_seg = data['index'], data['p1'], data['p2'], data['is_recovery']
                     p1_t, p2_t = p1.x() * timestep, p2.x() * timestep
                     dx_s, dx_t, dy_e = p2.x() - p1.x(), p2_t - p1_t, p2.y() - p1.y()
-                    slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
-                    all_summaries.append(f"{j+1:<8} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<20} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<30} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<16} | {f'{slope:.4e}':<14} | {rate:.4e}")
+                    
+                    slope_str = "---"
+                    rate_str = "---"
+                    strain_p2_str = "~"
+                    
+                    if not is_recovery_seg:
+                        slope = (dy_e / dx_s if dx_s != 0 else float('inf'))
+                        rate = (dy_e / dx_t if dx_t != 0 else float('inf'))
+                        slope_str = f'{slope:.4e}'
+                        rate_str = f'{rate:.4e}'
+                        strain_p2_str = f'{p2.y():.3f}'
+                    
+                    all_summaries.append(f"{j+1:<8} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<20} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<30} | {f'[{p1.y():.3f}, {strain_p2_str}]':<16} | {slope_str:<14} | {rate_str:<14}")
 
             if sine_segments_data:
                 if linear_segments_data: all_summaries.append("")
