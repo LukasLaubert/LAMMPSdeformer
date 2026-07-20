@@ -490,8 +490,6 @@ class LammpsScriptGenerator:
                 if thermo_avg_keywords:
                     fixes_computes_lines.append("") # Add a blank line for readability
                     thermo_style += " " + " ".join(thermo_avg_keywords)
-                
-                fixes_computes_lines.append("")
 
                 if output_config.get("add_target_to_thermo", False):
                     if mode == "Deformation":

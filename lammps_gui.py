@@ -2574,6 +2574,61 @@ class LammpsGui(QMainWindow):
                 QMessageBox.critical(self, "Error", f"System path does not exist: {system_path}")
                 return
 
+            # Check if averaged quantities are present and validate that all handles are integer multiples of thermo frequency
+            averaged_quantities = config.get("output", {}).get("averaged_quantities", [])
+            thermo_freq = config.get("output", {}).get("thermo_freq", 100)
+            avg_nevery = config.get("output", {}).get("avg_nevery", 1)
+            
+            if averaged_quantities:
+                # Check if all handles in all studies are integer multiples of thermo frequency
+                invalid_studies = []
+                
+                for study in deform_studies:
+                    study_name = study.get("name", "unnamed")
+                    data_points = study.get("data_points", [])
+                    
+                    # Extract time steps (x-coordinates) from data points
+                    time_steps = [int(point[0]) for point in data_points]
+                    
+                    # Check if all time steps are integer multiples of thermo_freq
+                    invalid_steps = []
+                    for step in time_steps:
+                        if step % thermo_freq != 0:
+                            invalid_steps.append(step)
+                    
+                    # Check if avg_nevery is a divisor of thermo_freq
+                    if thermo_freq % avg_nevery != 0:
+                        invalid_steps.append(f"avg_nevery={avg_nevery}")
+                    
+                    if invalid_steps:
+                        invalid_studies.append({
+                            "name": study_name,
+                            "invalid_steps": invalid_steps
+                        })
+
+                if invalid_studies:
+                    # Create a detailed error message
+                    error_message = "Averaged quantities are present but some handles are not integer multiples of the thermo frequency.\n\n"
+                    error_message += "Invalid studies:\n"
+                    
+                    for study in invalid_studies:
+                        error_message += f"- {study['name']}: "
+                        invalid_items = []
+                        for item in study['invalid_steps']:
+                            if isinstance(item, str):  # For avg_nevery issue
+                                invalid_items.append(item)
+                            else:  # For time step issues
+                                invalid_items.append(str(item))
+                        error_message += f"{', '.join(invalid_items)}\n"
+                    
+                    error_message += "\nPlease either:\n"
+                    error_message += "1. Shift the handles to integer multiples of the thermo frequency,\n"
+                    error_message += "2. Change the thermo frequency accordingly, or\n"
+                    error_message += "3. Remove all quantities from the 'Averaged quantities'"
+                    
+                    QMessageBox.critical(self, "Validation Error", error_message)
+                    return
+
             # Check if output path is not empty and ask user for action
             output_path = config["output"]["output_path"]
             if os.path.exists(output_path) and os.listdir(output_path):
