@@ -405,10 +405,10 @@ class LammpsScriptGenerator:
                     user_segment_id = block.get("user_segment_id")
                     if segment_info.get("type") == "sine" and user_segment_id not in processed_sine_segments:
                         
-                        amp = segment_info.get('amplitude_strain', 0)
-                        period = segment_info.get('period_steps', 0)
-                        phase = segment_info.get('phase_shift_steps', 0)
-                        ashift = segment_info.get('ashift_factor', 0)
+                        amp = self._format_float(segment_info.get('amplitude_strain', 0))
+                        period = self._format_float(segment_info.get('period_steps', 0))
+                        phase = self._format_float(segment_info.get('phase_shift_steps', 0))
+                        ashift = self._format_float(segment_info.get('ashift_factor', 0))
                         
                         shear_dim_map = {'xy': 'y', 'xz': 'z', 'yz': 'z'}
                         if is_shear:
@@ -556,7 +556,7 @@ class LammpsScriptGenerator:
 
         elif mode == "Deformation": # This is now the 'line' segment case
             sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
-            final_target_y = sub_end_y
+            final_target_y = self._format_float(sub_end_y)
             if is_shear:
                 lines.append(f"variable tilt_target equal \"{final_target_y} * v_L0{deform_axis[1]}\"")
                 lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box remap x flip no")
@@ -573,13 +573,13 @@ class LammpsScriptGenerator:
         elif mode == "Temperature":
             sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
             slope = (sub_end_y - sub_start_y) / duration if duration > 0 else 0
-            lines.extend([f"variable ramp_slope equal {slope}", f"variable set_temp equal \"{sub_start_y} + (step - {start_step}) * v_ramp_slope\""])
+            lines.extend([f"variable ramp_slope equal {self._format_float(slope)}", f"variable set_temp equal \"{self._format_float(sub_start_y)} + (step - {start_step}) * v_ramp_slope\""])
 
-        temp = ensemble_config.get("temperature", 300.0)
-        pressure = ensemble_config.get("pressure", 1.0)
-        damping = system_config.get("damping_factor", 100.0)
+        temp = self._format_float(ensemble_config.get("temperature", 300.0))
+        pressure = self._format_float(ensemble_config.get("pressure", 1.0))
+        damping = self._format_float(system_config.get("damping_factor", 100.0))
         
-        temp_start_ens, temp_end_ens = (block_info.get('sub_start_y', temp), block_info.get('sub_end_y', temp)) if mode == "Temperature" else (temp, temp)
+        temp_start_ens, temp_end_ens = (self._format_float(block_info.get('sub_start_y', temp)), self._format_float(block_info.get('sub_end_y', temp))) if mode == "Temperature" else (temp, temp)
         
         if ensemble == "NVT":
             lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
@@ -746,14 +746,20 @@ class LammpsScriptGenerator:
         
         return lines, final_thermo_style
 
+    def _format_float(self, f):
+        """Formats a float to a string, avoiding unnecessary precision and trailing zeros."""
+        return f'{f:.12g}'
+
     def _generate_bond_breakage_section(self, config):
         lines = ["#------------------------", "# Bond Breakage", "#------------------------"]
         nevery = config.get("nevery", 1)
         bondtype = config.get("bondtype", 1)
-        rmax = config.get("rmax", 1.5)
+        rmax = self._format_float(config.get("rmax", 1.5))
         cmd = f"fix break_bonds all bond/break {nevery} {bondtype} {rmax}"
         if config.get("enable_prob", False):
-            cmd += f" prob {config.get('prob_fraction', 0.1)} {config.get('prob_seed', 12345)}"
+            prob_fraction = self._format_float(config.get('prob_fraction', 0.1))
+            prob_seed = config.get('prob_seed', 12345)
+            cmd += f" prob {prob_fraction} {prob_seed}"
         lines.extend([cmd, ""])
         return lines
         

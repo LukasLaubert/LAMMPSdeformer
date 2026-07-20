@@ -1,6 +1,7 @@
 import sys
 import math
 import re
+import copy
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QSpinBox, QDialog, QDoubleSpinBox, QMenu, QCheckBox,
@@ -75,7 +76,11 @@ class PresetDialog(QDialog):
         self.setWindowTitle("Generate Scheme")
         self.max_steps = max_steps
         self.scheme_combo = QComboBox()
-        self.scheme_combo.addItems(["Staircase Loading", "Cyclic Loading", "Sinusoidal Loading"])
+        schemes = ["Staircase Loading", "Cyclic Loading"]
+        is_temp_mode = self.parent() and self.parent().mode == 'Temperature'
+        if not is_temp_mode:
+            schemes.append("Sinusoidal Loading")
+        self.scheme_combo.addItems(schemes)
         self.scheme_combo.setCurrentText(last_scheme)
         self.scheme_combo.currentIndexChanged.connect(self._update_options)
         self.stacked_widget = QStackedWidget()
@@ -1918,7 +1923,8 @@ class GraphWidget(QWidget):
             if seg_idx is not None:
                 menu = QMenu(self)
                 if self.segments[seg_idx]['type'] == 'line':
-                    menu.addAction("Insert Sine...", lambda: self._show_insert_sine_dialog(seg_idx))
+                    if self.mode != 'Temperature':
+                        menu.addAction("Insert Sine...", lambda: self._show_insert_sine_dialog(seg_idx))
                 elif self.segments[seg_idx]['type'] == 'sine':
                     menu.addAction("Edit Sine Properties...", lambda: self._show_sine_properties_dialog(seg_idx))
                     menu.addAction("Change to Line", lambda: self._change_segment_type(seg_idx, 'line'))
@@ -2633,7 +2639,7 @@ class StudyWidget(QWidget):
     def get_undo_state(self):
         return {
             'data_points': [QPointF(p.x(), p.y()) for p in self.graph_widget.get_data_points()],
-            'segments': [s.copy() for s in self.graph_widget.segments],
+            'segments': copy.deepcopy(self.graph_widget.segments),
             'max_steps': self.max_steps_spinbox.value(),
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
@@ -2654,7 +2660,7 @@ class StudyWidget(QWidget):
 
         self._update_graph_controls()
         self.graph_widget.points_norm = [self.graph_widget._data_to_norm(p) for p in state['data_points']]
-        self.graph_widget.segments = [s.copy() for s in state.get('segments', [{'type': 'line'} for _ in range(len(state['data_points']) - 1)])]
+        self.graph_widget.segments = copy.deepcopy(state.get('segments', [{'type': 'line'} for _ in range(len(state['data_points']) - 1)]))
         self.graph_widget.update()
         self.dataChanged.emit()
 
@@ -2727,7 +2733,7 @@ class StudyWidget(QWidget):
             'deform_axis': self.deform_axis_combo.currentText(),
             'deform_scenario': self.deform_scenario_combo.currentText(),
             'mode': self.mode,
-            'segments': self.graph_widget.segments,
+            'segments': copy.deepcopy(self.graph_widget.segments),
             'is_enabled': self.is_enabled,
             'ensemble': {
                 'ensemble': self.ensemble_combo.currentText(),
@@ -2819,7 +2825,7 @@ class StudyWidget(QWidget):
 
         # 5. Load graph data
         self.graph_widget._fixed_segments = set(state.get('fixed_segments', []))
-        self.graph_widget.segments = state.get('segments', [{'type': 'line'} for _ in range(len(state.get('data_points', [])) - 1)])
+        self.graph_widget.segments = copy.deepcopy(state.get('segments', [{'type': 'line'} for _ in range(len(state.get('data_points', [])) - 1)]))
         
         data_points_list = state.get('data_points', [])
         if not data_points_list and 'points' in state:
