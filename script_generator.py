@@ -300,15 +300,8 @@ class LammpsScriptGenerator:
                 script_lines.extend(["change_box all triclinic", ""])
 
             points = deform_study.get("data_points", [])
-            
-            if mode == "Deformation":
-                script_lines.extend(["#------------------------", "# Deformation Variables", "#------------------------"])
-                if is_shear:
-                    script_lines.extend([f"variable L0{deform_axis[1]} equal l{deform_axis[1]}", f"variable estrain_{deform_axis} equal {deform_axis}/v_L0{deform_axis[1]}"])
-                else:
-                    script_lines.extend([f"variable L0{deform_axis} equal $(l{deform_axis})", f"variable {deform_axis}lo0 equal $({deform_axis}lo)", f"variable {deform_axis}hi0 equal $({deform_axis}hi)", f"variable estrain_{deform_axis}{deform_axis} equal (l{deform_axis}-v_L0{deform_axis})/v_L0{deform_axis}"])
-                script_lines.append("")
-            elif mode == "Temperature":
+
+            if mode == "Temperature":
                 script_lines.extend(["#------------------------", "# Temperature Variables", "#------------------------"])
                 initial_temp = points[0][1] if points else 300.0
                 script_lines.extend([f"variable set_temp equal {initial_temp}", ""])
@@ -504,7 +497,7 @@ class LammpsScriptGenerator:
                     lines.extend([f'variable {deform_axis}lo_target equal v_{deform_axis}lo0', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y})"'])
                 elif deform_scenario == "shift lo, fix hi":
                     lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y})"', f"variable {deform_axis}hi_target equal v_{deform_axis}hi0"])
-                else:
+                else: # symmetric
                     lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y}) / 2"', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y}) / 2"'])
                 lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap x flip no")
         
@@ -535,111 +528,151 @@ class LammpsScriptGenerator:
         """Generates the full string for the Fixes & Computes section, including time-averaging."""
         lines = []
         
-        # Start with a list of the base thermo keywords
-        base_thermo_style = output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
+        base_thermo_style = output_config.get("thermo_style", "step ...")
         thermo_style_parts = base_thermo_style.split()
 
+        # --- Define all possible strain/stress variables if in Deformation mode ---
+        if mode == "Deformation":
+            lines.extend([
+                "# Engineering Strain & Cauchy Stress Variables",
+                "variable L0x equal $(lx)",
+                "variable L0y equal $(ly)",
+                "variable L0z equal $(lz)",
+                "variable xlo0 equal $(xlo)",
+                "variable xhi0 equal $(xhi)",
+                "variable ylo0 equal $(ylo)",
+                "variable yhi0 equal $(yhi)",
+                "variable zlo0 equal $(zlo)",
+                "variable zhi0 equal $(zhi)",
+                "variable exx equal (lx-v_L0x)/v_L0x",
+                "variable eyy equal (ly-v_L0y)/v_L0y",
+                "variable ezz equal (lz-v_L0z)/v_L0z",
+                "variable exy equal xy/v_L0y",
+                "variable exz equal xz/v_L0z",
+                "variable eyz equal yz/v_L0z",
+                "variable cauchy_xx equal -pxx",
+                "variable cauchy_yy equal -pyy",
+                "variable cauchy_zz equal -pzz",
+                "variable cauchy_xy equal -pxy",
+                "variable cauchy_xz equal -pxz",
+                "variable cauchy_yz equal -pyz",
+                "variable hydrostatic equal (v_cauchy_xx+v_cauchy_yy+v_cauchy_zz)/3",
+                'variable vMises equal "sqrt(0.5*((v_cauchy_xx-v_cauchy_yy)^2+(v_cauchy_yy-v_cauchy_zz)^2+(v_cauchy_zz-v_cauchy_xx)^2+6*(v_cauchy_xy^2+v_cauchy_yz^2+v_cauchy_xz^2)))"',
+                ""
+            ])
+
+        # --- Add selected strains/stresses to thermo output ---
+        if mode == "Deformation":
+            strain_map = {'εxx': 'exx', 'εyy': 'eyy', 'εzz': 'ezz', 'εxy': 'exy', 'εxz': 'exz', 'εyz': 'eyz'}
+            for strain in output_config.get("eng_strains", []):
+                if strain == 'deformation direction':
+                    axis_suffix = deform_axis if is_shear else deform_axis * 2
+                    thermo_style_parts.append(f"v_e{axis_suffix}")
+                elif strain in strain_map:
+                    thermo_style_parts.append(f"v_{strain_map[strain]}")
+            
+            stress_map = {'σxx': 'cauchy_xx', 'σyy': 'cauchy_yy', 'σzz': 'cauchy_zz', 'σxy': 'cauchy_xy', 'σxz': 'cauchy_xz', 'σyz': 'cauchy_yz', 'von Mises': 'vMises', 'hydrostatic': 'hydrostatic'}
+            for stress in output_config.get("cauchy_stresses", []):
+                if stress == 'deformation direction':
+                     axis_suffix = deform_axis if is_shear else deform_axis * 2
+                     thermo_style_parts.append(f"v_cauchy_{axis_suffix}")
+                elif stress in stress_map:
+                    thermo_style_parts.append(f"v_{stress_map[stress]}")
+        
+        # --- Add target temperature if in Temperature mode ---
+        if mode == "Temperature" and output_config.get("add_target_to_thermo", False):
+            thermo_style_parts.append("v_set_temp")
+
+        # --- Time Averaging Logic ---
         averaged_quantities = output_config.get("averaged_quantities", [])
-        avg_nevery = output_config.get("avg_nevery", 1)
-        thermo_output_freq = output_config.get("thermo_freq", 100)
-
-        # Add target strain/temp to thermo_style before averaging logic
-        if output_config.get("add_target_to_thermo", False):
-            if mode == "Deformation":
-                if is_shear:
-                    thermo_style_parts.append(f"v_estrain_{deform_axis}")
-                else:
-                    thermo_style_parts.append(f"v_estrain_{deform_axis}{deform_axis}")
-            else: # Temperature
-                 # The v_set_temp will be defined within the segment loop
-                thermo_style_parts.append("v_set_temp")
-
         if averaged_quantities:
-            nevery = avg_nevery
-            if nevery <= 0: nevery = 1
-            nfreq = thermo_output_freq
-            if nfreq < nevery: nfreq = nevery
-            nrepeat = nfreq // nevery
+            nevery = output_config.get("avg_nevery", 10)
+            nrepeat = output_config.get("avg_nrepeat", 100)
+            nfreq = nevery * nrepeat
+            lines.append("# --- Time Averaging Computes ---")
+            processed_vars = set() # Keep track of variables we've already processed
 
-            computes_defined = set()
+            pressure_terms = {'press', 'pxx', 'pyy', 'pzz', 'pxy', 'pxz', 'pyz'}
+            if any(term in averaged_quantities for term in pressure_terms):
+                lines.append("compute press_tensor all pressure thermo_temp")
+                lines.append(f"fix ave_press all ave/time {nevery} {nrepeat} {nfreq} c_press_tensor[*]")
+                lines.extend([
+                    "variable press_avg equal f_ave_press",
+                    "variable pxx_avg equal f_ave_press[1]",
+                    "variable pyy_avg equal f_ave_press[2]",
+                    "variable pzz_avg equal f_ave_press[3]",
+                    "variable pxy_avg equal f_ave_press[4]",
+                    "variable pxz_avg equal f_ave_press[5]",
+                    "variable pyz_avg equal f_ave_press[6]"
+                ])
+                if 'press' in averaged_quantities: thermo_style_parts.append("v_press_avg")
+                if 'pxx' in averaged_quantities: thermo_style_parts.append("v_pxx_avg")
+                if 'pyy' in averaged_quantities: thermo_style_parts.append("v_pyy_avg")
+                if 'pzz' in averaged_quantities: thermo_style_parts.append("v_pzz_avg")
+                if 'pxy' in averaged_quantities: thermo_style_parts.append("v_pxy_avg")
+                if 'pxz' in averaged_quantities: thermo_style_parts.append("v_pxz_avg")
+                if 'pyz' in averaged_quantities: thermo_style_parts.append("v_pyz_avg")
+
+            if 'temp' in averaged_quantities:
+                lines.append("compute avg_temp_compute all temp")
+                lines.append(f"fix avg_temp all ave/time {nevery} {nrepeat} {nfreq} c_avg_temp_compute")
+                lines.append("variable temp_avg equal f_avg_temp")
+                thermo_style_parts.append("v_temp_avg")
+            if 'ke' in averaged_quantities:
+                lines.append("compute avg_ke_total_compute all reduce sum ke")
+                lines.append(f"fix avg_ke all ave/time {nevery} {nrepeat} {nfreq} c_avg_ke_total_compute")
+                lines.append("variable ke_avg equal f_avg_ke")
+                thermo_style_parts.append("v_ke_avg")
+            if 'pe' in averaged_quantities:
+                lines.append("compute avg_pe_total_compute all reduce sum pe")
+                lines.append(f"fix avg_pe all ave/time {nevery} {nrepeat} {nfreq} c_avg_pe_total_compute")
+                lines.append("variable pe_avg equal f_avg_pe")
+                thermo_style_parts.append("v_pe_avg")
             
-            pressure_map = {
-                'pxx': 1, 'pyy': 2, 'pzz': 3,
-                'pxy': 4, 'pxz': 5, 'pyz': 6
-            }
-
-            for qty in averaged_quantities:
-                if qty == 'temp':
-                    if 'temp' not in computes_defined:
-                        lines.append("compute avg_temp_compute all temp")
-                        computes_defined.add('temp')
-                    lines.append(f"fix avg_temp all ave/time {nevery} {nrepeat} {nfreq} c_avg_temp_compute")
-                    lines.append("variable temp_avg equal f_avg_temp")
-                    thermo_style_parts.append("v_temp_avg")
-                
-                elif qty in pressure_map or qty == 'press':
-                    if 'pressure' not in computes_defined:
-                        lines.append("compute avg_press_compute all pressure thermo_temp")
-                        computes_defined.add('pressure')
+            # Averaging for selected strains and stresses
+            if 'strain' in averaged_quantities and mode == "Deformation":
+                for strain in output_config.get("eng_strains", []):
+                    var_name = None
+                    if strain == 'deformation direction':
+                        axis_suffix = deform_axis if is_shear else deform_axis * 2
+                        var_name = f"e{axis_suffix}"
+                    elif strain in strain_map:
+                        var_name = strain_map[strain]
                     
-                    if qty == 'press':
-                        lines.append(f"fix avg_press all ave/time {nevery} {nrepeat} {nfreq} c_avg_press_compute")
-                        lines.append("variable press_avg equal f_avg_press")
-                        thermo_style_parts.append("v_press_avg")
-                    else:
-                        index = pressure_map[qty]
-                        lines.append(f"fix avg_{qty} all ave/time {nevery} {nrepeat} {nfreq} c_avg_press_compute[{index}]")
-                        lines.append(f"variable {qty}_avg equal f_avg_{qty}")
-                        thermo_style_parts.append(f"v_{qty}_avg")
-
-                elif qty == 'ke':
-                    if 'ke' not in computes_defined:
-                        lines.append("compute avg_ke_atom_compute all ke/atom")
-                        lines.append("compute avg_ke_total_compute all reduce sum c_avg_ke_atom_compute")
-                        computes_defined.add('ke')
-                    lines.append(f"fix avg_ke all ave/time {nevery} {nrepeat} {nfreq} c_avg_ke_total_compute")
-                    lines.append("variable ke_avg equal f_avg_ke")
-                    thermo_style_parts.append("v_ke_avg")
-
-                elif qty == 'pe':
-                    if 'pe' not in computes_defined:
-                        lines.append("compute avg_pe_atom_compute all pe/atom")
-                        lines.append("compute avg_pe_total_compute all reduce sum c_avg_pe_atom_compute")
-                        computes_defined.add('pe')
-                    lines.append(f"fix avg_pe all ave/time {nevery} {nrepeat} {nfreq} c_avg_pe_total_compute")
-                    lines.append("variable pe_avg equal f_avg_pe")
-                    thermo_style_parts.append("v_pe_avg")
-
-            if averaged_quantities: lines.append("") # Add a blank line for readability
-
-            if output_config.get("add_target_to_thermo", False):
-                if mode == "Deformation":
-                    strain_var = f"v_estrain_{deform_axis}" if is_shear else f"v_estrain_{deform_axis}{deform_axis}"
-                    lines.append(f"fix avg_target_estrain all ave/time {nevery} {nrepeat} {nfreq} {strain_var}")
-                    strain_suffix = deform_axis if is_shear else f"{deform_axis}{deform_axis}"
-                    lines.append(f"variable estrain_{strain_suffix}_avg equal f_avg_target_estrain")
-                    thermo_style_parts.append(f"v_estrain_{strain_suffix}_avg")
-                else: # Temperature
-                    # The v_set_temp variable will be defined in the segment loop, so we just average it here
-                    lines.append(f"fix avg_target_temp all ave/time {nevery} {nrepeat} {nfreq} v_set_temp")
-                    lines.append(f"variable target_temp_avg equal f_avg_target_temp")
-                    thermo_style_parts.append("v_target_temp_avg")
+                    if var_name and var_name not in processed_vars:
+                        lines.append(f"fix avg_{var_name} all ave/time {nevery} {nrepeat} {nfreq} v_{var_name}")
+                        lines.append(f"variable {var_name}_avg equal f_avg_{var_name}")
+                        thermo_style_parts.append(f"v_{var_name}_avg")
+                        processed_vars.add(var_name)
             
-            if averaged_quantities: lines.append("")
+            if 'stress' in averaged_quantities and mode == "Deformation":
+                for stress in output_config.get("cauchy_stresses", []):
+                    var_name = None
+                    if stress == 'deformation direction':
+                        axis_suffix = deform_axis if is_shear else deform_axis * 2
+                        var_name = f"cauchy_{axis_suffix}"
+                    elif stress in stress_map:
+                        var_name = stress_map[stress]
 
+                    if var_name and var_name not in processed_vars:
+                        lines.append(f"fix avg_{var_name} all ave/time {nevery} {nrepeat} {nfreq} v_{var_name}")
+                        lines.append(f"variable {var_name}_avg equal f_avg_{var_name}")
+                        thermo_style_parts.append(f"v_{var_name}_avg")
+                        processed_vars.add(var_name)
+            
+            lines.append("")
 
+        # --- Custom Fixes/Computes ---
         if fixes_config.get("enable_custom_fixes", False):
             custom_fixes = fixes_config.get("custom_fixes", "")
             if custom_fixes:
                 lines.extend(["# Custom Fixes", custom_fixes, ""])
-
         if output_config.get("enable_custom_computes", False):
             custom_computes = output_config.get("custom_computes", "")
             if custom_computes:
                 lines.extend(["# Custom Computes", custom_computes, ""])
 
-        # Create the final unique thermo style string
-        final_thermo_style = " ".join(dict.fromkeys(thermo_style_parts)) # dict.fromkeys preserves order and removes duplicates
+        final_thermo_style = " ".join(dict.fromkeys(thermo_style_parts))
         
         return lines, final_thermo_style
 

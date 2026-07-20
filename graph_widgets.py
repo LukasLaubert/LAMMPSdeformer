@@ -1789,6 +1789,8 @@ class StudyWidget(QWidget):
         self._is_mode_switching = False
 
 class DeformationTab(QWidget):
+    studiesChanged = pyqtSignal()
+    
     def __init__(self, main_window, parent=None):
         super().__init__(parent); self.setWindowTitle("Interactive Strain-Time Profile Editor")
         self.main_window = main_window
@@ -1816,7 +1818,7 @@ class DeformationTab(QWidget):
         self.mode_combo.setFont(font)
         self.mode_combo.setToolTip("Select the processing mode for this study")
         self.mode_combo.setMinimumWidth(100)
-        self.mode_combo.setStyleSheet(""" 
+        self.mode_combo.setStyleSheet("""
             QComboBox {
                 combobox-popup: 0;
             }
@@ -1834,7 +1836,7 @@ class DeformationTab(QWidget):
         add_tab_button = QPushButton("+")
         add_tab_button.setToolTip("Add a new study")
         add_tab_button.clicked.connect(self._add_study)
-        add_tab_button.setFixedSize(20, 14)
+        add_tab_button.setFixedSize(20, 18)
         add_tab_button.setStyleSheet("QPushButton { margin: -3px 5px 0px 0px; padding: 0px; }")
         corner_layout.addWidget(add_tab_button)
         
@@ -1852,6 +1854,7 @@ class DeformationTab(QWidget):
             current_widget.set_mode(mode, adjust_values=True)
         self._update_tab_colors()
         self.update_summaries()
+        self.studiesChanged.emit()
 
     def _on_tab_changed(self, index):
         widget = self.tab_widget.widget(index)
@@ -1945,6 +1948,7 @@ class DeformationTab(QWidget):
         if not self._batch_loading:
             self.update_summaries()
             self._update_tab_colors()
+        self.studiesChanged.emit()
 
     def _wrapped_mouse_move_event(self, original_mouse_move_event, event, graph_widget):
         # Call the original mouse move event
@@ -1981,6 +1985,7 @@ class DeformationTab(QWidget):
             new_widget.max_strain_spinbox.setValue(1.0)
             new_widget.graph_widget.reset_graph()
             self._update_tab_colors()
+        self.studiesChanged.emit()
 
     def _rename_tab(self, index):
         current_name = self.tab_widget.tabText(index)
@@ -2118,6 +2123,16 @@ class DeformationTab(QWidget):
         widget = self.tab_widget.widget(index)
         if widget:
             widget.set_enabled(enabled)
+        self.studiesChanged.emit()
+
+    def get_study_modes(self):
+        """Returns a list of modes for all studies."""
+        modes = []
+        for i in range(self.tab_widget.count()):
+            widget = self.tab_widget.widget(i)
+            if widget and hasattr(widget, 'mode'):
+                modes.append(widget.mode)
+        return modes
 
     def update_all_graphs(self, timestep, unit_key):
         for i in range(self.tab_widget.count()):

@@ -731,8 +731,6 @@ class LammpsGui(QMainWindow):
     def _add_data_extension_chip(self):
         self._add_extension_chip(self.extensions_input, self.data_file_extensions, self.chips_layout, self._remove_data_extension_chip)
 
-
-
     def _add_extension_chip(self, input_widget, extensions_list, chips_layout, remove_slot):
         text = input_widget.text().strip()
         delimiters = [',', ';', ':', ' ']
@@ -761,8 +759,6 @@ class LammpsGui(QMainWindow):
     def _remove_data_extension_chip(self, text):
         self._remove_extension_chip(text, self.data_file_extensions, self.chips_layout)
 
-
-
     def _remove_extension_chip(self, text, extensions_list, chips_layout):
         if text in extensions_list:
             extensions_list.remove(text)
@@ -775,28 +771,58 @@ class LammpsGui(QMainWindow):
         # Refresh the system type display if a path is entered
         self.update_system_type()
 
-    def add_averaged_quantity_chip(self, index):
-        """Add a chip for the selected averaged quantity."""
+    def _add_item_chip(self, index, combo_box, chips_layout, remove_slot):
+        """Generic method to add a chip for a selected item from a combo box."""
         if index == 0:  # "Add quantity..."
             return
 
-        text = self.averaged_quantities_combo.currentText()
-        self.averaged_quantities_combo.removeItem(index)
+        text = combo_box.currentText()
+        combo_box.removeItem(index)
 
         chip = Chip(text)
-        chip.removed.connect(self.remove_averaged_quantity_chip)
-        self.avg_chips_layout.addWidget(chip)
+        chip.removed.connect(remove_slot)
+        chips_layout.addWidget(chip)
+
+    def _re_add_item_to_combo(self, text, combo_box, master_list):
+        """Adds a text item back to a combo box, maintaining the master list's order."""
+        # Find the correct index to insert the item to maintain master order
+        master_index = master_list.index(text)
+        insert_at_index = 1  # Start after "Add quantity..."
+        
+        for i in range(1, combo_box.count()):
+            current_item_text = combo_box.itemText(i)
+            current_item_master_index = master_list.index(current_item_text)
+            if current_item_master_index > master_index:
+                break
+            insert_at_index += 1
+        else: # If we went through the whole loop, add it to the end
+            insert_at_index = combo_box.count()
+
+        combo_box.insertItem(insert_at_index, text)
+
+    def add_averaged_quantity_chip(self, index):
+        """Add a chip for the selected averaged quantity."""
+        self._add_item_chip(index, self.averaged_quantities_combo, self.avg_chips_layout, self.remove_averaged_quantity_chip)
 
     def remove_averaged_quantity_chip(self, text):
         """Remove an averaged quantity chip and add the option back to the combo box."""
-        # Add the item back to the combo box, maintaining sorted order.
-        current_items = [self.averaged_quantities_combo.itemText(i) for i in range(1, self.averaged_quantities_combo.count())]
-        current_items.append(text)
-        current_items.sort()
-        
-        self.averaged_quantities_combo.clear()
-        self.averaged_quantities_combo.addItem("Add quantity...")
-        self.averaged_quantities_combo.addItems(current_items)
+        self._re_add_item_to_combo(text, self.averaged_quantities_combo, self.all_avg_quantities)
+
+    def add_eng_strain_chip(self, index):
+        """Add a chip for the selected engineering strain."""
+        self._add_item_chip(index, self.eng_strains_combo, self.eng_strains_chips_layout, self.remove_eng_strain_chip)
+
+    def remove_eng_strain_chip(self, text):
+        """Remove an engineering strain chip."""
+        self._re_add_item_to_combo(text, self.eng_strains_combo, self.all_eng_strains)
+
+    def add_cauchy_stress_chip(self, index):
+        """Add a chip for the selected Cauchy stress."""
+        self._add_item_chip(index, self.cauchy_stresses_combo, self.cauchy_stresses_chips_layout, self.remove_cauchy_stress_chip)
+
+    def remove_cauchy_stress_chip(self, text):
+        """Remove a Cauchy stress chip."""
+        self._re_add_item_to_combo(text, self.cauchy_stresses_combo, self.all_cauchy_stresses)
 
     def validate_and_round_nevery(self):
         """Validate that avg_nevery is a divisor of thermo_freq, rounding to the nearest valid divisor if not."""
@@ -804,10 +830,12 @@ class LammpsGui(QMainWindow):
         nevery = self.avg_nevery_spinbox.value()
 
         if thermo_freq <= 0 or nevery <= 0:  # Avoid division by zero and invalid values
+            self.validate_nrepeat() # Still validate nrepeat in case thermo_freq changed
             return
         
         # If it's already a valid divisor, do nothing.
         if thermo_freq % nevery == 0:
+            self.validate_nrepeat() # Still validate nrepeat in case thermo_freq changed
             return
 
         # Find all divisors of thermo_freq
@@ -818,6 +846,7 @@ class LammpsGui(QMainWindow):
                 divisors.add(thermo_freq // i)
         
         if not divisors:
+            self.validate_nrepeat()
             return
 
         # Find the closest divisor to the current nevery value
@@ -828,6 +857,32 @@ class LammpsGui(QMainWindow):
         self.avg_nevery_spinbox.setValue(closest_divisor)
         self.avg_nevery_spinbox.blockSignals(False)
         
+        # Now that nevery is valid, trigger validation for nrepeat
+        self.validate_nrepeat()
+
+    def validate_nrepeat(self):
+        """Ensure nrepeat is valid based on thermo_freq and nevery."""
+        thermo_freq = self.thermo_freq_spinbox.value()
+        nevery = self.avg_nevery_spinbox.value()
+        nrepeat = self.avg_nrepeat_spinbox.value()
+
+        if nevery <= 0:  # Avoid division by zero
+            return
+            
+        # We enforce thermo_freq = nevery * nrepeat.
+        # The validation for nevery ensures it's a divisor of thermo_freq.
+        # Therefore, the maximum allowed nrepeat is thermo_freq / nevery.
+        max_nrepeat = thermo_freq // nevery
+        
+        # nrepeat must be at least 1.
+        if max_nrepeat < 1:
+            max_nrepeat = 1
+        
+        if nrepeat > max_nrepeat:
+            self.avg_nrepeat_spinbox.blockSignals(True)
+            self.avg_nrepeat_spinbox.setValue(max_nrepeat)
+            self.avg_nrepeat_spinbox.blockSignals(False)
+
     def create_fixes_tab(self):
         """Create the fixes tab"""
         self.fixes_tab = QWidget()
@@ -1098,6 +1153,7 @@ class LammpsGui(QMainWindow):
         # Connect signals
         self.timestep.valueChanged.connect(lambda val: self.deformation_tab_widget.update_all_graphs(val, self.units_combo.currentText()))
         self.units_combo.currentTextChanged.connect(lambda text: self.deformation_tab_widget.update_all_graphs(self.timestep.value(), text))
+        self.deformation_tab_widget.studiesChanged.connect(self._update_output_tab_visibility)
         
     def update_deformation_table_headers(self):
         """Update table headers and column states based on calculation mode"""
@@ -1313,6 +1369,20 @@ class LammpsGui(QMainWindow):
         else:
             QMessageBox.warning(self, "Warning", "Please select a study to remove.")
             
+    def _update_output_tab_visibility(self):
+        """Update visibility of output options based on study modes."""
+        if not hasattr(self, 'deformation_tab_widget'):
+            return
+
+        modes = self.deformation_tab_widget.get_study_modes()
+        
+        has_deformation_study = "Deformation" in modes
+        has_temperature_study = "Temperature" in modes
+
+        self.eng_strains_widget.setVisible(has_deformation_study)
+        self.cauchy_stresses_widget.setVisible(has_deformation_study)
+        self.target_temp_widget.setVisible(has_temperature_study)
+
     def create_output_tab(self):
         """Create the output options tab"""
         self.output_tab = QWidget()
@@ -1389,14 +1459,19 @@ class LammpsGui(QMainWindow):
         self.thermo_freq_spinbox.setSingleStep(100)
         self.thermo_freq_spinbox.setToolTip("Frequency of thermodynamic output")
         self.thermo_freq_spinbox.setMinimumWidth(150)
+        self.thermo_freq_spinbox.valueChanged.connect(self.validate_and_round_nevery) # Connect to validation cascade
         thermo_freq_layout.addWidget(thermo_freq_label)
         thermo_freq_layout.addWidget(self.thermo_freq_spinbox)
         thermo_freq_layout.addStretch()
         thermo_top_layout.addLayout(thermo_freq_layout, 2)
 
-        self.add_target_to_thermo_check = QCheckBox("Add Target Strain/Temp to Thermo Output")
-        self.add_target_to_thermo_check.setToolTip("If checked, adds the target strain/temperature for the current study step to the thermo output.")
-        thermo_top_layout.addWidget(self.add_target_to_thermo_check, 2)
+        self.target_temp_widget = QWidget()
+        target_temp_layout = QHBoxLayout(self.target_temp_widget)
+        target_temp_layout.setContentsMargins(0,0,0,0)
+        self.add_target_to_thermo_check = QCheckBox("Add target temperature to thermo output")
+        self.add_target_to_thermo_check.setToolTip("If checked, adds the target temperature for the current study step to the thermo output.")
+        target_temp_layout.addWidget(self.add_target_to_thermo_check)
+        thermo_top_layout.addWidget(self.target_temp_widget, 2)
 
         thermo_layout.addLayout(thermo_top_layout)
 
@@ -1409,6 +1484,36 @@ class LammpsGui(QMainWindow):
         thermo_style_layout.addWidget(thermo_style_label)
         thermo_style_layout.addWidget(self.thermo_style)
         
+        # Engineering Strains
+        self.eng_strains_widget = QWidget()
+        eng_strains_layout_main = QHBoxLayout(self.eng_strains_widget)
+        eng_strains_layout_main.setContentsMargins(0, 0, 0, 0)
+        eng_strains_label = QLabel("Engineering strains:")
+        self.eng_strains_combo = QComboBox()
+        self.eng_strains_chips_layout = QHBoxLayout(); self.eng_strains_chips_layout.setSpacing(2)
+        eng_strains_layout_main.addWidget(eng_strains_label)
+        eng_strains_layout_main.addLayout(self.eng_strains_chips_layout)
+        eng_strains_layout_main.addWidget(self.eng_strains_combo, 1)
+        self.all_eng_strains = ['deformation direction', 'εxx', 'εyy', 'εzz', 'εxy', 'εxz', 'εyz']
+        self.eng_strains_combo.addItem("Add quantity...")
+        self.eng_strains_combo.addItems(self.all_eng_strains)
+        self.eng_strains_combo.activated.connect(self.add_eng_strain_chip)
+
+        # Cauchy Stresses
+        self.cauchy_stresses_widget = QWidget()
+        cauchy_stresses_layout_main = QHBoxLayout(self.cauchy_stresses_widget)
+        cauchy_stresses_layout_main.setContentsMargins(0, 0, 0, 0)
+        cauchy_stresses_label = QLabel("Cauchy stresses:")
+        self.cauchy_stresses_combo = QComboBox()
+        self.cauchy_stresses_chips_layout = QHBoxLayout(); self.cauchy_stresses_chips_layout.setSpacing(2)
+        cauchy_stresses_layout_main.addWidget(cauchy_stresses_label)
+        cauchy_stresses_layout_main.addLayout(self.cauchy_stresses_chips_layout)
+        cauchy_stresses_layout_main.addWidget(self.cauchy_stresses_combo, 1)
+        self.all_cauchy_stresses = ['deformation direction', 'σxx', 'σyy', 'σzz', 'σxy', 'σxz', 'σyz', 'von Mises', 'hydrostatic']
+        self.cauchy_stresses_combo.addItem("Add quantity...")
+        self.cauchy_stresses_combo.addItems(self.all_cauchy_stresses)
+        self.cauchy_stresses_combo.activated.connect(self.add_cauchy_stress_chip)
+        
         # Time averaged thermo styles
         time_averaged_layout = QHBoxLayout()
         time_averaged_label = QLabel("Averaged quantities:")
@@ -1416,26 +1521,43 @@ class LammpsGui(QMainWindow):
         self.avg_chips_layout = QHBoxLayout()
         self.avg_chips_layout.setSpacing(2)
 
-        self.avg_nevery_label = QLabel("Compute average every ... timesteps:")
-        self.avg_nevery_label.setToolTip("Specifies that values at timesteps not matching a multiple of this value are skipped from the average calculation.")
         self.avg_nevery_spinbox = QSpinBox()
+        self.avg_nevery_spinbox.setToolTip("nevery")
         self.avg_nevery_spinbox.setRange(1, 10000)
         self.avg_nevery_spinbox.setValue(10)
+        self.avg_nevery_spinbox.setFixedWidth(80)
         self.avg_nevery_spinbox.editingFinished.connect(self.validate_and_round_nevery)
+
+        self.avg_nrepeat_spinbox = QSpinBox()
+        self.avg_nrepeat_spinbox.setToolTip("repeat")
+        self.avg_nrepeat_spinbox.setRange(1, 100000)
+        self.avg_nrepeat_spinbox.setValue(10) # Default changed to make it consistent with default thermo_freq and nevery
+        self.avg_nrepeat_spinbox.setFixedWidth(80)
+        self.avg_nrepeat_spinbox.editingFinished.connect(self.validate_nrepeat)
 
         time_averaged_layout.addWidget(time_averaged_label)
         time_averaged_layout.addLayout(self.avg_chips_layout)
-        time_averaged_layout.addWidget(self.averaged_quantities_combo, 1) # Stretch combo
+        time_averaged_layout.addWidget(self.averaged_quantities_combo, 1)
         time_averaged_layout.addStretch(0)
-        time_averaged_layout.addWidget(self.avg_nevery_label)
+        time_averaged_layout.addWidget(QLabel("Average every"))
         time_averaged_layout.addWidget(self.avg_nevery_spinbox)
+        time_averaged_layout.addWidget(QLabel("timesteps and consider"))
+        time_averaged_layout.addWidget(self.avg_nrepeat_spinbox)
+        time_averaged_layout.addWidget(QLabel("values before thermo ouput"))
+        
+        avg_time_url = QUrl("https://docs.lammps.org/fix_ave_time.html")
+        avg_time_tooltip = "Click to open LAMMPS documentation for fix ave/time"
+        self.avg_time_info_label = create_info_icon_label(avg_time_url, avg_time_tooltip, "blue")
+        time_averaged_layout.addWidget(self.avg_time_info_label)
 
-        self.all_avg_quantities = ['temp', 'press', 'pxx', 'pyy', 'pzz', 'pxy', 'pxz', 'pyz', 'ke', 'pe']
+        self.all_avg_quantities = ['temp', 'press', 'pxx', 'pyy', 'pzz', 'pxy', 'pxz', 'pyz', 'ke', 'pe', 'stress', 'strain']
         self.averaged_quantities_combo.addItem("Add quantity...")
-        self.averaged_quantities_combo.addItems(sorted(self.all_avg_quantities))
+        self.averaged_quantities_combo.addItems(self.all_avg_quantities)
         self.averaged_quantities_combo.activated.connect(self.add_averaged_quantity_chip)
 
         thermo_layout.addLayout(thermo_style_layout)
+        thermo_layout.addWidget(self.eng_strains_widget)
+        thermo_layout.addWidget(self.cauchy_stresses_widget)
         thermo_layout.addLayout(time_averaged_layout)
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
@@ -1509,8 +1631,6 @@ class LammpsGui(QMainWindow):
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
-
-
     def create_job_submission_tab(self):
         """Create the job submission tab"""
         self.job_submission_tab = QWidget()
@@ -2329,8 +2449,11 @@ class LammpsGui(QMainWindow):
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_freq": self.thermo_freq_spinbox.value(),
                 "thermo_style": self.thermo_style.text(),
+                "eng_strains": [self.eng_strains_chips_layout.itemAt(i).widget().text for i in range(self.eng_strains_chips_layout.count()) if isinstance(self.eng_strains_chips_layout.itemAt(i).widget(), Chip)],
+                "cauchy_stresses": [self.cauchy_stresses_chips_layout.itemAt(i).widget().text for i in range(self.cauchy_stresses_chips_layout.count()) if isinstance(self.cauchy_stresses_chips_layout.itemAt(i).widget(), Chip)],
                 "averaged_quantities": [self.avg_chips_layout.itemAt(i).widget().text for i in range(self.avg_chips_layout.count()) if isinstance(self.avg_chips_layout.itemAt(i).widget(), Chip)],
                 "avg_nevery": self.avg_nevery_spinbox.value(),
+                "avg_nrepeat": self.avg_nrepeat_spinbox.value(),
                 "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
                 "enable_custom_computes": self.enable_custom_computes.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
@@ -2450,30 +2573,15 @@ class LammpsGui(QMainWindow):
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
             self.thermo_style.setText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-
-            # Load averaged quantities from QSettings
-            selected_quantities = self.settings.value("output/averaged_quantities", [])
-            if isinstance(selected_quantities, str): # QSettings can return a string
-                selected_quantities = [q.strip() for q in selected_quantities.split(',') if q.strip()]
-
-            while self.avg_chips_layout.count():
-                child = self.avg_chips_layout.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
             
-            self.averaged_quantities_combo.clear()
-            self.averaged_quantities_combo.addItem("Add quantity...")
-            
-            available_quantities = [q for q in self.all_avg_quantities if q not in selected_quantities]
-            available_quantities.sort()
-            self.averaged_quantities_combo.addItems(available_quantities)
-            
-            for quantity in selected_quantities:
-                chip = Chip(quantity)
-                chip.removed.connect(self.remove_averaged_quantity_chip)
-                self.avg_chips_layout.addWidget(chip)
+            # Load new chip fields
+            self.apply_chips_from_settings('output/eng_strains', self.eng_strains_chips_layout, self.all_eng_strains, self.eng_strains_combo, self.remove_eng_strain_chip)
+            self.apply_chips_from_settings('output/cauchy_stresses', self.cauchy_stresses_chips_layout, self.all_cauchy_stresses, self.cauchy_stresses_combo, self.remove_cauchy_stress_chip)
+            self.apply_chips_from_settings('output/averaged_quantities', self.avg_chips_layout, self.all_avg_quantities, self.averaged_quantities_combo, self.remove_averaged_quantity_chip)
 
             self.avg_nevery_spinbox.setValue(self.settings.value('output/avg_nevery', 10, type=int))
+            self.avg_nrepeat_spinbox.setValue(self.settings.value('output/avg_nrepeat', 100, type=int))
+
             self.add_target_to_thermo_check.setChecked(self.settings.value("output/add_target_to_thermo", False, type=bool))
             self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
@@ -2567,6 +2675,32 @@ class LammpsGui(QMainWindow):
 
         except Exception as e:
             print(f"Error loading settings: {e}")
+            
+        self._update_output_tab_visibility()
+
+
+    def apply_chips_from_settings(self, settings_key, chips_layout, all_items_list, combo_box, remove_slot):
+        """Helper to load chip selections from QSettings."""
+        selected_items = self.settings.value(settings_key, [])
+        if isinstance(selected_items, str): # QSettings can return a string
+            selected_items = [q.strip() for q in selected_items.split(',') if q.strip()]
+
+        while chips_layout.count():
+            child = chips_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        
+        combo_box.clear()
+        combo_box.addItem("Add quantity...")
+        
+        available_items = [q for q in all_items_list if q not in selected_items]
+        available_items.sort()
+        combo_box.addItems(available_items)
+        
+        for item in selected_items:
+            chip = Chip(item)
+            chip.removed.connect(remove_slot)
+            chips_layout.addWidget(chip)
     
     def save_settings(self):
         """Save settings to QSettings"""
@@ -2909,27 +3043,13 @@ class LammpsGui(QMainWindow):
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_freq_spinbox.setValue(output.get("thermo_freq", 100))
                 self.thermo_style.setText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-
-                # Load averaged quantities
-                while self.avg_chips_layout.count():
-                    child = self.avg_chips_layout.takeAt(0)
-                    if child.widget():
-                        child.widget().deleteLater()
                 
-                self.averaged_quantities_combo.clear()
-                self.averaged_quantities_combo.addItem("Add quantity...")
-                
-                selected_quantities = output.get('averaged_quantities', [])
-                available_quantities = [q for q in self.all_avg_quantities if q not in selected_quantities]
-                available_quantities.sort()
-                self.averaged_quantities_combo.addItems(available_quantities)
-                
-                for quantity in selected_quantities:
-                    chip = Chip(quantity)
-                    chip.removed.connect(self.remove_averaged_quantity_chip)
-                    self.avg_chips_layout.addWidget(chip)
+                self.apply_chips_from_config(output, 'eng_strains', self.eng_strains_chips_layout, self.all_eng_strains, self.eng_strains_combo, self.remove_eng_strain_chip)
+                self.apply_chips_from_config(output, 'cauchy_stresses', self.cauchy_stresses_chips_layout, self.all_cauchy_stresses, self.cauchy_stresses_combo, self.remove_cauchy_stress_chip)
+                self.apply_chips_from_config(output, 'averaged_quantities', self.avg_chips_layout, self.all_avg_quantities, self.averaged_quantities_combo, self.remove_averaged_quantity_chip)
 
                 self.avg_nevery_spinbox.setValue(output.get('avg_nevery', 10))
+                self.avg_nrepeat_spinbox.setValue(output.get('avg_nrepeat', 100))
                 self.add_target_to_thermo_check.setChecked(output.get("add_target_to_thermo", False))
                 self.enable_custom_computes.setChecked(output.get("enable_custom_computes", False))
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
@@ -3004,7 +3124,30 @@ class LammpsGui(QMainWindow):
                     self.deformation_tab_widget.mode_combo.blockSignals(False)
         except Exception as e:
             print(f"Error applying configuration: {e}")
-    
+        
+        self._update_output_tab_visibility()
+
+    def apply_chips_from_config(self, config_section, key, chips_layout, all_items_list, combo_box, remove_slot):
+        """Helper to load chip selections from a config dictionary."""
+        selected_items = config_section.get(key, [])
+        
+        while chips_layout.count():
+            child = chips_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        
+        combo_box.clear()
+        combo_box.addItem("Add quantity...")
+        
+        available_items = [q for q in all_items_list if q not in selected_items]
+        available_items.sort()
+        combo_box.addItems(available_items)
+        
+        for item in selected_items:
+            chip = Chip(item)
+            chip.removed.connect(remove_slot)
+            chips_layout.addWidget(chip)
+
     def _save_full_config_for_generator(self, full_config, root_simulation_dir):
         """Save the full configuration (including disabled studies) for the script generator"""
         try:
