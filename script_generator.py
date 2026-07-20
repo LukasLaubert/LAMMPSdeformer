@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-LAMMPS Script Generator - Redesigned Version
+LAMMPS Script Generator
 
 Handles the generation of LAMMPS input scripts and cluster job files
 based on user configuration with support for symmetric wall movement,
-engineering strain, proper units handling, and structured file generation.
+engineering strain (tensile and shear), proper units handling, 
+and structured file generation.
 """
 
 import os
@@ -369,35 +370,47 @@ class LammpsScriptGenerator:
                         potential_path = (Path("_input_files") / potential_name).as_posix()
                         script_lines.append(f"include ../../{potential_path}")
                 script_lines.append("")
-                
+            
+            # Directions, mode, and shear condition
+            deform_axis = deform_study.get("deform_axis", "x")
+            mode = deform_study.get("mode", "Deformation")
+            is_shear = deform_axis in ["xy", "xz", "yz"]
+            
             # Add triclinic box setting if NPT aniso is set to "tri"
             ensemble_config = deform_study.get("ensemble", {})
             ensemble = ensemble_config.get("ensemble", "NVT")
             npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
-            if ensemble == "NPT" and npt_aniso == "tri":
+            if ((ensemble == "NPT" and npt_aniso == "tri") or is_shear):
                 script_lines.extend([
-                    "# Triclinic boundaries are required for NPT anisotropic simulation with 'tri' setting",
+                    "# Triclinic boundaries are required for shear deformation or NPT anisotropic simulation with 'tri' setting",
                     "change_box all triclinic",
                     ""
                 ])
 
-            # Variables
-            deform_axis = deform_study.get("deform_axis", "x")
-            mode = deform_study.get("mode", "Deformation")
-            
-            # Only add the Variables section if in deformation mode (since only deformation mode has variables)
+            # Variables            
+            # Only add the Variables section if in deformation mode
             if mode == "Deformation":
                 script_lines.extend([
                     "#------------------------",
                     "# Variables",
                     "#------------------------",
-                    f"variable L0{deform_axis} equal $(l{deform_axis})",
-                    f"variable {deform_axis}lo0 equal $({deform_axis}lo)",
-                    f"variable {deform_axis}hi0 equal $({deform_axis}hi)",
-                    f"variable estrain_{deform_axis}{deform_axis} equal (l{deform_axis}-v_L0{deform_axis})/v_L0{deform_axis}",
-                    ""
                 ])
-            # For temperature mode, we don't add the Variables section header at all, continuing to the next section
+                if is_shear:
+                    # Shear deformation variables
+                    shear_dir = deform_axis[1]  # 'y' for 'xy', 'z' for 'xz' or 'yz'
+                    script_lines.extend([
+                        f"variable L0{shear_dir} equal l{shear_dir}",
+                        f"variable estrain_{deform_axis} equal {deform_axis}/v_L0{shear_dir}",
+                    ])
+                else:
+                    # Tensile deformation variables
+                    script_lines.extend([
+                        f"variable L0{deform_axis} equal $(l{deform_axis})",
+                        f"variable {deform_axis}lo0 equal $({deform_axis}lo)",
+                        f"variable {deform_axis}hi0 equal $({deform_axis}hi)",
+                        f"variable estrain_{deform_axis}{deform_axis} equal (l{deform_axis}-v_L0{deform_axis})/v_L0{deform_axis}",
+                    ])
+                script_lines.append("")
 
             # Fixes & Computes section
             fixes_computes_lines = []
@@ -406,9 +419,17 @@ class LammpsScriptGenerator:
             averaged_quantities = output_config.get("averaged_quantities", [])
             avg_nevery = output_config.get("avg_nevery", 1)
             thermo_output_freq = output_config.get("thermo_freq", 100)
-            mode = deform_study.get("mode", "Deformation")
-            deform_axis = deform_study.get("deform_axis", "x")
 
+            add_target_to_thermo = output_config.get("add_target_to_thermo", False)
+            if add_target_to_thermo:
+                if mode == "Deformation":
+                    if is_shear:
+                        thermo_style += f" v_estrain_{deform_axis}"
+                    else:
+                        thermo_style += f" v_estrain_{deform_axis}{deform_axis}"
+                else: # Temperature
+                    thermo_style += " v_set_temp"
+            
             if averaged_quantities:
                 nevery = avg_nevery
                 if nevery <= 0: nevery = 1
@@ -472,12 +493,13 @@ class LammpsScriptGenerator:
                 
                 fixes_computes_lines.append("")
 
-                # Average Target Strain/Temp if averaging is active
                 if output_config.get("add_target_to_thermo", False):
                     if mode == "Deformation":
-                        fixes_computes_lines.append(f"fix avg_target_strain all ave/time {nevery} {nrepeat} {nfreq} v_estrain_{deform_axis}{deform_axis}")
-                        fixes_computes_lines.append(f"variable target_strain_avg equal f_avg_target_strain")
-                        thermo_style += " v_target_strain_avg"
+                        strain_var = f"v_estrain_{deform_axis}" if is_shear else f"v_estrain_{deform_axis}{deform_axis}"
+                        fixes_computes_lines.append(f"fix avg_target_estrain all ave/time {nevery} {nrepeat} {nfreq} {strain_var}")
+                        strain_suffix = deform_axis if is_shear else f"{deform_axis}{deform_axis}"
+                        fixes_computes_lines.append(f"variable estrain_{strain_suffix}_avg equal f_avg_target_estrain")
+                        thermo_style += f" v_estrain_{strain_suffix}_avg"
                     else: # Temperature
                         points = deform_study.get("data_points", [])
                         initial_temp = points[0][1] if points else 300.0
@@ -531,9 +553,10 @@ class LammpsScriptGenerator:
                     "#------------------------"
                 ])
                 initial_velocity_seed = system_config.get("initial_velocity_seed", 12345)
+                initial_temp = points[0][1] if mode == "Temperature" and points else temp
                 script_lines.extend([
                     "# Initial velocity",
-                    f"velocity all create {temp} {initial_velocity_seed} mom yes rot yes dist gaussian",
+                    f"velocity all create {initial_temp} {initial_velocity_seed} mom yes rot yes dist gaussian",
                     ""
                 ])
             
@@ -566,18 +589,6 @@ class LammpsScriptGenerator:
             # Thermo output settings
             if output_config.get("enable_thermo", True):
                 add_target_to_thermo = output_config.get("add_target_to_thermo", False)
-                averaged_quantities = output_config.get("averaged_quantities", [])
-
-                if add_target_to_thermo and not averaged_quantities:
-                    if mode == "Deformation":
-                        thermo_style += f" v_estrain_{deform_axis}{deform_axis}"
-                    else: # Temperature
-                        points = deform_study.get("data_points", [])
-                        initial_temp = points[0][1] if points else 300.0
-                        # Define variable right before it's used in thermo_style
-                        output_lines.append(f"variable set_temp equal {initial_temp}")
-                        thermo_style += " v_set_temp"
-                
                 output_lines.extend([
                     f"thermo {thermo_output_freq}",
                     f"thermo_style custom {thermo_style}",
@@ -593,16 +604,6 @@ class LammpsScriptGenerator:
                     f"dump trajectory all custom {trj_output_freq} {model_name}.{traj_format} {trj_output_items}",
                     ""
                 ])
-
-            # Custom computes
-            if output_config.get("enable_custom_computes", False):
-                custom_computes = output_config.get("custom_computes", "")
-                if custom_computes:
-                    output_lines.extend([
-                        "# Custom computes",
-                        custom_computes,
-                        ""
-                    ])
 
             # Custom dumps
             custom_dumps = output_config.get("custom_dumps", "")
@@ -629,64 +630,52 @@ class LammpsScriptGenerator:
                 "#------------------------",
             ])
             
-            # Only add the print statement if in deformation mode since it references deformation variables
+            points = deform_study.get("data_points", [])
+            
+            # Only add the print statement if in deformation mode
             if mode == "Deformation":
-                script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0{deform_axis}}}\"")
+                if is_shear:
+                    shear_dir = deform_axis[1]
+                    script_lines.append(f"print \"Initial perpendicular box length: {shear_dir} = ${{L0{shear_dir}}}\"")
+                else:
+                    script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0{deform_axis}}}\"")
             else:
-                # For temperature mode, we can add a different print statement if needed
                 script_lines.append(f"print \"Starting temperature simulation with initial temperature: {points[0][1] if points else 300.0}\"")
             
             script_lines.append("")
 
-            points = deform_study.get("data_points", [])
-            mode = deform_study.get("mode", "Deformation")
-
             if len(points) > 1:
-                timestep = system_config.get("timestep", 0.001)
-                deform_axis = deform_study.get("deform_axis", "x")
-                
-
-
                 for i in range(len(points) - 1):
                     p1 = points[i]
                     p2 = points[i+1]
 
-                    start_step = p1[0]
-                    end_step = p2[0]
+                    start_step, start_y = p1
+                    end_step, end_y = p2
                     duration = end_step - start_step
 
                     if duration <= 0:
                         continue
 
-                    start_y = p1[1]
-                    end_y = p2[1]
-                    y_change = end_y - start_y
-
                     script_lines.append(f"# --- Segment {i+1}: from step {start_step:.0f} to {end_step:.0f} ---")
 
-
-
                     if mode == "Deformation":
-                        # Check if this is a shear deformation (xy, xz, yz) or tensile (x, y, z)
-                        is_shear = deform_axis in ["xy", "xz", "yz"]
-                        
+                        # **MODIFIED FOR SHEAR**
                         if is_shear:
-                            # For shear deformation, use the final style with the tilt factor
-                            script_lines.append(f"# Shear deformation in {deform_axis} direction")
+                            shear_dir = deform_axis[1]
+                            tilt_var = f"tilt_target_{i+1}"
                             
-                            # For shear, we directly use the strain value as the tilt factor change
-                            # The strain value represents the engineering strain (change in tilt)
-                            if abs(y_change) > 1e-12:
-                                # For shear deformation, we use the 'xy final' format
-                                script_lines.append(f"fix deform all deform 1 {deform_axis} final {end_y} units box")
+                            script_lines.append(f"# Target engineering shear strain (gamma): {end_y:.6f}")
+                            script_lines.append(f"variable {tilt_var} equal {end_y} * v_L0{shear_dir}")
+                            script_lines.append(f"print \"Segment {i+1}: Target tilt factor for {deform_axis} = ${{{tilt_var}}}\"")
+                            
+                            script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{tilt_var}}} units box flip no")
                         else:
-                            # For tensile deformation (x, y, z), use the existing logic
-                            # Calculate new boundaries based on engineering strain from initial state
+                            # Tensile deformation (existing logic)
                             new_lo_var = f"{deform_axis}lo_target_{i+1}"
                             new_hi_var = f"{deform_axis}hi_target_{i+1}"
                             
                             deform_scenario = deform_study.get("deform_scenario", "symmetric")
-                            script_lines.append(f"# Target engineering strain: {end_y:.6f}, Scenario: {deform_scenario}")
+                            script_lines.append(f"# Target engineering tensile strain: {end_y:.6f}, Scenario: {deform_scenario}")
 
                             if deform_scenario == "shift hi, fix lo":
                                 script_lines.append(f"variable {new_lo_var} equal v_{deform_axis}lo0")
@@ -700,8 +689,7 @@ class LammpsScriptGenerator:
                             
                             script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
 
-                            if abs(y_change) > 1e-12:
-                                script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box")
+                            script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box flip no")
 
                         # Apply ensemble for this segment
                         if ensemble == "NVT":
@@ -709,61 +697,65 @@ class LammpsScriptGenerator:
                             script_lines.append(f"fix nvt all nvt temp {temp} {temp} $({damping_factor}*dt)")
                         elif ensemble == "NPT":
                             damping_factor = system_config.get("damping_factor", 100.0)
-                            npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
-                            
+                            npt_aniso = ensemble_config.get("npt_aniso", "iso")
                             script_lines.append(f"fix npt all npt temp {temp} {temp} $({damping_factor}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt)")
                         
                         script_lines.append(f"run {int(duration)}")
                         
+                        script_lines.append("unfix deform")
                         if ensemble in ["NVT", "NPT"]:
-                            script_lines.append(f"unfix {ensemble.lower()}\n")
-
-                        # Write data after this segment if requested
-                        if output_config.get("write_data_option") == "After each deformation/temperature step":
-                            base_name = Path(data_file).stem
-                            write_data_filename = f"{base_name}_*.data"
-                            script_lines.extend([
-                                f"# Write data after segment {i+1}",
-                                f"write_data {write_data_filename}",
-                                ""
-                            ])
+                            script_lines.append(f"unfix {ensemble.lower()}")
 
                     elif mode == "Temperature":
+                        # Manually calculate the temperature ramp for correct reporting
+                        temp_change = end_y - start_y
+                        if duration > 0:
+                            slope = temp_change / duration
+                        else:
+                            slope = 0
+                        
+                        # Define a variable for the slope
+                        script_lines.append(f"variable ramp_slope equal {slope}")
+                        # Define the set_temp variable using a formula that mimics the ramp
+                        script_lines.append(f"variable set_temp equal \"{start_y} + (step - {start_step}) * v_ramp_slope\"")
+
                         # Apply ensemble with temperature ramp
                         if ensemble == "NVT":
                             damping_factor = system_config.get("damping_factor", 100.0)
                             script_lines.append(f"fix nvt all nvt temp {start_y} {end_y} $({damping_factor}*dt)")
                         elif ensemble == "NPT":
                             damping_factor = system_config.get("damping_factor", 100.0)
-                            npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
-                            
+                            npt_aniso = ensemble_config.get("npt_aniso", "iso")
                             script_lines.append(f"fix npt all npt temp {start_y} {end_y} $({damping_factor}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt)")
 
                         script_lines.append(f"run {int(duration)}")
 
+                        # Unfix the ensemble and delete the variables
                         if ensemble in ["NVT", "NPT"]:
-                            script_lines.append(f"unfix {ensemble.lower()}\n")
-
-                        # Write data after this segment if requested
-                        if output_config.get("write_data_option") == "After each deformation/temperature step":
-                            base_name = Path(data_file).stem
-                            write_data_filename = f"{base_name}_*.data"
-                            script_lines.extend([
-                                f"# Write data after segment {i+1}",
-                                f"write_data {write_data_filename}",
-                                ""
-                            ])
+                            script_lines.append(f"unfix {ensemble.lower()}")
+                        script_lines.append(f"variable ramp_slope delete")
+                        script_lines.append(f"variable set_temp delete")
+                    
+                    # Common logic for both modes
+                    if output_config.get("write_data_option") == "At each deformation/temperature handle (as set in Processing tab)":
+                        base_name = Path(data_file).stem
+                        write_data_filename = f"{base_name}_*.data"
+                        script_lines.extend([
+                            f"# Write data after segment {i+1}",
+                            f"write_data {write_data_filename}",
+                        ])
 
                     script_lines.append("")
-            
+                
+                # The deform fix is now unfixed within each segment of the loop.
+                if mode == "Deformation":
+                    script_lines.append("")
+
             # Add write_data at the end if enabled
             write_data_option = output_config.get("write_data_option", "Never")
             if write_data_option == "At the end of the simulation":
-                # Extract the base name from the data_file and use wildcard for timestep
                 base_name = Path(data_file).stem
-                
                 write_data_filename = f"{base_name}_*.data"
-                
                 script_lines.extend([
                     "#------------------------",
                     "# Write final state to data file",
@@ -772,14 +764,14 @@ class LammpsScriptGenerator:
                     ""
                 ])
             
-
-            
             full_script = "\n".join(script_lines)
             
             return full_script
             
         except Exception as e:
-            return f"# Error generating script content: {str(e)}"
+            # Return an error message within the script for easier debugging
+            return f"# Error generating script content: {str(e)}\n# Please check your configuration."
+
         
     def generate_execution_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
         """Generate execution script for sequential multi-system processing"""

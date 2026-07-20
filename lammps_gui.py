@@ -1557,6 +1557,13 @@ class LammpsGui(QMainWindow):
         self.local_lammps_executable = QLineEdit("lmp_mpi")
         local_layout.addRow(self.local_lammps_executable_label, self.local_lammps_executable)
 
+        # Log file name
+        self.log_file_name_label = QLabel("Log file name:")
+        self.log_file_name = QLineEdit()
+        self.log_file_name.setPlaceholderText("job.log")
+        self.log_file_name.setToolTip("Name of the log file for LAMMPS output. If empty, no log file will be created.")
+        local_layout.addRow(self.log_file_name_label, self.log_file_name)
+
         local_group.setLayout(local_layout)
         scroll_layout.addWidget(local_group)
 
@@ -2283,6 +2290,7 @@ class LammpsGui(QMainWindow):
                 "local_multiprocessor": self.local_multiprocessor_check.isChecked(),
                 "local_processors": self.local_processors_spinbox.value(),
                 "local_lammps_executable": self.local_lammps_executable.text() or "lmp_mpi",
+                "log_file_name": self.log_file_name.text() or "job.log",
                 "cluster_lammps_cmd": self.cluster_lammps_cmd.text() or "lmp",
                 "srun_cmd": self.srun_cmd.text() or "srun",
                 "sbatch_cmd": self.sbatch_cmd.text() or "sbatch",
@@ -2427,6 +2435,7 @@ class LammpsGui(QMainWindow):
             self.local_processors_spinbox.setValue(self.settings.value("job_submission/local_processors", 4, type=int))
             self.local_lammps_executable.setText(self.settings.value("job_submission/local_lammps_executable", "lmp_mpi"))
             self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
+            self.log_file_name.setText(self.settings.value("job_submission/log_file_name", "job.log"))
             self.cluster_lammps_cmd.setText(self.settings.value("job_submission/cluster_lammps_cmd", ""))
             self.srun_cmd.setText(self.settings.value("job_submission/srun_cmd", ""))
             self.sbatch_cmd.setText(self.settings.value("job_submission/sbatch_cmd", ""))
@@ -2774,6 +2783,7 @@ class LammpsGui(QMainWindow):
                 self.local_processors_spinbox.setValue(job_submission.get("local_processors", 4))
                 self.local_lammps_executable.setText(job_submission.get("local_lammps_executable", "lmp_mpi"))
                 self.local_lammps_cmd.setText(job_submission.get("local_lammps_cmd", "lmp"))
+                self.log_file_name.setText(job_submission.get("log_file_name", "job.log"))
                 self.cluster_lammps_cmd.setText(job_submission.get("cluster_lammps_cmd", "lmp"))
                 self.srun_cmd.setText(job_submission.get("srun_cmd", "srun"))
                 self.sbatch_cmd.setText(job_submission.get("sbatch_cmd", "sbatch"))
