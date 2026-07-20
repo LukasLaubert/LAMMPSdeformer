@@ -1068,7 +1068,9 @@ class LAMMPSdeformerGenerator:
                       'εxy': 'strain_xy', 'εxz': 'strain_xz', 'εyz': 'strain_yz'}
         stress_map = {'σxx': 'cauchy_xx', 'σyy': 'cauchy_yy', 'σzz': 'cauchy_zz', 
                       'σxy': 'cauchy_xy', 'σxz': 'cauchy_xz', 'σyz': 'cauchy_yz', 
-                      'von Mises': 'vMises', 'hydrostatic': 'hydrostatic'}
+                      'cauchy_vM': 'cauchy_vM', 'cauchy_vol': 'cauchy_vol',
+                      'von Mises': 'cauchy_vM', 'vMises': 'cauchy_vM',
+                      'hydrostatic': 'cauchy_vol'}
 
         if mode == "Deformation":
             for strain in output_config.get("eng_strains", []):
@@ -1420,8 +1422,8 @@ class LAMMPSdeformerGenerator:
                 "variable cauchy_xy equal -pxy",
                 "variable cauchy_xz equal -pxz",
                 "variable cauchy_yz equal -pyz",
-                "variable hydrostatic equal (v_cauchy_xx+v_cauchy_yy+v_cauchy_zz)/3",
-                'variable vMises equal "sqrt(0.5*((v_cauchy_xx-v_cauchy_yy)^2+(v_cauchy_yy-v_cauchy_zz)^2+(v_cauchy_zz-v_cauchy_xx)^2+6*(v_cauchy_xy^2+v_cauchy_yz^2+v_cauchy_xz^2)))"',
+                "variable cauchy_vol equal (v_cauchy_xx+v_cauchy_yy+v_cauchy_zz)/3",
+                'variable cauchy_vM equal "sqrt(0.5*((v_cauchy_xx-v_cauchy_yy)^2+(v_cauchy_yy-v_cauchy_zz)^2+(v_cauchy_zz-v_cauchy_xx)^2+6*(v_cauchy_xy^2+v_cauchy_yz^2+v_cauchy_xz^2)))"',
                 ""
             ])
 

@@ -924,8 +924,8 @@ class GraphWidget(QWidget):
     def _draw_axes_and_frame(self, painter):
         painter.setPen(QPen(STYLE_FRAME, 2)); painter.drawRect(self.padding['left'], self.padding['top'], self.width() - (self.padding['left'] + self.padding['right']), self.height() - (self.padding['top'] + self.padding['bottom']))
         painter.setPen(STYLE_TEXT_PRIMARY); painter.setFont(QFont("Arial", 11, QFont.Weight.Bold)); painter.save()
-        painter.translate(40, int(self.height() / 2) + 36); painter.rotate(-90)
-        y_label = "Temperature / K" if self.mode == 'Temperature' else "Engineering strain"
+        painter.translate(40, int(self.height() / 2) + 44); painter.rotate(-90)
+        y_label = "Temperature / K" if self.mode == 'Temperature' else f"Engineering strain {self.get_y_unit()} / 1"
         painter.drawText(0, 0, y_label)
         painter.restore()
         painter.drawText(int(self.width()/2 - 30), self.height() - self.padding['bottom'] + 55, "Time Steps")
@@ -1242,8 +1242,16 @@ class GraphWidget(QWidget):
                         if is_even_multiple_alternating or is_integer_full_period_pulsating:
                             self._clickable_regions.append((second_amplitude_rect, "amplitude_label", segment_index))
 
+    def _is_shear_deformation(self):
+        parent_study_widget = self.parent()
+        if parent_study_widget and hasattr(parent_study_widget, 'deform_axis_combo'):
+            return parent_study_widget.deform_axis_combo.currentText() in ["xy", "xz", "yz"]
+        return False
+
     def get_y_unit(self):
-        return "ΔT" if self.mode == 'Temperature' else "ε"
+        if self.mode == 'Temperature':
+            return "ΔT"
+        return "γ" if self._is_shear_deformation() else "ε"
     
     def count_sine_segments(self):
         """Count the number of sine segments in the graph"""

@@ -675,7 +675,7 @@ class OutputSelectorWidget(QWidget):
     STD_THERMO = "step, elapsed, elaplong, dt, time, cpu, tpcpu, spcpu, cpuuse, cpuremain, part, timeremain, atoms, temp, press, pe, ke, etotal, evdwl, ecoul, epair, ebond, eangle, edihed, eimp, emol, elong, etail, enthalpy, ecouple, econserve, vol, density, xlo, xhi, ylo, yhi, zlo, zhi, xy, xz, yz, avecx, avecy, avecz, bvecx, bvecy, bvecz, cvecx, cvecy, cvecz, lx, ly, lz, xlat, ylat, zlat, cella, cellb, cellc, cellalpha, cellbeta, cellgamma, pxx, pyy, pzz, pxy, pxz, pyz, bonds, angles, dihedrals, impropers, fmax, fnorm, nbuild, ndanger".split(", ")
     STD_TRAJ = "id, mol, proc, procp1, type, element, mass, x, y, z, xs, ys, zs, xu, yu, zu, xsu, ysu, zsu, ix, iy, iz, vx, vy, vz, fx, fy, fz, q, mux, muy, muz, mu, radius, diameter, omegax, omegay, omegaz, angmomx, angmomy, angmomz, tqx, tqy, tqz".split(", ")
     STRAINS = ['strain deformation direction', 'εxx', 'εyy', 'εzz', 'εxy', 'εxz', 'εyz']
-    STRESSES = ['stress deformation direction', 'σxx', 'σyy', 'σzz', 'σxy', 'σxz', 'σyz', 'von Mises', 'hydrostatic']
+    STRESSES = ['stress deformation direction', 'σxx', 'σyy', 'σzz', 'σxy', 'σxz', 'σyz', 'cauchy_vM', 'cauchy_vol']
 
     selectionChanged = pyqtSignal()
 
@@ -877,8 +877,16 @@ class OutputSelectorWidget(QWidget):
             item = self.model.item(row)
             if item.isCheckable(): item.setCheckState(Qt.CheckState.Unchecked)
             
+        aliases = {
+            "deformation direction": "strain deformation direction",
+            "von Mises": "cauchy_vM",
+            "vMises": "cauchy_vM",
+            "hydrostatic": "cauchy_vol",
+            "cauchy_vm": "cauchy_vM",
+        }
+
         for text in item_list:
-            if text == "deformation direction": text = "strain deformation direction"
+            text = aliases.get(text, text)
             category = "standard"
             if text in self.STRAINS: category = "strain"
             elif text in self.STRESSES: category = "stress"
@@ -2729,6 +2737,8 @@ class LAMMPSdeformerGui(QMainWindow):
 
         out = []
         for sw, name, ms in self._iter_studies():
+            raw_thermo_freq_s = None
+            thermo_freq_rounded = False
             # Thermo thermo_freq (what LAMMPS calls the Nfreq argument of fix ave/time)
             if thermo_count:
                 if ms > 0 and thermo_target_n > 0:
@@ -2738,6 +2748,10 @@ class LAMMPSdeformerGui(QMainWindow):
                     k = max(1, round(raw_thermo_freq / nevery_user))
                     thermo_freq_s = max(nevery_user, k * nevery_user)
                     thermo_count_s = max(1, ms // thermo_freq_s)
+                    thermo_freq_rounded = not math.isclose(
+                        thermo_freq_s, raw_thermo_freq, rel_tol=0.0, abs_tol=1e-9
+                    )
+                    raw_thermo_freq_s = raw_thermo_freq
                 else:
                     thermo_count_s = max(1, thermo_target_n)
                     thermo_freq_s = max(nevery_user, thermo_freq_user)
@@ -2791,6 +2805,8 @@ class LAMMPSdeformerGui(QMainWindow):
                 'thermo_count': thermo_count_s,
                 'traj_count': traj_count_s,
                 'thermo_freq': thermo_freq_s,
+                'thermo_freq_rounded': thermo_freq_rounded,
+                'thermo_freq_raw': raw_thermo_freq_s,
                 'traj_freq': traj_freq_s,
                 'nevery': nevery_s,
                 'nrepeat': nrepeat_s,
@@ -2813,6 +2829,23 @@ class LAMMPSdeformerGui(QMainWindow):
         if len(unique) == 1:
             return str(unique[0])
         return ", ".join(str(v) for v in unique)
+
+    def _format_per_study_freq_display(self, per_study):
+        """Return rich-text Nfreq values and whether any were rounded."""
+        rounded_by_value = {}
+        for p in per_study:
+            value = int(p['thermo_freq'])
+            rounded_by_value[value] = rounded_by_value.get(value, False) or bool(
+                p.get('thermo_freq_rounded')
+            )
+
+        parts = []
+        for value in sorted(rounded_by_value):
+            if rounded_by_value[value]:
+                parts.append(f'<span style="color:#e57373;">{value}</span>')
+            else:
+                parts.append(str(value))
+        return ", ".join(parts), any(rounded_by_value.values())
 
     def _current_mode_unit_key(self):
         """Return (thermo_mode, nrepeat_unit) as ('frequency'|'count', 'steps'|'percent')."""
@@ -3027,7 +3060,8 @@ class LAMMPSdeformerGui(QMainWindow):
             return
         self._save_current_avg_to_memory(persist=True)
 
-    def _maybe_warn_per_study_diverge(self, kind, per_study_pairs):
+    def _maybe_warn_per_study_diverge(self, kind, per_study_pairs,
+                                      rounded_names=None, rounded_message=None):
         """If per-study values diverge, show a modal warning.
 
         per_study_pairs: iterable of (study_name, value).
@@ -3036,14 +3070,24 @@ class LAMMPSdeformerGui(QMainWindow):
         unique = sorted({v for _, v in per_study_pairs})
         if len(unique) <= 1:
             return
-        lines = [
-            f"{kind} could not be matched exactly for all studies.",
-            "Each study's value was rounded to the nearest divisor of its max_steps:",
-            "",
-        ]
+
+        rounded_names = set(rounded_names or [])
+        lines = [f"{kind} differs across studies."]
+        if rounded_names:
+            lines.append(
+                rounded_message
+                or "Values marked '(rounded)' were rounded to a valid output frequency."
+            )
+        else:
+            lines.append("Per-study values differ because max_steps differs across studies:")
+        lines.append("")
+
         for name, val in per_study_pairs:
-            lines.append(f"  {name}: {val}")
-        QMessageBox.warning(self, f"{kind} rounded per study", "\n".join(lines))
+            suffix = " (rounded)" if name in rounded_names else ""
+            lines.append(f"  {name}: {val}{suffix}")
+
+        title_state = "rounded" if rounded_names else "differs"
+        QMessageBox.warning(self, f"{kind} {title_state} per study", "\n".join(lines))
 
     def _on_thermo_mode_changed(self, text):
         """Switch the thermo spinbox between edit and display mode and refresh.
@@ -3289,15 +3333,29 @@ class LAMMPSdeformerGui(QMainWindow):
             self.thermo_per_study_freq_label.setText("")
             self.thermo_per_study_freq_label.setToolTip("")
             return
-        freqs = [p['thermo_freq'] for p in per_study]  # dict key; this IS the Nfreq
-        display = self._format_unique_dedup_comma(freqs)
-        self.thermo_per_study_freq_label.setText(f"Frequencies: {display}")
+        display, has_rounded = self._format_per_study_freq_display(per_study)
+        if has_rounded:
+            self.thermo_per_study_freq_label.setTextFormat(Qt.TextFormat.RichText)
+            self.thermo_per_study_freq_label.setText(
+                f'<span style="color:#666666;">Frequencies (light red = rounded): {display}</span>'
+            )
+        else:
+            self.thermo_per_study_freq_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.thermo_per_study_freq_label.setText(f"Frequencies: {display}")
         self.thermo_per_study_freq_label.setVisible(True)
         lines = ["Output frequency (Nfreq) per study in Count mode:"]
+        if has_rounded:
+            lines.append(
+                "Light red frequencies were rounded to the nearest multiple of "
+                "Sample every (Nevery)."
+            )
         for p in per_study:
+            rounded_suffix = " (rounded)" if p.get('thermo_freq_rounded') else ""
+            raw = p.get('thermo_freq_raw')
+            raw_part = f", raw=max_steps/count={raw:.6g}" if raw is not None else ""
             lines.append(
                 f"  {p['name']}: max_steps={p['max_steps']}, "
-                f"count={p['thermo_count']}, Nfreq={p['thermo_freq']}"
+                f"count={p['thermo_count']}, Nfreq={p['thermo_freq']}{rounded_suffix}{raw_part}"
             )
         self.thermo_per_study_freq_label.setToolTip("\n".join(lines))
 
@@ -3342,6 +3400,13 @@ class LAMMPSdeformerGui(QMainWindow):
             self._maybe_warn_per_study_diverge(
                 "Thermo Output frequency",
                 [(p['name'], p['thermo_freq']) for p in per_study],
+                rounded_names={
+                    p['name'] for p in per_study if p.get('thermo_freq_rounded')
+                },
+                rounded_message=(
+                    "Values marked '(rounded)' were rounded to the nearest "
+                    "multiple of Sample every (Nevery)."
+                ),
             )
 
         self._update_per_study_freq_label()
@@ -4502,48 +4567,80 @@ class LAMMPSdeformerGui(QMainWindow):
             field_widget.setStyleSheet("color: grey;")
 
     def validate_paths(self):
-        """Validate all user-provided paths for invalid characters"""
-        paths_to_check = {
-            "Output Path": self.output_path_edit.text()
-        }
+        """Validate output paths and copied filenames for invalid characters."""
+        invalid_paths = []
+        invalid_char_re = re.compile(r'[\s]|[^\x00-\x7F]')
 
-        # Add all active system set paths
+        def add_invalid(name, value):
+            if not value:
+                return
+            value = str(value)
+            if not invalid_char_re.search(value):
+                return
+
+            highlighted_value = ""
+            for char in value:
+                if invalid_char_re.search(char):
+                    highlighted_value += f"<b>{char}</b>"
+                else:
+                    highlighted_value += char
+            invalid_paths.append(f"<li><b>{name}:</b> {highlighted_value}</li>")
+
+        def system_file_names_to_check(system_path, set_widget):
+            if not system_path:
+                return []
+            path_obj = Path(system_path)
+            if path_obj.is_dir():
+                extensions = {
+                    ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+                    for ext in getattr(set_widget, 'data_file_extensions', [".data"])
+                }
+                try:
+                    return [
+                        child.name for child in path_obj.iterdir()
+                        if child.is_file() and child.suffix.lower() in extensions
+                    ]
+                except OSError:
+                    return []
+            return [path_obj.name]
+
+        # Output paths are generated paths and must stay clean end-to-end.
+        add_invalid("Output Path", self.output_path_edit.text())
+
+        # Source paths may contain spaces in parent folders. Only the copied
+        # filenames are used in generated scripts, so validate those names.
         for i in range(self.system_sets_tab_widget.count()):
             set_widget = self.system_sets_tab_widget.widget(i)
-            if set_widget.is_enabled:
-                prefix = self.system_sets_tab_widget.tabText(i)
-                paths_to_check[f"{prefix} System Path"] = set_widget.system_path_edit.text()
-                if set_widget.use_potential_before.isChecked():
-                    paths_to_check[f"{prefix} Potential Path (Before)"] = set_widget.potential_file_before.text()
-                if set_widget.use_potential_after.isChecked():
-                    paths_to_check[f"{prefix} Potential Path (After)"] = set_widget.potential_file_after.text()
-        invalid_paths = []
-        # Regex to find spaces or non-ascii characters that are not basic path separators
-        invalid_char_re = re.compile(r'[\säöüÄÖÜß]')
-
-        for name, path in paths_to_check.items():
-            if not path:
+            if not set_widget.is_enabled:
                 continue
 
-            if invalid_char_re.search(path):
-                # Highlight invalid characters
-                highlighted_path = ""
-                for char in path:
-                    if invalid_char_re.search(char):
-                        highlighted_path += f"<b>{char}</b>"
-                    else:
-                        highlighted_path += char
-                invalid_paths.append(f"<li><b>{name}:</b> {highlighted_path}</li>")
+            prefix = self.system_sets_tab_widget.tabText(i)
+            system_path = set_widget.system_path_edit.text().strip()
+            for file_name in system_file_names_to_check(system_path, set_widget):
+                add_invalid(f"{prefix} System File Name", file_name)
+
+            if (set_widget.use_potential_before.isChecked()
+                    and set_widget.potential_source_before.currentText() == "file"):
+                add_invalid(
+                    f"{prefix} Potential File Name (Before)",
+                    Path(set_widget.potential_file_before.text()).name,
+                )
+            if (set_widget.use_potential_after.isChecked()
+                    and set_widget.potential_source_after.currentText() == "file"):
+                add_invalid(
+                    f"{prefix} Potential File Name (After)",
+                    Path(set_widget.potential_file_after.text()).name,
+                )
 
         if invalid_paths:
-            error_message = "The following paths contain spaces or special characters that are not allowed:<br><ul>"
+            error_message = "The following generated paths or copied file names contain spaces or special characters that are not allowed:<br><ul>"
             error_message += "".join(invalid_paths)
             error_message += "</ul>Please correct them before generating scripts."
             QMessageBox.critical(self, "Invalid Paths", error_message)
             return False
-            
+
         return True
-    
+
     def show_generated_files_dialog(self, result):
         """Show dialog with generated file structure"""
         dialog = QDialog(self)
