@@ -448,6 +448,9 @@ class StudyWidget(QWidget):
         self.graph_widget.dataChanged.connect(self.dataChanged); self.reset_button.clicked.connect(self.graph_widget.reset_graph); self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
         self._save_state_for_undo()
+        
+        # Update bond breakage UI state to ensure fields are enabled/disabled correctly on startup
+        self._update_bond_breakage_ui_state()
 
     def _update_graph_controls(self):
         max_steps = self.max_steps_spinbox.value()
@@ -802,6 +805,9 @@ class StudyWidget(QWidget):
         
         self.graph_widget.update()
         self.dataChanged.emit()  # Emit the dataChanged signal to update summaries
+        
+        # Update bond breakage UI state to ensure fields are enabled/disabled correctly
+        self._update_bond_breakage_ui_state()
 
     def _update_bond_breakage_ui_state(self):
         enabled_bond_breakage = self.enable_bond_breakage_checkbox.isChecked()
@@ -819,15 +825,26 @@ class StudyWidget(QWidget):
         self._update_bond_breakage_ui_state()
 
         # Get the parent DeformationTab instance
-        deformation_tab = self.parent()
-        if isinstance(deformation_tab, DeformationTab):
-            # If sync is enabled for this study, propagate changes to others
-            if self.sync_bond_break_checkbox.isChecked():
-                deformation_tab._sync_bond_breakage_settings(self)
-            else:
-                # If sync is disabled, propagate the 'unchecked' state to others once
-                # This ensures all sync checkboxes are unchecked if one is unchecked
-                deformation_tab._sync_bond_breakage_settings(self, force_unchecked=True)
+        # The StudyWidget is added directly to the tab_widget, so we need to go up the hierarchy
+        # StudyWidget -> QStackedWidget (tab_widget) -> QTabWidget (tab_widget) -> DeformationTab
+        stacked_widget = self.parent()  # This is the QStackedWidget
+        if stacked_widget is not None:
+            tab_widget = stacked_widget.parent()  # This should be the QTabWidget
+            if tab_widget is not None:
+                deformation_tab = tab_widget.parent()  # This should be the DeformationTab
+                if isinstance(deformation_tab, DeformationTab):
+                    # Check if sync is enabled in THIS tab (the one that changed)
+                    sync_state = self.sync_bond_break_checkbox.isChecked()
+                    if sync_state:
+                        # Sync is enabled in this tab, propagate all settings from this tab to all other tabs
+                        deformation_tab._sync_bond_breakage_settings(self)
+                    else:
+                        # Sync is disabled, check if this was a sync checkbox change
+                        sender = self.sender()
+                        if sender == self.sync_bond_break_checkbox:
+                            # The sync checkbox was just unchecked in this tab
+                            # Uncheck sync in all other tabs
+                            deformation_tab._sync_bond_breakage_settings(self, force_unchecked=True)
 
         self.dataChanged.emit() # Emit dataChanged to update summaries
 
@@ -955,12 +972,15 @@ class DeformationTab(QWidget):
                 self.tab_widget.setTabText(i, f"Study{default_study_counter:02d}"); default_study_counter += 1
 
     def _sync_bond_breakage_settings(self, source_study_widget, force_unchecked=False):
+        # Get the source state
         source_state = source_study_widget.get_state()['bond_breakage']
         
+        # Propagate settings to all other tabs
         for i in range(self.tab_widget.count()):
             target_study_widget = self.tab_widget.widget(i)
+            # Skip the source widget (the one that changed)
             if target_study_widget == source_study_widget:
-                continue # Skip the source widget
+                continue
 
             # Block signals on target widget to prevent recursive calls
             target_study_widget.enable_bond_breakage_checkbox.blockSignals(True)
@@ -973,8 +993,10 @@ class DeformationTab(QWidget):
             target_study_widget.sync_bond_break_checkbox.blockSignals(True)
 
             if force_unchecked:
+                # Only uncheck the sync checkbox in all other tabs
                 target_study_widget.sync_bond_break_checkbox.setChecked(False)
             else:
+                # Copy all bond breakage settings from source to target
                 target_study_widget.enable_bond_breakage_checkbox.setChecked(source_state['enable_bond_breakage'])
                 target_study_widget.nevery_spinbox.setValue(source_state['nevery'])
                 target_study_widget.bondtype_spinbox.setValue(source_state['bondtype'])
@@ -982,6 +1004,7 @@ class DeformationTab(QWidget):
                 target_study_widget.enable_prob_checkbox.setChecked(source_state['enable_prob'])
                 target_study_widget.prob_fraction_spinbox.setValue(source_state['prob_fraction'])
                 target_study_widget.prob_seed_spinbox.setValue(source_state['prob_seed'])
+                # Also copy the sync checkbox state
                 target_study_widget.sync_bond_break_checkbox.setChecked(source_state['sync_bond_break'])
 
             # Unblock signals
