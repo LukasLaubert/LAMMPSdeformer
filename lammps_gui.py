@@ -280,13 +280,6 @@ class LammpsScriptGenerator(QMainWindow):
         potential_path_layout.addWidget(self.potential_path_browse)
         
         potential_label = QLabel("Potential File Path:")
-        potential_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            potential_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            # Fallback for PyQt6 or environments where PointingHandCursor is not available
-            pass
-        potential_label.mousePressEvent = lambda e: self.open_lammps_doc("include")
         potential_label.setToolTip("Click to open LAMMPS include documentation")
         
         potential_layout.addRow(self.use_potential_file)
@@ -1834,17 +1827,10 @@ class LammpsScriptGenerator(QMainWindow):
                 if study_name == "+":
                     continue
                 
-                # Get the points from the graph
-                study = {
-                    "name": study_name,
-                    "data_points": [[p.x(), p.y()] for p in study_widget.graph_widget.get_data_points()],
-                    "max_steps": study_widget.max_steps_spinbox.value(),
-                    "min_strain": study_widget.min_strain_spinbox.value(),
-                    "max_strain": study_widget.max_strain_spinbox.value(),
-                    "thermo_freq": study_widget.thermo_freq_spinbox.value(),
-                    "deform_axis": study_widget.deform_axis_combo.currentText()
-                }
-                config["multistudy"]["deform_studies"].append(study)
+                # Get the full state from the study widget
+                study_state = study_widget.get_state()
+                study_state["name"] = study_name # Add the name to the state
+                config["multistudy"]["deform_studies"].append(study_state)
 
         return config
     
@@ -1946,7 +1932,8 @@ class LammpsScriptGenerator(QMainWindow):
                             'min_strain': study.get("min_strain", 0.0),
                             'max_strain': study.get("max_strain", 1.0),
                             'thermo_freq': study.get("thermo_freq", 100),
-                            'deform_axis': study.get("deform_axis", "x")
+                            'deform_axis': study.get("deform_axis", "x"),
+                            'bond_breakage': study.get("bond_breakage", {}) # Add bond breakage settings
                         }
                         study_widget.set_state(state)
                 else:
@@ -2218,7 +2205,8 @@ class LammpsScriptGenerator(QMainWindow):
                         'min_strain': study_data.get("min_strain", 0.0),
                         'max_strain': study_data.get("max_strain", 1.0),
                         'thermo_freq': study_data.get("thermo_freq", 100),
-                        'deform_axis': study_data.get("deform_axis", "x")
+                        'deform_axis': study_data.get("deform_axis", "x"),
+                        'bond_breakage': study_data.get("bond_breakage", {}) # Add bond breakage settings
                     }
                     study_widget.set_state(state)
 

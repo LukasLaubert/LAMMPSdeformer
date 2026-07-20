@@ -340,16 +340,17 @@ class LammpsScriptGenerator:
                     ""
                 ])
 
-            # Bond breakage if enabled
-            if fixes_config.get("enable_bond_breakage", False):
-                nevery = fixes_config.get("nevery", 1)
-                bondtype = fixes_config.get("bondtype", 1)
-                rmax = fixes_config.get("rmax", 1.5)
-                enable_prob = fixes_config.get("enable_prob", False)
+            # Bond breakage if enabled (per study)
+            bond_breakage_config = deform_study.get("bond_breakage", {})
+            if bond_breakage_config.get("enable_bond_breakage", False):
+                nevery = bond_breakage_config.get("nevery", 1)
+                bondtype = bond_breakage_config.get("bondtype", 1)
+                rmax = bond_breakage_config.get("rmax", 1.5)
+                enable_prob = bond_breakage_config.get("enable_prob", False)
                 bond_break_cmd = f"fix break_all all bond/break {nevery} {bondtype} {rmax}"
                 if enable_prob:
-                    prob_fraction = fixes_config.get("prob_fraction", 0.1)
-                    prob_seed = fixes_config.get("prob_seed", 12345)
+                    prob_fraction = bond_breakage_config.get("prob_fraction", 0.1)
+                    prob_seed = bond_breakage_config.get("prob_seed", 12345)
                     bond_break_cmd += f" prob {prob_fraction} {prob_seed}"
                 
                 script_lines.extend([

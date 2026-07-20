@@ -3,7 +3,7 @@ import math
 import re
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QSpinBox, QDialog, QDoubleSpinBox, QMenu,
+    QLabel, QSpinBox, QDialog, QDoubleSpinBox, QMenu, QCheckBox,
     QTextEdit, QDialogButtonBox, QFormLayout, QPushButton, QInputDialog,
     QTabWidget, QComboBox, QScrollArea, QMessageBox, QStackedWidget, QListWidget, QSizePolicy
 )
@@ -221,7 +221,7 @@ class GraphWidget(QWidget):
     def _draw_axes_and_frame(self, painter):
         painter.setPen(QPen(STYLE_FRAME, 2)); painter.drawRect(PADDING, PADDING, self.width() - 2 * PADDING, self.height() - 2 * PADDING)
         painter.setPen(STYLE_TEXT_PRIMARY); painter.setFont(QFont("Arial", 11, QFont.Weight.Bold)); painter.save()
-        painter.translate(20, int(self.height() / 2)); painter.rotate(-90); painter.drawText(0, 0, "Strain"); painter.restore()
+        painter.translate(20, int(self.height() / 2)); painter.rotate(-90); painter.drawText(0, 0, "Engineering strain"); painter.restore()
         painter.drawText(int(self.width()/2 - 30), self.height() - PADDING + 55, "Time Steps")
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -350,6 +350,86 @@ class StudyWidget(QWidget):
         layout.addLayout(controls_layout)
         layout.addLayout(deform_direc_thermo_layout)
         layout.addWidget(self.graph_widget)
+
+        # Bond Breakage Controls
+        bond_breakage_layout = QHBoxLayout()
+        bond_breakage_layout.setContentsMargins(0, 0, 0, 0) # No margins for a compact look
+        bond_breakage_layout.setSpacing(5) # Small spacing between elements
+
+        self.enable_bond_breakage_checkbox = QCheckBox("Enable Bond Breakage")
+        self.enable_bond_breakage_checkbox.setToolTip("Enable bond breakage during deformation simulation")
+        bond_breakage_layout.addWidget(self.enable_bond_breakage_checkbox)
+
+        self.nevery_spinbox = QSpinBox()
+        self.nevery_spinbox.setPrefix("Nevery: ")
+        self.nevery_spinbox.setRange(1, 1000000)
+        self.nevery_spinbox.setValue(1)
+        self.nevery_spinbox.setToolTip("Attempt bond breaking every this many steps")
+        self.nevery_spinbox.setFixedWidth(100) # Adjust width
+        bond_breakage_layout.addWidget(self.nevery_spinbox)
+
+        self.bondtype_spinbox = QSpinBox()
+        self.bondtype_spinbox.setPrefix("Bond Type: ")
+        self.bondtype_spinbox.setRange(1, 100)
+        self.bondtype_spinbox.setValue(1)
+        self.bondtype_spinbox.setToolTip("Type of bonds to break (integer or type label)")
+        self.bondtype_spinbox.setFixedWidth(100) # Adjust width
+        bond_breakage_layout.addWidget(self.bondtype_spinbox)
+
+        self.rmax_spinbox = QDoubleSpinBox()
+        self.rmax_spinbox.setPrefix("Rmax: ")
+        self.rmax_spinbox.setRange(0, 1000)
+        self.rmax_spinbox.setValue(1.5)
+        self.rmax_spinbox.setSingleStep(0.1)
+        self.rmax_spinbox.setToolTip("Bond longer than Rmax can break (distance units)")
+        self.rmax_spinbox.setFixedWidth(100) # Adjust width
+        bond_breakage_layout.addWidget(self.rmax_spinbox)
+
+        self.enable_prob_checkbox = QCheckBox("Enable Probability")
+        self.enable_prob_checkbox.setToolTip("Enable probabilistic bond breakage")
+        bond_breakage_layout.addWidget(self.enable_prob_checkbox)
+
+        self.prob_fraction_spinbox = QDoubleSpinBox()
+        self.prob_fraction_spinbox.setPrefix("Prob: ")
+        self.prob_fraction_spinbox.setRange(0, 1)
+        self.prob_fraction_spinbox.setValue(0.1)
+        self.prob_fraction_spinbox.setSingleStep(0.01)
+        self.prob_fraction_spinbox.setToolTip("Break a bond with this probability if otherwise eligible")
+        self.prob_fraction_spinbox.setFixedWidth(100) # Adjust width
+        bond_breakage_layout.addWidget(self.prob_fraction_spinbox)
+
+        self.prob_seed_spinbox = QSpinBox()
+        self.prob_seed_spinbox.setPrefix("Seed: ")
+        self.prob_seed_spinbox.setRange(1, 1000000)
+        self.prob_seed_spinbox.setValue(12345)
+        self.prob_seed_spinbox.setToolTip("Random number seed (positive integer)")
+        self.prob_seed_spinbox.setFixedWidth(100) # Adjust width
+        bond_breakage_layout.addWidget(self.prob_seed_spinbox)
+
+        bond_breakage_layout.addStretch(1) # Push sync button to the right
+
+        self.sync_bond_break_checkbox = QCheckBox("Sync bond break")
+        self.sync_bond_break_checkbox.setToolTip("Synchronize bond breakage settings across all studies")
+        bond_breakage_layout.addWidget(self.sync_bond_break_checkbox)
+
+        layout.addLayout(bond_breakage_layout) # Add the new bond breakage layout to the main layout
+
+        # Connect signals for bond breakage controls
+        self.enable_bond_breakage_checkbox.stateChanged.connect(self._update_bond_breakage_ui_state)
+        self.enable_prob_checkbox.stateChanged.connect(self._update_bond_breakage_ui_state)
+
+        # Connect all bond breakage controls to a common handler for sync logic
+        self.enable_bond_breakage_checkbox.stateChanged.connect(self._on_bond_breakage_setting_changed)
+        self.nevery_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
+        self.bondtype_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
+        self.rmax_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
+        self.enable_prob_checkbox.stateChanged.connect(self._on_bond_breakage_setting_changed)
+        self.prob_fraction_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
+        self.prob_seed_spinbox.valueChanged.connect(self._on_bond_breakage_setting_changed)
+        self.sync_bond_break_checkbox.stateChanged.connect(self._on_bond_breakage_setting_changed)
+
+        # Initial UI state update for bond breakage controls
+        self._update_bond_breakage_ui_state()
 
         self._last_staircase_params = {'cycles': 5, 'factor': 1.0, 'direction': 'Tension'}
         self._last_cyclic_params = {'cycles': 3, 'relax_factor': 0.0, 'start_with': 'Tension'}
@@ -644,7 +724,17 @@ class StudyWidget(QWidget):
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
             'thermo_freq': self.thermo_freq_spinbox.value(),
-            'deform_axis': self.deform_axis_combo.currentText()
+            'deform_axis': self.deform_axis_combo.currentText(),
+            'bond_breakage': {
+                'enable_bond_breakage': self.enable_bond_breakage_checkbox.isChecked(),
+                'nevery': self.nevery_spinbox.value(),
+                'bondtype': self.bondtype_spinbox.value(),
+                'rmax': self.rmax_spinbox.value(),
+                'enable_prob': self.enable_prob_checkbox.isChecked(),
+                'prob_fraction': self.prob_fraction_spinbox.value(),
+                'prob_seed': self.prob_seed_spinbox.value(),
+                'sync_bond_break': self.sync_bond_break_checkbox.isChecked()
+            }
         }
     def set_state(self, state):
         # Set the spinbox values first
@@ -652,15 +742,45 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
         self.thermo_freq_spinbox.blockSignals(True)
+        # Block signals for bond breakage controls
+        self.enable_bond_breakage_checkbox.blockSignals(True)
+        self.nevery_spinbox.blockSignals(True)
+        self.bondtype_spinbox.blockSignals(True)
+        self.rmax_spinbox.blockSignals(True)
+        self.enable_prob_checkbox.blockSignals(True)
+        self.prob_fraction_spinbox.blockSignals(True)
+        self.prob_seed_spinbox.blockSignals(True)
+        self.sync_bond_break_checkbox.blockSignals(True)
+
         self.max_steps_spinbox.setValue(state.get('max_steps', 100))
         self.min_strain_spinbox.setValue(state.get('min_strain', 0.0))
         self.max_strain_spinbox.setValue(state.get('max_strain', 1.0))
         self.thermo_freq_spinbox.setValue(state.get('thermo_freq', 100))
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
+
+        bond_breakage_state = state.get('bond_breakage', {})
+        self.enable_bond_breakage_checkbox.setChecked(bond_breakage_state.get('enable_bond_breakage', False))
+        self.nevery_spinbox.setValue(bond_breakage_state.get('nevery', 1))
+        self.bondtype_spinbox.setValue(bond_breakage_state.get('bondtype', 1))
+        self.rmax_spinbox.setValue(bond_breakage_state.get('rmax', 1.5))
+        self.enable_prob_checkbox.setChecked(bond_breakage_state.get('enable_prob', False))
+        self.prob_fraction_spinbox.setValue(bond_breakage_state.get('prob_fraction', 0.1))
+        self.prob_seed_spinbox.setValue(bond_breakage_state.get('prob_seed', 12345))
+        self.sync_bond_break_checkbox.setChecked(bond_breakage_state.get('sync_bond_break', False))
+
         self.max_steps_spinbox.blockSignals(False)
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
         self.thermo_freq_spinbox.blockSignals(False)
+        # Unblock signals for bond breakage controls
+        self.enable_bond_breakage_checkbox.blockSignals(False)
+        self.nevery_spinbox.blockSignals(False)
+        self.bondtype_spinbox.blockSignals(False)
+        self.rmax_spinbox.blockSignals(False)
+        self.enable_prob_checkbox.blockSignals(False)
+        self.prob_fraction_spinbox.blockSignals(False)
+        self.prob_seed_spinbox.blockSignals(False)
+        self.sync_bond_break_checkbox.blockSignals(False)
         
         # Update graph controls to set the correct axis limits
         self._update_graph_controls()
@@ -682,6 +802,34 @@ class StudyWidget(QWidget):
         
         self.graph_widget.update()
         self.dataChanged.emit()  # Emit the dataChanged signal to update summaries
+
+    def _update_bond_breakage_ui_state(self):
+        enabled_bond_breakage = self.enable_bond_breakage_checkbox.isChecked()
+        self.nevery_spinbox.setEnabled(enabled_bond_breakage)
+        self.bondtype_spinbox.setEnabled(enabled_bond_breakage)
+        self.rmax_spinbox.setEnabled(enabled_bond_breakage)
+        self.enable_prob_checkbox.setEnabled(enabled_bond_breakage)
+
+        enabled_prob = self.enable_prob_checkbox.isChecked() and enabled_bond_breakage
+        self.prob_fraction_spinbox.setEnabled(enabled_prob)
+        self.prob_seed_spinbox.setEnabled(enabled_prob)
+
+    def _on_bond_breakage_setting_changed(self):
+        # Update UI state first
+        self._update_bond_breakage_ui_state()
+
+        # Get the parent DeformationTab instance
+        deformation_tab = self.parent()
+        if isinstance(deformation_tab, DeformationTab):
+            # If sync is enabled for this study, propagate changes to others
+            if self.sync_bond_break_checkbox.isChecked():
+                deformation_tab._sync_bond_breakage_settings(self)
+            else:
+                # If sync is disabled, propagate the 'unchecked' state to others once
+                # This ensures all sync checkboxes are unchecked if one is unchecked
+                deformation_tab._sync_bond_breakage_settings(self, force_unchecked=True)
+
+        self.dataChanged.emit() # Emit dataChanged to update summaries
 
 class DeformationTab(QWidget):
     def __init__(self, main_window, parent=None):
@@ -806,6 +954,50 @@ class DeformationTab(QWidget):
             if re.match(r"^Study\d+$", tab_text):
                 self.tab_widget.setTabText(i, f"Study{default_study_counter:02d}"); default_study_counter += 1
 
+    def _sync_bond_breakage_settings(self, source_study_widget, force_unchecked=False):
+        source_state = source_study_widget.get_state()['bond_breakage']
+        
+        for i in range(self.tab_widget.count()):
+            target_study_widget = self.tab_widget.widget(i)
+            if target_study_widget == source_study_widget:
+                continue # Skip the source widget
+
+            # Block signals on target widget to prevent recursive calls
+            target_study_widget.enable_bond_breakage_checkbox.blockSignals(True)
+            target_study_widget.nevery_spinbox.blockSignals(True)
+            target_study_widget.bondtype_spinbox.blockSignals(True)
+            target_study_widget.rmax_spinbox.blockSignals(True)
+            target_study_widget.enable_prob_checkbox.blockSignals(True)
+            target_study_widget.prob_fraction_spinbox.blockSignals(True)
+            target_study_widget.prob_seed_spinbox.blockSignals(True)
+            target_study_widget.sync_bond_break_checkbox.blockSignals(True)
+
+            if force_unchecked:
+                target_study_widget.sync_bond_break_checkbox.setChecked(False)
+            else:
+                target_study_widget.enable_bond_breakage_checkbox.setChecked(source_state['enable_bond_breakage'])
+                target_study_widget.nevery_spinbox.setValue(source_state['nevery'])
+                target_study_widget.bondtype_spinbox.setValue(source_state['bondtype'])
+                target_study_widget.rmax_spinbox.setValue(source_state['rmax'])
+                target_study_widget.enable_prob_checkbox.setChecked(source_state['enable_prob'])
+                target_study_widget.prob_fraction_spinbox.setValue(source_state['prob_fraction'])
+                target_study_widget.prob_seed_spinbox.setValue(source_state['prob_seed'])
+                target_study_widget.sync_bond_break_checkbox.setChecked(source_state['sync_bond_break'])
+
+            # Unblock signals
+            target_study_widget.enable_bond_breakage_checkbox.blockSignals(False)
+            target_study_widget.nevery_spinbox.blockSignals(False)
+            target_study_widget.bondtype_spinbox.blockSignals(False)
+            target_study_widget.rmax_spinbox.blockSignals(False)
+            target_study_widget.enable_prob_checkbox.blockSignals(False)
+            target_study_widget.prob_fraction_spinbox.blockSignals(False)
+            target_study_widget.prob_seed_spinbox.blockSignals(False)
+            target_study_widget.sync_bond_break_checkbox.blockSignals(False)
+
+            # Update UI state for the target widget
+            target_study_widget._update_bond_breakage_ui_state()
+            target_study_widget.dataChanged.emit() # Trigger summary update for target
+
     def update_all_graphs(self, timestep, unit_key):
         for i in range(self.tab_widget.count()):
             widget = self.tab_widget.widget(i)
@@ -830,7 +1022,11 @@ class DeformationTab(QWidget):
             study_name = self.tab_widget.tabText(i)
             
             # Add study header with separator
-            all_summaries.append(f"--- Summary for {study_name} ---")
+            bond_breakage_status = "Disabled"
+            study_state = study_widget.get_state()
+            if study_state.get('bond_breakage', {}).get('enable_bond_breakage', False):
+                bond_breakage_status = "Enabled"
+            all_summaries.append(f"--- Summary for {study_name}, Bond Breakage: {bond_breakage_status} ---")
             
             # Add data
             points = study_widget.graph_widget.get_data_points()
