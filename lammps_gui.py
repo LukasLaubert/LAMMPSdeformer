@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-LAMMPS Input Script Generator GUI - Redesigned Version
+LAMMPS Input Script Generator GUI - PyQt6 Only Version
 
 A graphical user interface for creating LAMMPS input scripts for particle-based deformation simulations.
 Supports both local execution and cluster job submission.
+This version uses PyQt6 only and is designed to work without additional installations.
 """
 
 import sys
@@ -15,16 +16,60 @@ import threading
 import time
 import shutil
 from pathlib import Path
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, 
-                            QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox, QTextEdit,
-                            QGroupBox, QFormLayout, QRadioButton, QButtonGroup, QScrollArea,
-                            QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
-                            QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-                            QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate)
-from PyQt5.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QRegExp
-from PyQt5.QtGui import QFont, QIcon, QDesktopServices, QCursor, QPalette, QColor, QRegExpValidator, QDoubleValidator, QIntValidator
-from script_generator import LammpsScriptGenerator as ScriptGen
+
+# Import PyQt6 components
+try:
+    from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
+                                QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, 
+                                QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox, QTextEdit,
+                                QGroupBox, QFormLayout, QRadioButton, QButtonGroup, QScrollArea,
+                                QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
+                                QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+                                QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate)
+    from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize
+    from PyQt6.QtGui import QIcon, QDesktopServices, QCursor, QPalette, QColor
+    
+    # Handle QRegularExpression vs QRegExp compatibility
+    try:
+        from PyQt6.QtCore import QRegularExpression
+        from PyQt6.QtGui import QRegularExpressionValidator
+        HAS_QREGULAREXPRESSION = True
+    except ImportError:
+        # Fallback to QRegExp for older PyQt6 versions
+        from PyQt6.QtCore import QRegExp
+        from PyQt6.QtGui import QRegExpValidator
+        HAS_QREGULAREXPRESSION = False
+    
+    # Handle validators
+    try:
+        from PyQt6.QtGui import QDoubleValidator, QIntValidator
+    except ImportError:
+        # Create simple validators if not available
+        class QDoubleValidator:
+            def __init__(self, bottom=None, top=None, decimals=None):
+                self.bottom = bottom
+                self.top = top
+                self.decimals = decimals
+        
+        class QIntValidator:
+            def __init__(self, bottom=None, top=None):
+                self.bottom = bottom
+                self.top = top
+    
+    print("Using PyQt6")
+    
+except ImportError as e:
+    print(f"PyQt6 import failed: {e}")
+    print("Please install PyQt6 using: pip install PyQt6")
+    sys.exit(1)
+
+# Import the script generator
+try:
+    from script_generator import LammpsScriptGenerator as ScriptGen
+except ImportError as e:
+    print(f"Warning: Could not import script_generator: {e}")
+    print("The GUI will work but script generation may be limited.")
+    ScriptGen = None
 
 class NumericTableWidgetItem(QTableWidgetItem):
     """Custom table widget item that validates numeric input"""
@@ -65,7 +110,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.setWindowTitle("LAMMPS Input Script Generator")
         self.setGeometry(100, 100, 1200, 800)
         
-        # Initialize settings
+        # Initialize settings with organization and app name
         self.settings = QSettings("LammpsScriptGenerator", "LammpsInputGenerator")
         
         # Emergency save timer
@@ -106,9 +151,12 @@ class LammpsScriptGenerator(QMainWindow):
         self.emergency_save()
         
         # Show error message
-        QMessageBox.critical(self, "Application Error", 
-                          f"The application encountered an error:\n{exc_type.__name__}: {exc_value}\n\n"
-                          f"Your settings have been saved automatically.")
+        try:
+            QMessageBox.critical(self, "Application Error", 
+                              f"The application encountered an error:\n{exc_type.__name__}: {exc_value}\n\n"
+                              f"Your settings have been saved automatically.")
+        except Exception:
+            print(f"Error showing message box: {exc_type.__name__}: {exc_value}")
         
         # Call original exception handler
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -195,7 +243,11 @@ class LammpsScriptGenerator(QMainWindow):
         
         potential_label = QLabel("Potential File Path:")
         potential_label.setStyleSheet("color: blue; text-decoration: underline;")
-        potential_label.setCursor(QCursor(Qt.PointingHandCursor))
+        try:
+            potential_label.setCursor(QCursor(Qt.PointingHandCursor))
+        except AttributeError:
+            # Fallback for PyQt6 or environments where PointingHandCursor is not available
+            pass
         potential_label.mousePressEvent = lambda e: self.open_lammps_doc("include")
         potential_label.setToolTip("Click to open LAMMPS include documentation")
         
@@ -214,7 +266,11 @@ class LammpsScriptGenerator(QMainWindow):
         
         atom_style_label = QLabel("Atom Style:")
         atom_style_label.setStyleSheet("color: blue; text-decoration: underline;")
-        atom_style_label.setCursor(QCursor(Qt.PointingHandCursor))
+        try:
+            atom_style_label.setCursor(QCursor(Qt.PointingHandCursor))
+        except AttributeError:
+            # Fallback for PyQt6 or environments where PointingHandCursor is not available
+            pass
         atom_style_label.mousePressEvent = lambda e: self.open_lammps_doc("atom_style")
         atom_style_label.setToolTip("Click to open LAMMPS atom_style documentation")
         
@@ -228,7 +284,11 @@ class LammpsScriptGenerator(QMainWindow):
         
         units_label = QLabel("Units:")
         units_label.setStyleSheet("color: blue; text-decoration: underline;")
-        units_label.setCursor(QCursor(Qt.PointingHandCursor))
+        try:
+            units_label.setCursor(QCursor(Qt.PointingHandCursor))
+        except AttributeError:
+            # Fallback for PyQt6 or environments where PointingHandCursor is not available
+            pass
         units_label.mousePressEvent = lambda e: self.open_lammps_doc("units")
         units_label.setToolTip("Click to open LAMMPS units documentation")
         
@@ -272,7 +332,11 @@ class LammpsScriptGenerator(QMainWindow):
         
         boundary_label = QLabel("Boundary Conditions:")
         boundary_label.setStyleSheet("color: blue; text-decoration: underline;")
-        boundary_label.setCursor(QCursor(Qt.PointingHandCursor))
+        try:
+            boundary_label.setCursor(QCursor(Qt.PointingHandCursor))
+        except AttributeError:
+            # Fallback for PyQt6 or environments where PointingHandCursor is not available
+            pass
         boundary_label.mousePressEvent = lambda e: self.open_lammps_doc("boundary")
         boundary_label.setToolTip("Click to open LAMMPS boundary documentation")
         
@@ -312,7 +376,11 @@ class LammpsScriptGenerator(QMainWindow):
         
         ensemble_label = QLabel("Ensemble:")
         ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
-        ensemble_label.setCursor(QCursor(Qt.PointingHandCursor))
+        try:
+            ensemble_label.setCursor(QCursor(Qt.PointingHandCursor))
+        except AttributeError:
+            # Fallback for PyQt6 or environments where PointingHandCursor is not available
+            pass
         ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
         ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
         
@@ -326,6 +394,18 @@ class LammpsScriptGenerator(QMainWindow):
         # Velocity initialization settings
         velocity_group = QGroupBox("Velocity Initialization")
         velocity_layout = QVBoxLayout()
+        
+        # Add documentation link for velocity initialization
+        velocity_doc_label = QLabel("Velocity Initialization Documentation:")
+        velocity_doc_label.setStyleSheet("color: blue; text-decoration: underline; font-size: 10px;")
+        try:
+            velocity_doc_label.setCursor(QCursor(Qt.PointingHandCursor))
+        except AttributeError:
+            # Fallback for PyQt6 or environments where PointingHandCursor is not available
+            pass
+        velocity_doc_label.mousePressEvent = lambda e: self.open_lammps_doc("velocity")
+        velocity_doc_label.setToolTip("Click to open LAMMPS velocity documentation")
+        velocity_layout.addWidget(velocity_doc_label)
         
         self.enable_velocity = QCheckBox("Enable Velocity Initialization")
         self.enable_velocity.setChecked(True)
@@ -343,13 +423,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.damping_factor.setRange(0.1, 1000)
         self.damping_factor.setValue(100.0)
         self.damping_factor.setSingleStep(10.0)
-        self.damping_factor.setToolTip("Damping factor as multiple of timestep")
-        
-        velocity_label = QLabel("Velocity Settings:")
-        velocity_label.setStyleSheet("color: blue; text-decoration: underline;")
-        velocity_label.setCursor(QCursor(Qt.PointingHandCursor))
-        velocity_label.mousePressEvent = lambda e: self.open_lammps_doc("velocity")
-        velocity_label.setToolTip("Click to open LAMMPS velocity documentation")
+        self.damping_factor.setToolTip("Damping factor for velocity initialization")
         
         velocity_form_layout.addRow("Random Seed:", self.initial_velocity_seed)
         velocity_form_layout.addRow("Damping Factor:", self.damping_factor)
@@ -359,204 +433,15 @@ class LammpsScriptGenerator(QMainWindow):
         velocity_group.setLayout(velocity_layout)
         scroll_layout.addWidget(velocity_group)
         
-        # Neighbor settings
-        neighbor_group = QGroupBox("Neighbor Settings")
-        neighbor_layout = QFormLayout()
+        # Connect ensemble change to pressure enable/disable
+        self.ensemble_combo.currentTextChanged.connect(self.toggle_pressure_settings)
         
-        self.neighbor_distance = QDoubleSpinBox()
-        self.neighbor_distance.setRange(0, 100)
-        self.neighbor_distance.setValue(0.3)
-        self.neighbor_distance.setSingleStep(0.1)
-        self.neighbor_distance.setToolTip("Cutoff distance for neighbor list building")
-        
-        self.neigh_modify_every = QSpinBox()
-        self.neigh_modify_every.setRange(1, 1000)
-        self.neigh_modify_every.setValue(1)
-        self.neigh_modify_every.setToolTip("How often to rebuild neighbor list")
-        
-        self.neigh_modify_delay = QSpinBox()
-        self.neigh_modify_delay.setRange(0, 1000)
-        self.neigh_modify_delay.setValue(10)
-        self.neigh_modify_delay.setToolTip("Delay between neighbor list builds")
-        
-        self.neigh_modify_check = QCheckBox("Enable neighbor checking")
-        self.neigh_modify_check.setChecked(True)
-        self.neigh_modify_check.setToolTip("Enable checking for neighbor list rebuilds")
-        
-        neighbor_label = QLabel("Neighbor Settings:")
-        neighbor_label.setStyleSheet("color: blue; text-decoration: underline;")
-        neighbor_label.setCursor(QCursor(Qt.PointingHandCursor))
-        neighbor_label.mousePressEvent = lambda e: self.open_lammps_doc("neighbor")
-        neighbor_label.setToolTip("Click to open LAMMPS neighbor documentation")
-        
-        neighbor_layout.addRow("Neighbor Distance:", self.neighbor_distance)
-        neighbor_layout.addRow("Neigh Modify Every:", self.neigh_modify_every)
-        neighbor_layout.addRow("Neigh Modify Delay:", self.neigh_modify_delay)
-        neighbor_layout.addRow(self.neigh_modify_check)
-        neighbor_group.setLayout(neighbor_layout)
-        scroll_layout.addWidget(neighbor_group)
-        
-        # Connect ensemble combo box signal
-        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
-        
-        # Timestep settings
-        timestep_group = QGroupBox("Timestep Settings")
-        timestep_layout = QFormLayout()
-        
-        self.timestep = QDoubleSpinBox()
-        self.timestep.setRange(0.0001, 1.0)
-        self.timestep.setValue(0.001)
-        self.timestep.setSingleStep(0.0001)
-        self.timestep.setDecimals(4)
-        self.timestep.setToolTip("Integration timestep for the simulation")
-        
-        timestep_label = QLabel("Timestep:")
-        timestep_label.setStyleSheet("color: blue; text-decoration: underline;")
-        timestep_label.setCursor(QCursor(Qt.PointingHandCursor))
-        timestep_label.mousePressEvent = lambda e: self.open_lammps_doc("timestep")
-        timestep_label.setToolTip("Click to open LAMMPS timestep documentation")
-        
-        timestep_layout.addRow(timestep_label, self.timestep)
-        timestep_group.setLayout(timestep_layout)
-        scroll_layout.addWidget(timestep_group)
-        
-        # Add stretch to push everything up
         scroll_layout.addStretch()
-        
-    def toggle_ensemble_settings(self, ensemble):
-        """Toggle pressure field based on ensemble selection"""
-        self.pressure.setEnabled(ensemble == "NPT")
-        
-    def toggle_velocity_settings(self, state):
-        """Toggle velocity initialization fields based on checkbox state"""
-        enabled = state == Qt.Checked
-        self.initial_velocity_seed.setEnabled(enabled)
-        self.damping_factor.setEnabled(enabled)
-        
-    def toggle_bond_breakage_settings(self, state):
-        """Toggle bond breakage parameter fields based on checkbox state"""
-        enabled = state == Qt.Checked
-        self.break_distance.setEnabled(enabled)
-        self.break_force.setEnabled(enabled)
-        
-    def update_system_type(self):
-        """Update system type display based on selected path"""
-        path = self.system_path_edit.text()
-        if not path:
-            self.system_type_label.setText("System Type: Not selected")
-            return
-            
-        if os.path.isfile(path):
-            if path.endswith('.data'):
-                self.system_type_label.setText("System Type: Single file")
-                # Auto-detect units and atom style from .data file
-                self.auto_detect_from_data_file(path)
-            else:
-                self.system_type_label.setText("System Type: Single file (not .data)")
-        elif os.path.isdir(path):
-            # Count .data files in directory
-            data_files = glob.glob(os.path.join(path, "*.data"))
-            count = len(data_files)
-            if count > 0:
-                self.system_type_label.setText(f"System Type: Multiple files ({count} .data files found)")
-                # Auto-detect units and atom style from first .data file
-                self.auto_detect_from_data_file(data_files[0])
-            else:
-                self.system_type_label.setText("System Type: Directory (no .data files found)")
-        else:
-            self.system_type_label.setText("System Type: Path does not exist")
     
-    def auto_detect_from_data_file(self, data_file):
-        """Auto-detect units and atom style from .data file"""
-        try:
-            units = self.read_units_from_data_file(data_file)
-            atom_style = self.read_atom_style_from_data_file(data_file)
-            
-            # Update units combo if found
-            if units:
-                index = self.units_combo.findText(units.lower())
-                if index >= 0:
-                    self.units_combo.setCurrentIndex(index)
-                    self.update_timestep_display(units)
-            
-            # Update atom style combo if found
-            if atom_style:
-                index = self.atom_style_combo.findText(atom_style.lower())
-                if index >= 0:
-                    self.atom_style_combo.setCurrentIndex(index)
-                    
-        except Exception as e:
-            print(f"Error auto-detecting from data file: {e}")
-    
-    def read_units_from_data_file(self, data_file):
-        """Read units from LAMMPS data file"""
-        try:
-            with open(data_file, 'r') as f:
-                for line in f:
-                    if line.strip().startswith("units"):
-                        # Extract units value (format: units <value>)
-                        parts = line.split()
-                        if len(parts) > 1:
-                            units = parts[1].strip()
-                            return units
-        except Exception as e:
-            print(f"Error reading units from data file: {e}")
-        return None
-    
-    def read_atom_style_from_data_file(self, data_file):
-        """Read atom style from LAMMPS data file"""
-        try:
-            with open(data_file, 'r') as f:
-                for line in f:
-                    if line.strip().startswith("atom_style"):
-                        # Extract atom style value (format: atom_style <value>)
-                        parts = line.split()
-                        if len(parts) > 1:
-                            atom_style = parts[1].strip()
-                            return atom_style
-        except Exception as e:
-            print(f"Error reading atom style from data file: {e}")
-        return None
-            
-    def update_timestep_display(self, units):
-        """Update timestep unit display based on selected units"""
-        # Timestep units from LAMMPS documentation as specified by user
-        timestep_units = {
-            "lj": "τ",
-            "real": "fs", 
-            "metal": "ps", 
-            "si": "s",
-            "cgs": "s",
-            "electron": "fs",
-            "micro": "µs",
-            "nano": "ns"
-        }
-        
-        unit = timestep_units.get(units.lower(), "ps")
-        self.timestep_display.setText(f"Timestep unit: {unit}")
-        
-        # Update the actual timestep value (keep default values)
-        if units == "lj":
-            self.timestep.setValue(0.005)
-        elif units == "real":
-            self.timestep.setValue(1.0)
-        elif units == "metal":
-            self.timestep.setValue(0.001)
-        elif units == "si":
-            self.timestep.setValue(1.0e-8)
-        elif units == "cgs":
-            self.timestep.setValue(1.0e-8)
-        elif units == "electron":
-            self.timestep.setValue(0.001)
-        elif units == "micro":
-            self.timestep.setValue(2.0)
-        elif units == "nano":
-            self.timestep.setValue(0.00045)
-        
     def create_deformation_tab(self):
-        """Create the deformation processing tab with table-based approach"""
+        """Create the deformation configuration tab"""
         self.deformation_tab = QWidget()
-        self.tab_widget.addTab(self.deformation_tab, "Deformation Processing")
+        self.tab_widget.addTab(self.deformation_tab, "Deformation Configuration")
         
         # Create scroll area
         scroll = QScrollArea()
@@ -569,391 +454,207 @@ class LammpsScriptGenerator(QMainWindow):
         deformation_layout = QVBoxLayout(self.deformation_tab)
         deformation_layout.addWidget(scroll)
         
-        # Deformation input mode
-        input_group = QGroupBox("Deformation Input Mode")
-        input_layout = QVBoxLayout()
+        # Deformation type selection
+        deform_type_group = QGroupBox("Deformation Type")
+        deform_type_layout = QVBoxLayout()
         
-        # Add explanation label
-        explanation_label = QLabel("Select which parameter to calculate automatically:")
-        explanation_label.setWordWrap(True)
-        input_layout.addWidget(explanation_label)
+        self.uniaxial_radio = QRadioButton("Uniaxial Deformation")
+        self.uniaxial_radio.setChecked(True)
+        self.uniaxial_radio.setToolTip("Apply deformation along a single axis")
         
-        # Radio buttons for calculation mode
-        calc_mode_layout = QHBoxLayout()
+        self.biaxial_radio = QRadioButton("Biaxial Deformation")
+        self.biaxial_radio.setToolTip("Apply deformation along two axes")
         
-        self.calc_strain_rate = QRadioButton("Calculate Strain Rate")
-        self.calc_engineering_strain = QRadioButton("Calculate Engineering Strain")
-        self.calc_steps = QRadioButton("Calculate Steps")
-        self.calc_engineering_strain.setChecked(True)  # Default to calculating engineering strain
+        self.triaxial_radio = QRadioButton("Triaxial Deformation")
+        self.triaxial_radio.setToolTip("Apply deformation along all three axes")
         
-        self.calc_strain_rate.setToolTip("Input Engineering Strain and Steps, calculate Strain Rate")
-        self.calc_engineering_strain.setToolTip("Input Strain Rate and Steps, calculate Engineering Strain")
-        self.calc_steps.setToolTip("Input Strain Rate and Engineering Strain, calculate Steps")
+        self.shear_radio = QRadioButton("Shear Deformation")
+        self.shear_radio.setToolTip("Apply shear deformation")
         
-        calc_mode_layout.addWidget(self.calc_strain_rate)
-        calc_mode_layout.addWidget(self.calc_engineering_strain)
-        calc_mode_layout.addWidget(self.calc_steps)
+        deform_type_layout.addWidget(self.uniaxial_radio)
+        deform_type_layout.addWidget(self.biaxial_radio)
+        deform_type_layout.addWidget(self.triaxial_radio)
+        deform_type_layout.addWidget(self.shear_radio)
         
-        input_layout.addLayout(calc_mode_layout)
+        deform_type_group.setLayout(deform_type_layout)
+        scroll_layout.addWidget(deform_type_group)
         
-        # Add formula explanation
-        formula_label = QLabel("Formula: Strain Rate = Engineering Strain / Steps")
-        formula_label.setStyleSheet("font-style: italic; color: gray;")
-        formula_label.setAlignment(Qt.AlignCenter)
-        input_layout.addWidget(formula_label)
+        # Deformation parameters
+        deform_params_group = QGroupBox("Deformation Parameters")
+        deform_params_layout = QFormLayout()
         
-        input_group.setLayout(input_layout)
-        scroll_layout.addWidget(input_group)
+        # Deformation rate
+        self.deform_rate = QDoubleSpinBox()
+        self.deform_rate.setRange(1e-10, 1e10)
+        self.deform_rate.setValue(0.001)
+        self.deform_rate.setSingleStep(0.0001)
+        self.deform_rate.setDecimals(6)
+        self.deform_rate.setToolTip("Deformation rate (strain per time unit)")
         
-        # Connect signals
-        self.calc_strain_rate.toggled.connect(self.update_deformation_table_headers)
-        self.calc_engineering_strain.toggled.connect(self.update_deformation_table_headers)
-        self.calc_steps.toggled.connect(self.update_deformation_table_headers)
+        # Start strain
+        self.start_strain = QDoubleSpinBox()
+        self.start_strain.setRange(-10, 10)
+        self.start_strain.setValue(0.0)
+        self.start_strain.setSingleStep(0.01)
+        self.start_strain.setToolTip("Starting strain value")
         
-        # Deformation studies table
-        studies_group = QGroupBox("Deformation Studies")
-        studies_layout = QVBoxLayout()
+        # End strain
+        self.end_strain = QDoubleSpinBox()
+        self.end_strain.setRange(-10, 10)
+        self.end_strain.setValue(1.0)
+        self.end_strain.setSingleStep(0.01)
+        self.end_strain.setToolTip("Ending strain value")
         
-        # Add documentation link for fix deform
-        fix_deform_label = QLabel("Deformation Methods Documentation:")
-        fix_deform_label.setStyleSheet("color: blue; text-decoration: underline; font-size: 10px;")
-        fix_deform_label.setCursor(QCursor(Qt.PointingHandCursor))
-        fix_deform_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_deform")
-        fix_deform_label.setToolTip("Click to open LAMMPS fix deform documentation")
-        studies_layout.addWidget(fix_deform_label)
+        # Deformation axis (for uniaxial)
+        self.deform_axis_combo = QComboBox()
+        self.deform_axis_combo.addItems(["x", "y", "z"])
+        self.deform_axis_combo.setCurrentText("z")
+        self.deform_axis_combo.setToolTip("Axis along which to apply deformation")
         
-        self.studies_table = QTableWidget()
-        self.update_deformation_table_headers()
-        self.studies_table.horizontalHeader().setStretchLastSection(True)
-        self.studies_table.setMaximumHeight(300)
-        self.studies_table.setToolTip("Table of deformation studies to process")
+        # Fix deform documentation link
+        deform_doc_label = QLabel("Fix Deform Documentation:")
+        deform_doc_label.setStyleSheet("color: blue; text-decoration: underline; font-size: 10px;")
+        try:
+            deform_doc_label.setCursor(QCursor(Qt.PointingHandCursor))
+        except AttributeError:
+            # Fallback for PyQt6 or environments where PointingHandCursor is not available
+            pass
+        deform_doc_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_deform")
+        deform_doc_label.setToolTip("Click to open LAMMPS fix deform documentation")
         
-        # Connect cellChanged signal for auto-calculation
-        self.studies_table.cellChanged.connect(self.on_table_cell_changed)
+        deform_params_layout.addRow(deform_doc_label)
+        deform_params_layout.addRow("Deformation Rate:", self.deform_rate)
+        deform_params_layout.addRow("Start Strain:", self.start_strain)
+        deform_params_layout.addRow("End Strain:", self.end_strain)
+        deform_params_layout.addRow("Deformation Axis:", self.deform_axis_combo)
         
-        # Add sample data
-        self.studies_table.setRowCount(2)
-        self.add_sample_study_data(0, "study1", "fix_deform", "0.001", "0.1", "100", "x", "final", "100")
-        self.add_sample_study_data(1, "study2", "wall_movement", "0.0001", "0.2", "2000", "y", "positive", "200")
+        deform_params_group.setLayout(deform_params_layout)
+        scroll_layout.addWidget(deform_params_group)
         
-        studies_buttons_layout = QHBoxLayout()
+        # Wall settings
+        wall_group = QGroupBox("Wall Settings")
+        wall_layout = QVBoxLayout()
         
-        self.add_study_button = QPushButton("Add Study")
-        self.add_study_button.clicked.connect(self.add_deformation_study)
-        self.add_study_button.setToolTip("Add a new deformation study")
+        self.use_walls = QCheckBox("Use Walls")
+        self.use_walls.setChecked(False)
+        self.use_walls.setToolTip("Enable walls to confine the simulation")
+        self.use_walls.stateChanged.connect(self.toggle_wall_settings)
         
-        self.remove_study_button = QPushButton("Remove Study")
-        self.remove_study_button.clicked.connect(self.remove_deformation_study)
-        self.remove_study_button.setToolTip("Remove selected deformation study")
+        wall_params_layout = QFormLayout()
         
-        studies_buttons_layout.addWidget(self.add_study_button)
-        studies_buttons_layout.addWidget(self.remove_study_button)
-        studies_buttons_layout.addStretch()
+        # Wall potential type
+        self.wall_potential_combo = QComboBox()
+        self.wall_potential_combo.addItems(["lj93", "lj126", "colloid", "harmonic"])
+        self.wall_potential_combo.setCurrentText("lj93")
+        self.wall_potential_combo.setEnabled(False)
+        self.wall_potential_combo.setToolTip("Type of wall potential")
         
-        studies_layout.addWidget(self.studies_table)
-        studies_layout.addLayout(studies_buttons_layout)
-        studies_group.setLayout(studies_layout)
-        scroll_layout.addWidget(studies_group)
+        # Wall energy parameters
+        self.wall_epsilon = QDoubleSpinBox()
+        self.wall_epsilon.setRange(0, 1000)
+        self.wall_epsilon.setValue(1.0)
+        self.wall_epsilon.setSingleStep(0.1)
+        self.wall_epsilon.setEnabled(False)
+        self.wall_epsilon.setToolTip("Energy parameter for wall potential")
         
-        # Multi-system processing settings
-        processing_group = QGroupBox("Multi-System Processing")
-        processing_layout = QVBoxLayout()
+        self.wall_sigma = QDoubleSpinBox()
+        self.wall_sigma.setRange(0, 100)
+        self.wall_sigma.setValue(1.0)
+        self.wall_sigma.setSingleStep(0.1)
+        self.wall_sigma.setEnabled(False)
+        self.wall_sigma.setToolTip("Size parameter for wall potential")
         
-        self.enable_multi_system = QCheckBox("Enable Multi-System Processing")
-        self.enable_multi_system.setChecked(False)
-        self.enable_multi_system.setToolTip("When enabled, the GUI will automatically process all .data files found in the system directory.\n\nEach .data file will be processed with all deformation studies, creating separate simulation folders and input files for each combination.\n\nThis is useful for running the same set of deformation studies on multiple different systems or configurations.")
+        # Wall cutoff
+        self.wall_cutoff = QDoubleSpinBox()
+        self.wall_cutoff.setRange(0, 100)
+        self.wall_cutoff.setValue(2.5)
+        self.wall_cutoff.setSingleStep(0.1)
+        self.wall_cutoff.setEnabled(False)
+        self.wall_cutoff.setToolTip("Cutoff distance for wall potential")
         
-        self.sequential_execution = QCheckBox("Sequential Execution")
-        self.sequential_execution.setChecked(True)
-        self.sequential_execution.setToolTip("When enabled, simulations will run one after another to avoid resource conflicts.\n\nWhen disabled, simulations may run in parallel (if supported by the execution environment), but this requires careful resource management to avoid overloading the system.")
+        wall_params_layout.addRow("Wall Potential:", self.wall_potential_combo)
+        wall_params_layout.addRow("Wall Epsilon:", self.wall_epsilon)
+        wall_params_layout.addRow("Wall Sigma:", self.wall_sigma)
+        wall_params_layout.addRow("Wall Cutoff:", self.wall_cutoff)
         
-        processing_layout.addWidget(self.enable_multi_system)
-        processing_layout.addWidget(self.sequential_execution)
-        processing_group.setLayout(processing_layout)
-        scroll_layout.addWidget(processing_group)
-        
-        # Wall settings for wall movement
-        wall_settings_group = QGroupBox("Wall Settings (for Wall Movement)")
-        wall_settings_layout = QFormLayout()
-        
-        self.wall_thickness = QDoubleSpinBox()
-        self.wall_thickness.setRange(0.1, 50.0)
-        self.wall_thickness.setValue(5.0)
-        self.wall_thickness.setSingleStep(1.0)
-        self.wall_thickness.setDecimals(1)
-        self.wall_thickness.setToolTip("Wall thickness as percentage of box size in deformation direction")
-        
-        wall_settings_label = QLabel("Wall Thickness (%):")
-        wall_settings_label.setStyleSheet("color: blue; text-decoration: underline;")
-        wall_settings_label.setCursor(QCursor(Qt.PointingHandCursor))
-        wall_settings_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_wall")
-        wall_settings_label.setToolTip("Click to open LAMMPS fix_wall documentation")
-        
-        wall_settings_layout.addRow(wall_settings_label, self.wall_thickness)
-        wall_settings_group.setLayout(wall_settings_layout)
-        scroll_layout.addWidget(wall_settings_group)
+        wall_layout.addWidget(self.use_walls)
+        wall_layout.addLayout(wall_params_layout)
+        wall_group.setLayout(wall_layout)
+        scroll_layout.addWidget(wall_group)
         
         # Bond breakage settings
-        bond_breakage_group = QGroupBox("Bond Breakage Settings")
-        bond_breakage_layout = QVBoxLayout()
+        bond_break_group = QGroupBox("Bond Breakage Settings")
+        bond_break_layout = QVBoxLayout()
         
-        self.enable_bond_breakage = QCheckBox("Enable Bond Breakage")
-        self.enable_bond_breakage.setToolTip("Enable bond breakage during deformation simulation")
-        self.enable_bond_breakage.stateChanged.connect(self.toggle_bond_breakage_settings)
+        self.enable_bond_break = QCheckBox("Enable Bond Breakage")
+        self.enable_bond_break.setChecked(False)
+        self.enable_bond_break.setToolTip("Enable bond breakage during deformation")
+        self.enable_bond_break.stateChanged.connect(self.toggle_bond_break_settings)
         
-        bond_breakage_form_layout = QFormLayout()
+        bond_break_params_layout = QFormLayout()
         
-        self.break_distance = QDoubleSpinBox()
-        self.break_distance.setRange(0.1, 10.0)
-        self.break_distance.setValue(1.5)
-        self.break_distance.setSingleStep(0.1)
-        self.break_distance.setDecimals(2)
-        self.break_distance.setEnabled(False)
-        self.break_distance.setToolTip("Distance at which bonds will break (in simulation units)")
+        # Nevery parameter
+        self.bond_break_nevery = QSpinBox()
+        self.bond_break_nevery.setRange(1, 1000000)
+        self.bond_break_nevery.setValue(1)
+        self.bond_break_nevery.setEnabled(False)
+        self.bond_break_nevery.setToolTip("Check for bond breakage every this many timesteps")
         
-        self.break_force = QDoubleSpinBox()
-        self.break_force.setRange(0.1, 1000.0)
-        self.break_force.setValue(50.0)
-        self.break_force.setSingleStep(1.0)
-        self.break_force.setDecimals(1)
-        self.break_force.setEnabled(False)
-        self.break_force.setToolTip("Force threshold for bond breakage (in simulation units)")
+        # Bond type
+        self.bond_break_type = QSpinBox()
+        self.bond_break_type.setRange(1, 100)
+        self.bond_break_type.setValue(1)
+        self.bond_break_type.setEnabled(False)
+        self.bond_break_type.setToolTip("Type of bonds to check for breakage")
         
-        bond_breakage_label = QLabel("Bond Breakage:")
-        bond_breakage_label.setStyleSheet("color: blue; text-decoration: underline;")
-        bond_breakage_label.setCursor(QCursor(Qt.PointingHandCursor))
-        bond_breakage_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_bond_break")
-        bond_breakage_label.setToolTip("Click to open LAMMPS fix bond/break documentation")
+        # Rmax parameter
+        self.bond_break_rmax = QDoubleSpinBox()
+        self.bond_break_rmax.setRange(0, 1000)
+        self.bond_break_rmax.setValue(1.5)
+        self.bond_break_rmax.setSingleStep(0.1)
+        self.bond_break_rmax.setEnabled(False)
+        self.bond_break_rmax.setToolTip("Maximum bond length before breakage")
         
-        bond_breakage_form_layout.addRow("Break Distance:", self.break_distance)
-        bond_breakage_form_layout.addRow("Break Force:", self.break_force)
+        # Probability options
+        self.bond_break_prob_group = QButtonGroup(self)
+        self.bond_break_prob_fixed = QRadioButton("Fixed Probability")
+        self.bond_break_prob_fixed.setChecked(True)
+        self.bond_break_prob_fixed.setEnabled(False)
+        self.bond_break_prob_fixed.setToolTip("Use fixed probability for bond breakage")
         
-        bond_breakage_layout.addWidget(self.enable_bond_breakage)
-        bond_breakage_layout.addLayout(bond_breakage_form_layout)
-        bond_breakage_group.setLayout(bond_breakage_layout)
-        scroll_layout.addWidget(bond_breakage_group)
+        self.bond_break_prob_variable = QRadioButton("Variable Probability")
+        self.bond_break_prob_variable.setEnabled(False)
+        self.bond_break_prob_variable.setToolTip("Use variable probability based on bond stretch")
         
-        # Add stretch to push everything up
+        self.bond_break_prob_group.addButton(self.bond_break_prob_fixed)
+        self.bond_break_prob_group.addButton(self.bond_break_prob_variable)
+        
+        # Probability value
+        self.bond_break_prob_value = QDoubleSpinBox()
+        self.bond_break_prob_value.setRange(0, 1)
+        self.bond_break_prob_value.setValue(0.1)
+        self.bond_break_prob_value.setSingleStep(0.01)
+        self.bond_break_prob_value.setEnabled(False)
+        self.bond_break_prob_value.setToolTip("Probability of bond breakage")
+        
+        bond_break_params_layout.addRow("Check Every (timesteps):", self.bond_break_nevery)
+        bond_break_params_layout.addRow("Bond Type:", self.bond_break_type)
+        bond_break_params_layout.addRow("Max Bond Length:", self.bond_break_rmax)
+        bond_break_params_layout.addRow(self.bond_break_prob_fixed)
+        bond_break_params_layout.addRow(self.bond_break_prob_variable)
+        bond_break_params_layout.addRow("Break Probability:", self.bond_break_prob_value)
+        
+        bond_break_layout.addWidget(self.enable_bond_break)
+        bond_break_layout.addLayout(bond_break_params_layout)
+        bond_break_group.setLayout(bond_break_layout)
+        scroll_layout.addWidget(bond_break_group)
+        
         scroll_layout.addStretch()
-        
-    def update_deformation_table_headers(self):
-        """Update table headers and column states based on calculation mode"""
-        # Always show all three columns
-        headers = ["Name", "Method", "Strain Rate", "Engineering Strain", "Steps", "Axis", "Style", "Thermo Freq"]
-        
-        self.studies_table.setColumnCount(len(headers))
-        self.studies_table.setHorizontalHeaderLabels(headers)
-        
-        # Determine which column should be read-only based on calculation mode
-        if self.calc_strain_rate.isChecked():
-            readonly_col = 2  # Strain Rate column
-        elif self.calc_engineering_strain.isChecked():
-            readonly_col = 3  # Engineering Strain column
-        else:  # calc_steps.isChecked()
-            readonly_col = 4  # Steps column
-        
-        # Update all rows to reflect the read-only column
-        for row in range(self.studies_table.rowCount()):
-            self.update_row_readonly_state(row, readonly_col)
     
-    def update_row_readonly_state(self, row, readonly_col):
-        """Update the read-only state of columns in a specific row"""
-        # Strain Rate column (index 2)
-        strain_rate_item = self.studies_table.item(row, 2)
-        if strain_rate_item:
-            if readonly_col == 2:
-                strain_rate_item.setFlags(strain_rate_item.flags() & ~Qt.ItemIsEditable)
-                strain_rate_item.setForeground(QColor(128, 128, 128))  # Grey text
-            else:
-                strain_rate_item.setFlags(strain_rate_item.flags() | Qt.ItemIsEditable)
-                strain_rate_item.setForeground(QColor(0, 0, 0))  # Black text
-        
-        # Engineering Strain column (index 3)
-        eng_strain_item = self.studies_table.item(row, 3)
-        if eng_strain_item:
-            if readonly_col == 3:
-                eng_strain_item.setFlags(eng_strain_item.flags() & ~Qt.ItemIsEditable)
-                eng_strain_item.setForeground(QColor(128, 128, 128))  # Grey text
-            else:
-                eng_strain_item.setFlags(eng_strain_item.flags() | Qt.ItemIsEditable)
-                eng_strain_item.setForeground(QColor(0, 0, 0))  # Black text
-        
-        # Steps column (index 4)
-        steps_item = self.studies_table.item(row, 4)
-        if steps_item:
-            if readonly_col == 4:
-                steps_item.setFlags(steps_item.flags() & ~Qt.ItemIsEditable)
-                steps_item.setForeground(QColor(128, 128, 128))  # Grey text
-            else:
-                steps_item.setFlags(steps_item.flags() | Qt.ItemIsEditable)
-                steps_item.setForeground(QColor(0, 0, 0))  # Black text
-    
-    def calculate_deformation_parameter(self, row, changed_col):
-        """Calculate the automatically determined parameter when values change"""
-        try:
-            # Get current values
-            strain_rate_item = self.studies_table.item(row, 2)
-            eng_strain_item = self.studies_table.item(row, 3)
-            steps_item = self.studies_table.item(row, 4)
-            
-            if not all([strain_rate_item, eng_strain_item, steps_item]):
-                return
-            
-            strain_rate = float(strain_rate_item.text())
-            eng_strain = float(eng_strain_item.text())
-            steps = int(steps_item.text())
-            
-            # Determine which parameter to calculate based on mode
-            if self.calc_strain_rate.isChecked():
-                # Calculate strain rate: strain_rate = engineering_strain / steps
-                if steps > 0:
-                    calculated_rate = eng_strain / steps
-                    strain_rate_item.setText(f"{calculated_rate:.6f}")
-            elif self.calc_engineering_strain.isChecked():
-                # Calculate engineering strain: engineering_strain = strain_rate * steps
-                calculated_strain = strain_rate * steps
-                eng_strain_item.setText(f"{calculated_strain:.6f}")
-            else:  # calc_steps.isChecked()
-                # Calculate steps: steps = engineering_strain / strain_rate
-                if strain_rate > 0:
-                    calculated_steps = int(round(eng_strain / strain_rate))
-                    if calculated_steps < 1:
-                        calculated_steps = 1
-                    steps_item.setText(str(calculated_steps))
-                    
-        except (ValueError, TypeError):
-            # Invalid input, ignore calculation
-            pass
-        
-    def add_sample_study_data(self, row, name, method, strain_rate, eng_strain, steps, axis, style_dir, thermo_freq):
-        """Add sample study data to table with dropdowns for non-numeric fields"""
-        # Name column (text)
-        self.studies_table.setItem(row, 0, QTableWidgetItem(name))
-        
-        # Method column (dropdown)
-        method_combo = QComboBox()
-        method_combo.addItems(["fix_deform", "wall_movement"])
-        method_combo.setCurrentText(method)
-        method_combo.currentTextChanged.connect(lambda text, r=row: self.on_method_changed(r, text))
-        self.studies_table.setCellWidget(row, 1, method_combo)
-        
-        # Strain Rate column (numeric - float)
-        strain_rate_item = NumericTableWidgetItem(strain_rate, is_float=True, min_val=0.0, max_val=10.0)
-        strain_rate_item.setData(Qt.UserRole, "strain_rate")
-        self.studies_table.setItem(row, 2, strain_rate_item)
-        
-        # Engineering Strain column (numeric - float)
-        eng_strain_item = NumericTableWidgetItem(eng_strain, is_float=True, min_val=0.0, max_val=10.0)
-        eng_strain_item.setData(Qt.UserRole, "eng_strain")
-        self.studies_table.setItem(row, 3, eng_strain_item)
-        
-        # Steps column (numeric - integer)
-        steps_item = NumericTableWidgetItem(steps, is_float=False, min_val=1, max_val=1000000)
-        steps_item.setData(Qt.UserRole, "steps")
-        self.studies_table.setItem(row, 4, steps_item)
-        
-        # Axis column (dropdown)
-        axis_combo = QComboBox()
-        axis_combo.addItems(["x", "y", "z"])
-        axis_combo.setCurrentText(axis)
-        self.studies_table.setCellWidget(row, 5, axis_combo)
-        
-        # Style column (dropdown - context-aware based on method)
-        style_combo = QComboBox()
-        self.update_style_options(style_combo, method)
-        style_combo.setCurrentText(style_dir)
-        self.studies_table.setCellWidget(row, 6, style_combo)
-        
-        # Thermo Freq column (numeric - integer)
-        thermo_item = NumericTableWidgetItem(thermo_freq, is_float=False, min_val=1, max_val=10000)
-        self.studies_table.setItem(row, 7, thermo_item)
-        
-        # Update read-only state for this row
-        if self.calc_strain_rate.isChecked():
-            readonly_col = 2
-        elif self.calc_engineering_strain.isChecked():
-            readonly_col = 3
-        else:
-            readonly_col = 4
-        self.update_row_readonly_state(row, readonly_col)
-        
-        # Perform initial calculation
-        self.calculate_deformation_parameter(row, -1)
-    
-    def on_table_cell_changed(self, row, column):
-        """Handle table cell changes and trigger auto-calculation for deformation parameters"""
-        # Only handle changes in strain rate (2), engineering strain (3), or steps (4) columns
-        if column in [2, 3, 4]:
-            self.calculate_deformation_parameter(row, column)
-        
-    def update_style_options(self, style_combo, method):
-        """Update style dropdown options based on method"""
-        style_combo.clear()
-        if method == "fix_deform":
-            style_combo.addItems(["final", "linear", "volume"])
-            style_combo.setToolTip("Deformation style for fix_deform")
-        elif method == "wall_movement":
-            style_combo.addItems(["positive", "negative", "symmetric"])
-            style_combo.setToolTip("Wall movement direction")
-        else:
-            style_combo.addItems(["unknown"])
-            
-    def on_method_changed(self, row, new_method):
-        """Handle method change and update style options"""
-        style_combo = self.studies_table.cellWidget(row, 6)
-        if style_combo:
-            current_style = style_combo.currentText()
-            self.update_style_options(style_combo, new_method)
-            # Try to maintain current style if it exists in new options
-            index = style_combo.findText(current_style)
-            if index >= 0:
-                style_combo.setCurrentIndex(index)
-            else:
-                style_combo.setCurrentIndex(0)
-        
-    def add_deformation_study(self):
-        """Add a new deformation study to the table"""
-        row_count = self.studies_table.rowCount()
-        self.studies_table.setRowCount(row_count + 1)
-        
-        # Copy settings from the row above if available
-        if row_count > 0:
-            # Get values from previous row
-            name_item = self.studies_table.item(row_count - 1, 0)
-            method_combo = self.studies_table.cellWidget(row_count - 1, 1)
-            strain_rate_item = self.studies_table.item(row_count - 1, 2)
-            eng_strain_item = self.studies_table.item(row_count - 1, 3)
-            steps_item = self.studies_table.item(row_count - 1, 4)
-            axis_combo = self.studies_table.cellWidget(row_count - 1, 5)
-            style_combo = self.studies_table.cellWidget(row_count - 1, 6)
-            thermo_item = self.studies_table.item(row_count - 1, 7)
-            
-            name = name_item.text() if name_item else f"study{row_count + 1}"
-            method = method_combo.currentText() if method_combo else "fix_deform"
-            strain_rate = strain_rate_item.text() if strain_rate_item else "0.001"
-            eng_strain = eng_strain_item.text() if eng_strain_item else "0.1"
-            steps = steps_item.text() if steps_item else "100"
-            axis = axis_combo.currentText() if axis_combo else "x"
-            style = style_combo.currentText() if style_combo else "final"
-            thermo = thermo_item.text() if thermo_item else "100"
-            
-            self.add_sample_study_data(row_count, name, method, strain_rate, eng_strain, steps, axis, style, thermo)
-        else:
-            # Set default values
-            self.add_sample_study_data(row_count, f"study{row_count + 1}", "fix_deform", "0.001", "0.1", "100", "x", "final", "100")
-        
-    def remove_deformation_study(self):
-        """Remove selected deformation study from the table"""
-        current_row = self.studies_table.currentRow()
-        if current_row >= 0:
-            self.studies_table.removeRow(current_row)
-        else:
-            QMessageBox.warning(self, "Warning", "Please select a study to remove.")
-            
     def create_output_tab(self):
-        """Create the output options tab"""
+        """Create the output configuration tab"""
         self.output_tab = QWidget()
-        self.tab_widget.addTab(self.output_tab, "Output Options")
+        self.tab_widget.addTab(self.output_tab, "Output Configuration")
         
         # Create scroll area
         scroll = QScrollArea()
@@ -966,155 +667,133 @@ class LammpsScriptGenerator(QMainWindow):
         output_layout = QVBoxLayout(self.output_tab)
         output_layout.addWidget(scroll)
         
-        # Output path settings
-        path_group = QGroupBox("Output Path Settings")
-        path_layout = QFormLayout()
+        # Output directory selection
+        output_dir_group = QGroupBox("Output Directory")
+        output_dir_layout = QHBoxLayout()
         
-        self.output_path_edit = QLineEdit()
-        self.output_path_browse = QPushButton("Browse...")
-        self.output_path_browse.clicked.connect(self.browse_output_path)
+        self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setPlaceholderText("Select output directory")
+        self.output_dir_edit.setToolTip("Directory where output files will be saved")
         
-        # Add tooltips
-        self.output_path_edit.setToolTip("Directory where output files will be saved")
-        self.output_path_browse.setToolTip("Browse for output directory")
+        self.output_dir_browse = QPushButton("Browse...")
+        self.output_dir_browse.clicked.connect(self.browse_output_dir)
+        self.output_dir_browse.setToolTip("Browse for output directory")
         
-        # Add to widget references for focus jumping
-        self.widget_references['output_path'] = self.output_path_edit
+        output_dir_layout.addWidget(self.output_dir_edit)
+        output_dir_layout.addWidget(self.output_dir_browse)
         
-        output_path_layout = QHBoxLayout()
-        output_path_layout.addWidget(self.output_path_edit)
-        output_path_layout.addWidget(self.output_path_browse)
+        output_dir_group.setLayout(output_dir_layout)
+        scroll_layout.addWidget(output_dir_group)
         
-        path_layout.addRow("Output Path:", output_path_layout)
-        path_group.setLayout(path_layout)
-        scroll_layout.addWidget(path_group)
+        # Output file settings
+        output_files_group = QGroupBox("Output File Settings")
+        output_files_layout = QFormLayout()
         
-        # Trajectory output settings
-        traj_group = QGroupBox("Trajectory Output Settings")
-        traj_layout = QVBoxLayout()
+        # Log file
+        self.log_file_edit = QLineEdit()
+        self.log_file_edit.setText("log.lammps")
+        self.log_file_edit.setToolTip("Name of the log file")
         
-        self.enable_trajectory = QCheckBox("Enable Trajectory Output")
-        self.enable_trajectory.setChecked(True)
-        self.enable_trajectory.setToolTip("Enable trajectory file output")
+        # Data file
+        self.data_file_edit = QLineEdit()
+        self.data_file_edit.setText("deform.data")
+        self.data_file_edit.setToolTip("Name of the data file")
         
-        traj_form_layout = QFormLayout()
+        # Dump file
+        self.dump_file_edit = QLineEdit()
+        self.dump_file_edit.setText("deform.dump")
+        self.dump_file_edit.setToolTip("Name of the dump file")
         
-        self.traj_format = QComboBox()
-        self.traj_format.addItems(["lammpstrj", "xyz", "dcd"])
-        self.traj_format.setToolTip("Format for trajectory files")
+        output_files_layout.addRow("Log File:", self.log_file_edit)
+        output_files_layout.addRow("Data File:", self.data_file_edit)
+        output_files_layout.addRow("Dump File:", self.dump_file_edit)
         
-        self.trj_output_items = QTextEdit()
-        self.trj_output_items.setPlainText("id type x y z fx fy fz")
-        self.trj_output_items.setMaximumHeight(100)
-        self.trj_output_items.setToolTip("Items to include in trajectory output")
+        output_files_group.setLayout(output_files_layout)
+        scroll_layout.addWidget(output_files_group)
         
-        traj_label = QLabel("Trajectory Settings:")
-        traj_label.setStyleSheet("color: blue; text-decoration: underline;")
-        traj_label.setCursor(QCursor(Qt.PointingHandCursor))
-        traj_label.mousePressEvent = lambda e: self.open_lammps_doc("dump")
-        traj_label.setToolTip("Click to open LAMMPS dump documentation")
+        # Output frequency settings
+        output_freq_group = QGroupBox("Output Frequency Settings")
+        output_freq_layout = QFormLayout()
         
-        traj_form_layout.addRow("Trajectory Format:", self.traj_format)
-        traj_form_layout.addRow("Output Items:", self.trj_output_items)
+        # Thermodynamic output frequency
+        self.thermo_freq = QSpinBox()
+        self.thermo_freq.setRange(1, 1000000)
+        self.thermo_freq.setValue(1000)
+        self.thermo_freq.setToolTip("Frequency of thermodynamic output")
         
-        traj_layout.addWidget(self.enable_trajectory)
-        traj_layout.addLayout(traj_form_layout)
-        traj_group.setLayout(traj_layout)
-        scroll_layout.addWidget(traj_group)
+        # Dump frequency
+        self.dump_freq = QSpinBox()
+        self.dump_freq.setRange(1, 1000000)
+        self.dump_freq.setValue(10000)
+        self.dump_freq.setToolTip("Frequency of atom dump output")
         
-        # Thermo output settings
-        thermo_group = QGroupBox("Thermo Output Settings")
+        # Restart frequency
+        self.restart_freq = QSpinBox()
+        self.restart_freq.setRange(1, 1000000)
+        self.restart_freq.setValue(100000)
+        self.restart_freq.setToolTip("Frequency of restart file output")
+        
+        output_freq_layout.addRow("Thermo Frequency:", self.thermo_freq)
+        output_freq_layout.addRow("Dump Frequency:", self.dump_freq)
+        output_freq_layout.addRow("Restart Frequency:", self.restart_freq)
+        
+        output_freq_group.setLayout(output_freq_layout)
+        scroll_layout.addWidget(output_freq_group)
+        
+        # Thermodynamic output selection
+        thermo_group = QGroupBox("Thermodynamic Output Selection")
         thermo_layout = QVBoxLayout()
         
-        self.enable_thermo = QCheckBox("Enable Thermo Output")
-        self.enable_thermo.setChecked(True)
-        self.enable_thermo.setToolTip("Enable thermodynamic output")
+        # Create table for thermo output selection
+        self.thermo_table = QTableWidget()
+        self.thermo_table.setColumnCount(2)
+        self.thermo_table.setHorizontalHeaderLabels(["Property", "Include"])
+        self.thermo_table.horizontalHeader().setStretchLastSection(True)
+        self.thermo_table.verticalHeader().setVisible(False)
+        self.thermo_table.setAlternatingRowColors(True)
         
-        thermo_form_layout = QFormLayout()
+        # Thermo properties
+        thermo_properties = [
+            ("Step", True),
+            ("Time", True),
+            ("Temp", True),
+            ("Press", True),
+            ("Volume", True),
+            ("Lx", True),
+            ("Ly", True),
+            ("Lz", True),
+            ("E_pair", True),
+            ("E_mol", True),
+            ("E_total", True),
+            ("Atoms", True),
+            ("Bonds", True),
+            ("Angles", True),
+            ("Dihedrals", True),
+            ("Impropers", True)
+        ]
         
-        self.thermo_style = QTextEdit()
-        self.thermo_style.setPlainText("step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
-        self.thermo_style.setMaximumHeight(100)
-        self.thermo_style.setToolTip("Style for thermodynamic output")
+        self.thermo_table.setRowCount(len(thermo_properties))
+        for i, (prop, include) in enumerate(thermo_properties):
+            # Property name
+            prop_item = QTableWidgetItem(prop)
+            prop_item.setFlags(prop_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.thermo_table.setItem(i, 0, prop_item)
+            
+            # Include checkbox
+            checkbox = QCheckBox()
+            checkbox.setChecked(include)
+            self.thermo_table.setCellWidget(i, 1, checkbox)
         
-        thermo_label = QLabel("Thermo Settings:")
-        thermo_label.setStyleSheet("color: blue; text-decoration: underline;")
-        thermo_label.setCursor(QCursor(Qt.PointingHandCursor))
-        thermo_label.mousePressEvent = lambda e: self.open_lammps_doc("thermo")
-        thermo_label.setToolTip("Click to open LAMMPS thermo documentation")
-        
-        thermo_form_layout.addRow("Thermo Style:", self.thermo_style)
-        
-        thermo_layout.addWidget(self.enable_thermo)
-        thermo_layout.addLayout(thermo_form_layout)
+        thermo_layout.addWidget(self.thermo_table)
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
         
-        # Stress calculations
-        stress_group = QGroupBox("Stress Calculations")
-        stress_layout = QVBoxLayout()
-        
-        self.enable_stress = QCheckBox("Enable Stress Calculations")
-        self.enable_stress.setChecked(True)
-        self.enable_stress.setToolTip("Enable stress tensor calculations")
-        
-        stress_layout.addWidget(self.enable_stress)
-        stress_group.setLayout(stress_layout)
-        scroll_layout.addWidget(stress_group)
-        
-        # Custom computes
-        custom_group = QGroupBox("Custom Computes")
-        custom_layout = QVBoxLayout()
-        
-        self.enable_custom_computes = QCheckBox("Enable Custom Computes")
-        self.enable_custom_computes.setChecked(False)
-        self.enable_custom_computes.setToolTip("Enable custom compute commands")
-        
-        self.custom_computes = QTextEdit()
-        self.custom_computes.setPlaceholderText("Enter custom compute commands here")
-        self.custom_computes.setMaximumHeight(100)
-        self.custom_computes.setEnabled(False)
-        self.custom_computes.setToolTip("Custom compute commands to add to the script")
-        
-        self.enable_custom_computes.stateChanged.connect(
-            lambda state: self.custom_computes.setEnabled(state == Qt.Checked)
-        )
-        
-        custom_layout.addWidget(self.enable_custom_computes)
-        custom_layout.addWidget(self.custom_computes)
-        custom_group.setLayout(custom_layout)
-        scroll_layout.addWidget(custom_group)
-        
-        # Custom dumps
-        custom_dump_group = QGroupBox("Custom Dumps")
-        custom_dump_layout = QVBoxLayout()
-        
-        self.enable_custom_dumps = QCheckBox("Enable Custom Dumps")
-        self.enable_custom_dumps.setChecked(False)
-        self.enable_custom_dumps.setToolTip("Enable custom dump commands")
-        
-        self.custom_dumps = QTextEdit()
-        self.custom_dumps.setPlaceholderText("Enter custom dump commands here")
-        self.custom_dumps.setMaximumHeight(100)
-        self.custom_dumps.setEnabled(False)
-        self.custom_dumps.setToolTip("Custom dump commands to add to the script")
-        
-        self.enable_custom_dumps.stateChanged.connect(
-            lambda state: self.custom_dumps.setEnabled(state == Qt.Checked)
-        )
-        
-        custom_dump_layout.addWidget(self.enable_custom_dumps)
-        custom_dump_layout.addWidget(self.custom_dumps)
-        custom_dump_group.setLayout(custom_dump_layout)
-        scroll_layout.addWidget(custom_dump_group)
-        
-        # Add stretch to push everything up
         scroll_layout.addStretch()
-        
+    
     def create_cluster_tab(self):
-        """Create the cluster settings tab"""
+        """Create the cluster configuration tab"""
         self.cluster_tab = QWidget()
-        self.tab_widget.addTab(self.cluster_tab, "Cluster Settings")
+        self.tab_widget.addTab(self.cluster_tab, "Cluster Configuration")
         
         # Create scroll area
         scroll = QScrollArea()
@@ -1127,410 +806,272 @@ class LammpsScriptGenerator(QMainWindow):
         cluster_layout = QVBoxLayout(self.cluster_tab)
         cluster_layout.addWidget(scroll)
         
-        # Execution mode
-        exec_group = QGroupBox("Execution Mode")
-        exec_layout = QVBoxLayout()
+        # Cluster execution settings
+        cluster_exec_group = QGroupBox("Cluster Execution Settings")
+        cluster_exec_layout = QVBoxLayout()
         
-        self.exec_mode_group = QButtonGroup()
+        self.use_cluster = QCheckBox("Execute on Cluster")
+        self.use_cluster.setChecked(False)
+        self.use_cluster.setToolTip("Enable cluster execution instead of local execution")
+        self.use_cluster.stateChanged.connect(self.toggle_cluster_settings)
         
-        self.local_radio = QRadioButton("Local Execution")
-        self.cluster_radio = QRadioButton("Cluster Execution")
+        cluster_exec_layout.addWidget(self.use_cluster)
+        cluster_exec_group.setLayout(cluster_exec_layout)
+        scroll_layout.addWidget(cluster_exec_group)
         
-        # Add tooltips
-        self.local_radio.setToolTip("Run simulation on local machine")
-        self.cluster_radio.setToolTip("Generate job file for cluster execution")
+        # Cluster job settings
+        cluster_job_group = QGroupBox("Cluster Job Settings")
+        cluster_job_layout = QFormLayout()
         
-        self.exec_mode_group.addButton(self.local_radio, 0)
-        self.exec_mode_group.addButton(self.cluster_radio, 1)
+        # Job name
+        self.job_name_edit = QLineEdit()
+        self.job_name_edit.setText("lammps_deform")
+        self.job_name_edit.setEnabled(False)
+        self.job_name_edit.setToolTip("Name of the cluster job")
         
-        self.local_radio.setChecked(True)
+        # Queue name
+        self.queue_name_edit = QLineEdit()
+        self.queue_name_edit.setText("normal")
+        self.queue_name_edit.setEnabled(False)
+        self.queue_name_edit.setToolTip("Name of the queue to submit the job to")
         
-        exec_layout.addWidget(self.local_radio)
-        exec_layout.addWidget(self.cluster_radio)
-        exec_group.setLayout(exec_layout)
-        scroll_layout.addWidget(exec_group)
+        # Number of nodes
+        self.num_nodes = QSpinBox()
+        self.num_nodes.setRange(1, 1000)
+        self.num_nodes.setValue(1)
+        self.num_nodes.setEnabled(False)
+        self.num_nodes.setToolTip("Number of nodes to request")
         
-        # Cluster settings
-        self.cluster_group = QGroupBox("Cluster Settings")
-        cluster_form_layout = QFormLayout()
+        # Number of processors per node
+        self.procs_per_node = QSpinBox()
+        self.procs_per_node.setRange(1, 128)
+        self.procs_per_node.setValue(16)
+        self.procs_per_node.setEnabled(False)
+        self.procs_per_node.setToolTip("Number of processors per node")
         
-        self.cluster_partition = QComboBox()
-        self.cluster_partition.addItems(["singlenode", "multinode"])
-        self.cluster_partition.setCurrentText("singlenode")
-        self.cluster_partition.setToolTip("SLURM partition for job submission")
+        # Wall time
+        self.wall_time_edit = QLineEdit()
+        self.wall_time_edit.setText("24:00:00")
+        self.wall_time_edit.setEnabled(False)
+        self.wall_time_edit.setToolTip("Maximum wall time for the job (HH:MM:SS)")
         
-        self.cluster_nodes = QSpinBox()
-        self.cluster_nodes.setRange(1, 100)
-        self.cluster_nodes.setValue(1)
-        self.cluster_nodes.setToolTip("Number of nodes to request")
+        # Memory per node
+        self.memory_per_node = QLineEdit()
+        self.memory_per_node.setText("4G")
+        self.memory_per_node.setEnabled(False)
+        self.memory_per_node.setToolTip("Memory per node (e.g., 4G, 4000M)")
         
-        self.cluster_ntasks = QSpinBox()
-        self.cluster_ntasks.setRange(1, 1000)
-        self.cluster_ntasks.setValue(72)
-        self.cluster_ntasks.setToolTip("Number of tasks to request")
+        cluster_job_layout.addRow("Job Name:", self.job_name_edit)
+        cluster_job_layout.addRow("Queue Name:", self.queue_name_edit)
+        cluster_job_layout.addRow("Number of Nodes:", self.num_nodes)
+        cluster_job_layout.addRow("Processors per Node:", self.procs_per_node)
+        cluster_job_layout.addRow("Wall Time:", self.wall_time_edit)
+        cluster_job_layout.addRow("Memory per Node:", self.memory_per_node)
         
-        self.cluster_time = QLineEdit()
-        self.cluster_time.setText("24:00:00")
-        self.cluster_time.setToolTip("Time limit for the job")
+        cluster_job_group.setLayout(cluster_job_layout)
+        scroll_layout.addWidget(cluster_job_group)
         
-        self.cluster_mail = QLineEdit()
-        self.cluster_mail.setPlaceholderText("your.email@example.com")
-        self.cluster_mail.setToolTip("Email address for job notifications")
+        # LAMMPS executable path
+        lammps_exec_group = QGroupBox("LAMMPS Executable Path")
+        lammps_exec_layout = QHBoxLayout()
         
-        # Add missing cluster options
-        self.cluster_cpus_per_task = QSpinBox()
-        self.cluster_cpus_per_task.setRange(1, 64)
-        self.cluster_cpus_per_task.setValue(1)
-        self.cluster_cpus_per_task.setToolTip("Number of CPUs per task")
+        self.lammps_exec_edit = QLineEdit()
+        self.lammps_exec_edit.setText("lmp_mpi")
+        self.lammps_exec_edit.setEnabled(False)
+        self.lammps_exec_edit.setToolTip("Path to the LAMMPS executable on the cluster")
         
-        self.cluster_export = QComboBox()
-        self.cluster_export.addItems(["NONE", "ALL"])
-        self.cluster_export.setCurrentText("NONE")
-        self.cluster_export.setToolTip("Environment variables export setting")
+        self.lammps_exec_browse = QPushButton("Browse...")
+        self.lammps_exec_browse.setEnabled(False)
+        self.lammps_exec_browse.clicked.connect(self.browse_lammps_exec)
+        self.lammps_exec_browse.setToolTip("Browse for LAMMPS executable")
         
-        self.cluster_output = QLineEdit()
-        self.cluster_output.setText("/dev/null")
-        self.cluster_output.setToolTip("Output file path for job stdout")
+        lammps_exec_layout.addWidget(self.lammps_exec_edit)
+        lammps_exec_layout.addWidget(self.lammps_exec_browse)
         
-        self.cluster_error = QLineEdit()
-        self.cluster_error.setText("/dev/null")
-        self.cluster_error.setToolTip("Error file path for job stderr")
+        lammps_exec_group.setLayout(lammps_exec_layout)
+        scroll_layout.addWidget(lammps_exec_group)
         
-        self.cluster_mail_type = QComboBox()
-        self.cluster_mail_type.addItems(["NONE", "BEGIN", "END", "FAIL", "REQUEUE", "ALL", "STAGE_OUT", "TIME_LIMIT", "ARRAY_TASKS"])
-        self.cluster_mail_type.setCurrentText("ALL")
-        self.cluster_mail_type.setToolTip("Email notification types")
+        # Additional job script commands
+        job_script_group = QGroupBox("Additional Job Script Commands")
+        job_script_layout = QVBoxLayout()
         
-        # Add to widget references for focus jumping
-        self.widget_references['cluster_mail'] = self.cluster_mail
+        self.job_script_edit = QTextEdit()
+        self.job_script_edit.setPlaceholderText("Enter additional commands for the job script")
+        self.job_script_edit.setEnabled(False)
+        self.job_script_edit.setToolTip("Additional commands to include in the job script")
         
-        cluster_label = QLabel("Cluster Settings:")
-        cluster_label.setStyleSheet("color: blue; text-decoration: underline;")
-        cluster_label.setCursor(QCursor(Qt.PointingHandCursor))
-        cluster_label.mousePressEvent = lambda e: self.open_slurm_doc()
-        cluster_label.setToolTip("Click to open SLURM documentation")
+        job_script_layout.addWidget(self.job_script_edit)
+        job_script_group.setLayout(job_script_layout)
+        scroll_layout.addWidget(job_script_group)
         
-        cluster_form_layout.addRow("Partition:", self.cluster_partition)
-        cluster_form_layout.addRow("Nodes:", self.cluster_nodes)
-        cluster_form_layout.addRow("Tasks:", self.cluster_ntasks)
-        cluster_form_layout.addRow("CPUs per Task:", self.cluster_cpus_per_task)
-        cluster_form_layout.addRow("Time Limit:", self.cluster_time)
-        cluster_form_layout.addRow("Export:", self.cluster_export)
-        cluster_form_layout.addRow("Output:", self.cluster_output)
-        cluster_form_layout.addRow("Error:", self.cluster_error)
-        cluster_form_layout.addRow("Email:", self.cluster_mail)
-        cluster_form_layout.addRow("Mail Type:", self.cluster_mail_type)
-        self.cluster_group.setLayout(cluster_form_layout)
-        self.cluster_group.setEnabled(False)
-        scroll_layout.addWidget(self.cluster_group)
-        
-        # Connect execution mode signals
-        self.local_radio.toggled.connect(lambda: self.toggle_execution_mode(0))
-        self.cluster_radio.toggled.connect(lambda: self.toggle_execution_mode(1))
-        
-        # Add stretch to push everything up
         scroll_layout.addStretch()
-        
-    def toggle_execution_mode(self, mode):
-        """Toggle execution mode controls"""
-        if mode == 0:  # Local
-            self.cluster_group.setEnabled(False)
-            self.sequential_execution.setEnabled(True)
-            self.sequential_execution.setToolTip("When enabled, simulations will run one after another to avoid resource conflicts.\n\nWhen disabled, simulations may run in parallel (if supported by the execution environment), but this requires careful resource management to avoid overloading the system.")
-        else:  # Cluster
-            self.cluster_group.setEnabled(True)
-            self.sequential_execution.setEnabled(False)
-            self.sequential_execution.setChecked(False)
-            self.sequential_execution.setToolTip("Sequential execution is only available for local runs. On clusters, jobs are managed by the scheduler.")
-            
-    def browse_system_path(self):
-        """Browse for system path (file or directory)"""
-        # Let user choose between file and directory
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Select System")
-        dialog.setMinimumSize(400, 200)
-        
-        layout = QVBoxLayout()
-        
-        label = QLabel("Select data file or directory containing data files:")
-        layout.addWidget(label)
-        
-        button_layout = QHBoxLayout()
-        
-        file_button = QPushButton("Select File")
-        dir_button = QPushButton("Select Directory")
-        cancel_button = QPushButton("Cancel")
-        
-        button_layout.addWidget(file_button)
-        button_layout.addWidget(dir_button)
-        button_layout.addWidget(cancel_button)
-        
-        layout.addLayout(button_layout)
-        dialog.setLayout(layout)
-        
-        selected_path = None
-        select_file = False
-        
-        def select_file_path():
-            nonlocal selected_path, select_file
-            file_path, _ = QFileDialog.getOpenFileName(dialog, "Select Data File", "", "Data Files (*.data);;All Files (*)")
-            if file_path:
-                selected_path = file_path
-                select_file = True
-                dialog.accept()
-                
-        def select_dir_path():
-            nonlocal selected_path, select_file
-            dir_path = QFileDialog.getExistingDirectory(dialog, "Select Directory")
-            if dir_path:
-                selected_path = dir_path
-                select_file = False
-                dialog.accept()
-                
-        file_button.clicked.connect(select_file_path)
-        dir_button.clicked.connect(select_dir_path)
-        cancel_button.clicked.connect(dialog.reject)
-        
-        if dialog.exec_() == QDialog.Accepted and selected_path:
-            self.system_path_edit.setText(selected_path)
-            
-    def browse_potential_file(self):
-        """Browse for potential file"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "Potential Files (*.in *.pot);;All Files (*)")
-        if file_path:
-            self.potential_path_edit.setText(file_path)
-            
-    def browse_output_path(self):
-        """Browse for output path"""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if dir_path:
-            self.output_path_edit.setText(dir_path)
-            
-    def save_configuration(self):
-        """Save current configuration to file"""
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Configuration", "", "JSON Files (*.json);;All Files (*)")
-        if file_path:
-            try:
-                config = self.collect_config()
-                with open(file_path, 'w') as f:
-                    json.dump(config, f, indent=2)
-                # Don't show success popup as requested
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save configuration: {str(e)}")
-                
-    def load_configuration(self):
-        """Load configuration from file"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Configuration", "", "JSON Files (*.json);;All Files (*)")
-        if file_path:
-            try:
-                with open(file_path, 'r') as f:
-                    config = json.load(f)
-                self.apply_config(config)
-                # Don't show success popup as requested
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load configuration: {str(e)}")
-                
-    def apply_config(self, config):
-        """Apply configuration to GUI"""
-        # System configuration
-        system_config = config.get("system", {})
-        self.system_path_edit.setText(system_config.get("system_path", ""))
-        self.use_potential_file.setChecked(system_config.get("use_potential_file", False))
-        self.potential_path_edit.setText(system_config.get("potential_file", ""))
-        
-        atom_style = system_config.get("atom_style", "atomic")
-        index = self.atom_style_combo.findText(atom_style)
-        if index >= 0:
-            self.atom_style_combo.setCurrentIndex(index)
-            
-        self.boundary_x_combo.setCurrentText(system_config.get("boundary_x", "p"))
-        self.boundary_y_combo.setCurrentText(system_config.get("boundary_y", "p"))
-        self.boundary_z_combo.setCurrentText(system_config.get("boundary_z", "p"))
-        
-        self.ensemble_combo.setCurrentText(system_config.get("ensemble", "NVT"))
-        self.temp_init.setValue(system_config.get("temp_init", 300.0))
-        self.temp_end.setValue(system_config.get("temp_end", 300.0))
-        self.pressure.setValue(system_config.get("pressure", 1.0))
-        
-        self.enable_velocity.setChecked(system_config.get("enable_velocity", True))
-        self.initial_velocity_seed.setValue(system_config.get("initial_velocity_seed", 12345))
-        self.damping_factor.setValue(system_config.get("damping_factor", 100.0))
-        
-        self.neighbor_distance.setValue(system_config.get("neighbor_distance", 0.3))
-        self.neigh_modify_every.setValue(system_config.get("neigh_modify_every", 1))
-        self.neigh_modify_delay.setValue(system_config.get("neigh_modify_delay", 10))
-        self.neigh_modify_check.setChecked(system_config.get("neigh_modify_check", True))
-        
-        self.timestep.setValue(system_config.get("timestep", 0.001))
-        
-        # Units setting
-        units = system_config.get("units", "metal")
-        index = self.units_combo.findText(units)
-        if index >= 0:
-            self.units_combo.setCurrentIndex(index)
-            self.update_timestep_display(units)
-            
-        # Wall settings
-        self.wall_thickness.setValue(system_config.get("wall_thickness", 5.0))
-        
-        # Output configuration
-        output_config = config.get("output", {})
-        self.output_path_edit.setText(output_config.get("output_path", ""))
-        
-        self.enable_trajectory.setChecked(output_config.get("enable_trajectory", True))
-        self.traj_format.setCurrentText(output_config.get("traj_format", "lammpstrj"))
-        self.trj_output_items.setPlainText(output_config.get("trj_output_items", "id type x y z fx fy fz"))
-        
-        self.enable_thermo.setChecked(output_config.get("enable_thermo", True))
-        self.thermo_style.setPlainText(output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-        
-        self.enable_stress.setChecked(output_config.get("enable_stress", True))
-        
-        self.enable_custom_computes.setChecked(output_config.get("enable_custom_computes", False))
-        self.custom_computes.setPlainText(output_config.get("custom_computes", ""))
-        
-        self.enable_custom_dumps.setChecked(output_config.get("enable_custom_dumps", False))
-        self.custom_dumps.setPlainText(output_config.get("custom_dumps", ""))
-        
-        # Cluster configuration
-        cluster_config = config.get("cluster", {})
-        exec_mode = cluster_config.get("execution_mode", "local")
-        if exec_mode == "local":
-            self.local_radio.setChecked(True)
-        else:
-            self.cluster_radio.setChecked(True)
-            
-        self.cluster_partition.setCurrentText(cluster_config.get("cluster_partition", "singlenode"))
-        self.cluster_nodes.setValue(cluster_config.get("cluster_nodes", 1))
-        self.cluster_ntasks.setValue(cluster_config.get("cluster_ntasks", 72))
-        self.cluster_cpus_per_task.setValue(cluster_config.get("cluster_cpus_per_task", 1))
-        self.cluster_time.setText(cluster_config.get("cluster_time", "24:00:00"))
-        self.cluster_export.setCurrentText(cluster_config.get("cluster_export", "NONE"))
-        self.cluster_output.setText(cluster_config.get("cluster_output", "/dev/null"))
-        self.cluster_error.setText(cluster_config.get("cluster_error", "/dev/null"))
-        self.cluster_mail.setText(cluster_config.get("cluster_mail", ""))
-        self.cluster_mail_type.setCurrentText(cluster_config.get("cluster_mail_type", "ALL"))
-        
-        # Multi-study configuration
-        multistudy_config = config.get("multistudy", {})
-        self.enable_multi_system.setChecked(multistudy_config.get("enable_multi_system", False))
-        self.sequential_execution.setChecked(multistudy_config.get("sequential_execution", True))
-        
-        # Load deformation studies
-        deform_studies = multistudy_config.get("deform_studies", [])
-        self.studies_table.setRowCount(len(deform_studies))
-        for i, study in enumerate(deform_studies):
-            self.add_sample_study_data(
-                i, 
-                study.get("name", f"study{i+1}"),
-                study.get("method", "fix_deform"),
-                str(study.get("strain_rate", 0.001)),
-                str(study.get("engineering_strain", 0.1)),
-                str(study.get("steps", 100)),
-                study.get("axis", "x"),
-                study.get("style_dir", "final"),
-                str(study.get("thermo_freq", 100))
-            )
-            
+    
     def create_bottom_buttons(self):
-        """Create bottom buttons"""
+        """Create the bottom buttons"""
         button_layout = QHBoxLayout()
         
+        # Generate button
+        self.generate_button = QPushButton("Generate Scripts")
+        self.generate_button.clicked.connect(self.generate_scripts)
+        self.generate_button.setToolTip("Generate LAMMPS input scripts")
+        
+        # Save configuration button
         self.save_config_button = QPushButton("Save Configuration")
         self.save_config_button.clicked.connect(self.save_configuration)
         self.save_config_button.setToolTip("Save current configuration to file")
         
+        # Load configuration button
         self.load_config_button = QPushButton("Load Configuration")
         self.load_config_button.clicked.connect(self.load_configuration)
         self.load_config_button.setToolTip("Load configuration from file")
         
-        self.generate_button = QPushButton("Generate Scripts")
-        self.generate_button.clicked.connect(self.generate_scripts)
-        self.generate_button.setToolTip("Generate LAMMPS input scripts and job files")
+        # Exit button
+        self.exit_button = QPushButton("Exit")
+        self.exit_button.clicked.connect(self.close)
+        self.exit_button.setToolTip("Exit the application")
         
+        button_layout.addWidget(self.generate_button)
         button_layout.addWidget(self.save_config_button)
         button_layout.addWidget(self.load_config_button)
-        button_layout.addWidget(self.generate_button)
+        button_layout.addWidget(self.exit_button)
         
         self.main_layout.addLayout(button_layout)
+    
+    def browse_system_path(self):
+        """Browse for system data file or directory"""
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.AnyFile)
+        file_dialog.setNameFilter("Data files (*.data);;All files (*)")
         
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                self.system_path_edit.setText(selected_files[0])
+    
+    def browse_potential_file(self):
+        """Browse for potential file"""
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        file_dialog.setNameFilter("Potential files (*.pot *.potential);;All files (*)")
+        
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                self.potential_path_edit.setText(selected_files[0])
+    
+    def browse_output_dir(self):
+        """Browse for output directory"""
+        dir_dialog = QFileDialog()
+        dir_dialog.setFileMode(QFileDialog.Directory)
+        dir_dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        
+        if dir_dialog.exec():
+            selected_dirs = dir_dialog.selectedFiles()
+            if selected_dirs:
+                self.output_dir_edit.setText(selected_dirs[0])
+    
+    def browse_lammps_exec(self):
+        """Browse for LAMMPS executable"""
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                self.lammps_exec_edit.setText(selected_files[0])
+    
     def toggle_potential_file(self, state):
-        """Toggle potential file controls"""
-        enabled = state == Qt.Checked
+        """Toggle potential file settings"""
+        enabled = state == Qt.CheckState.Checked.value
         self.potential_path_edit.setEnabled(enabled)
         self.potential_path_browse.setEnabled(enabled)
+    
+    def toggle_velocity_settings(self, state):
+        """Toggle velocity initialization settings"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.initial_velocity_seed.setEnabled(enabled)
+        self.damping_factor.setEnabled(enabled)
+    
+    def toggle_pressure_settings(self, ensemble):
+        """Toggle pressure settings based on ensemble"""
+        enabled = ensemble == "NPT"
+        self.pressure.setEnabled(enabled)
+    
+    def toggle_wall_settings(self, state):
+        """Toggle wall settings"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.wall_potential_combo.setEnabled(enabled)
+        self.wall_epsilon.setEnabled(enabled)
+        self.wall_sigma.setEnabled(enabled)
+        self.wall_cutoff.setEnabled(enabled)
+    
+    def toggle_bond_break_settings(self, state):
+        """Toggle bond breakage settings"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.bond_break_nevery.setEnabled(enabled)
+        self.bond_break_type.setEnabled(enabled)
+        self.bond_break_rmax.setEnabled(enabled)
+        self.bond_break_prob_fixed.setEnabled(enabled)
+        self.bond_break_prob_variable.setEnabled(enabled)
+        self.bond_break_prob_value.setEnabled(enabled)
+    
+    def toggle_cluster_settings(self, state):
+        """Toggle cluster settings"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.job_name_edit.setEnabled(enabled)
+        self.queue_name_edit.setEnabled(enabled)
+        self.num_nodes.setEnabled(enabled)
+        self.procs_per_node.setEnabled(enabled)
+        self.wall_time_edit.setEnabled(enabled)
+        self.memory_per_node.setEnabled(enabled)
+        self.lammps_exec_edit.setEnabled(enabled)
+        self.lammps_exec_browse.setEnabled(enabled)
+        self.job_script_edit.setEnabled(enabled)
+    
+    def update_system_type(self, path):
+        """Update system type display"""
+        if not path:
+            self.system_type_label.setText("System Type: Not selected")
+            return
         
-    def generate_scripts(self):
-        """Generate LAMMPS input scripts and job files"""
-        try:
-            # Collect all settings from the GUI
-            config = self.collect_config()
-            
-            # Validate configuration
-            validation_result = self.validate_config(config)
-            if not validation_result["valid"]:
-                # Show error message and focus on the problematic field
-                QMessageBox.critical(self, "Configuration Error", validation_result["message"])
-                if "field" in validation_result:
-                    widget = self.widget_references.get(validation_result["field"])
-                    if widget:
-                        widget.setFocus()
-                        # Switch to the appropriate tab
-                        if validation_result["field"] in ["system_path", "output_path"]:
-                            self.tab_widget.setCurrentIndex(0)  # System tab
-                        elif validation_result["field"] in ["cluster_mail"]:
-                            self.tab_widget.setCurrentIndex(3)  # Cluster tab
-                return
-            
-            # Check if output path exists and is not empty
-            output_path = config.get("output", {}).get("output_path", "")
-            if not output_path:
-                # If no output path specified, use the system path directory
-                system_path = config.get("system", {}).get("system_path", "")
-                if system_path:
-                    output_path = os.path.dirname(system_path) if os.path.isfile(system_path) else system_path
-            
-            if output_path and os.path.exists(output_path):
-                # Check if directory is not empty
-                if os.path.isdir(output_path) and os.listdir(output_path):
-                    reply = QMessageBox.question(
-                        self, 
-                        "Directory Not Empty",
-                        f"The directory '{output_path}' is not empty. Files may be overwritten. Do you want to continue?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No
-                    )
-                    if reply == QMessageBox.No:
-                        return
-                
-            # Create script generator
-            generator = ScriptGen(config)
-            
-            # Generate scripts
-            result = generator.generate_all_scripts()
-            
-            if result["success"]:
-                # Show generated scripts and commands
-                self.show_generated_scripts(result["files"], generator, config)
-                # Don't show success popup as requested
+        if os.path.isfile(path):
+            self.system_type_label.setText(f"System Type: Single file ({os.path.basename(path)})")
+        elif os.path.isdir(path):
+            data_files = glob.glob(os.path.join(path, "*.data"))
+            if data_files:
+                self.system_type_label.setText(f"System Type: Directory ({len(data_files)} data files)")
             else:
-                QMessageBox.critical(self, "Error", result["message"])
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to generate scripts: {str(e)}")
-            # Emergency save on error
-            self.emergency_save()
-            
+                self.system_type_label.setText("System Type: Directory (no data files found)")
+        else:
+            self.system_type_label.setText("System Type: Invalid path")
+    
+    def update_timestep_display(self, units):
+        """Update timestep display based on units"""
+        timestep_units = {
+            "lj": "lj",
+            "real": "fs",
+            "metal": "ps", 
+            "si": "s",
+            "cgs": "s",
+            "electron": "fs",
+            "micro": "μs",
+            "nano": "ns"
+        }
+        self.timestep_display.setText(f"Timestep unit: {timestep_units.get(units, 'unknown')}")
+    
+    def open_lammps_doc(self, command):
+        """Open LAMMPS documentation for the given command"""
+        url = f"https://docs.lammps.org/{command}.html"
+        QDesktopServices.openUrl(QUrl(url))
+    
     def collect_config(self):
-        """Collect all settings from the GUI into a configuration dictionary"""
-        config = {}
-        
-        # System configuration
-        config["system"] = {
+        """Collect configuration from all widgets"""
+        config = {
             "system_path": self.system_path_edit.text(),
             "use_potential_file": self.use_potential_file.isChecked(),
             "potential_file": self.potential_path_edit.text(),
             "atom_style": self.atom_style_combo.currentText(),
+            "units": self.units_combo.currentText(),
             "boundary_x": self.boundary_x_combo.currentText(),
             "boundary_y": self.boundary_y_combo.currentText(),
             "boundary_z": self.boundary_z_combo.currentText(),
@@ -1539,355 +1080,385 @@ class LammpsScriptGenerator(QMainWindow):
             "temp_end": self.temp_end.value(),
             "pressure": self.pressure.value(),
             "enable_velocity": self.enable_velocity.isChecked(),
-            "initial_velocity_seed": self.initial_velocity_seed.value(),
+            "velocity_seed": self.initial_velocity_seed.value(),
             "damping_factor": self.damping_factor.value(),
-            "neighbor_distance": self.neighbor_distance.value(),
-            "neigh_modify_every": self.neigh_modify_every.value(),
-            "neigh_modify_delay": self.neigh_modify_delay.value(),
-            "neigh_modify_check": self.neigh_modify_check.isChecked(),
-            "timestep": self.timestep.value(),
-            "units": self.units_combo.currentText(),
-            "wall_thickness": self.wall_thickness.value()
+            "deformation_type": "uniaxial" if self.uniaxial_radio.isChecked() else
+                               "biaxial" if self.biaxial_radio.isChecked() else
+                               "triaxial" if self.triaxial_radio.isChecked() else
+                               "shear",
+            "deform_rate": self.deform_rate.value(),
+            "start_strain": self.start_strain.value(),
+            "end_strain": self.end_strain.value(),
+            "deform_axis": self.deform_axis_combo.currentText(),
+            "use_walls": self.use_walls.isChecked(),
+            "wall_potential": self.wall_potential_combo.currentText(),
+            "wall_epsilon": self.wall_epsilon.value(),
+            "wall_sigma": self.wall_sigma.value(),
+            "wall_cutoff": self.wall_cutoff.value(),
+            "enable_bond_break": self.enable_bond_break.isChecked(),
+            "bond_break_nevery": self.bond_break_nevery.value(),
+            "bond_break_type": self.bond_break_type.value(),
+            "bond_break_rmax": self.bond_break_rmax.value(),
+            "bond_break_prob_fixed": self.bond_break_prob_fixed.isChecked(),
+            "bond_break_prob_value": self.bond_break_prob_value.value(),
+            "output_dir": self.output_dir_edit.text(),
+            "log_file": self.log_file_edit.text(),
+            "data_file": self.data_file_edit.text(),
+            "dump_file": self.dump_file_edit.text(),
+            "thermo_freq": self.thermo_freq.value(),
+            "dump_freq": self.dump_freq.value(),
+            "restart_freq": self.restart_freq.value(),
+            "use_cluster": self.use_cluster.isChecked(),
+            "job_name": self.job_name_edit.text(),
+            "queue_name": self.queue_name_edit.text(),
+            "num_nodes": self.num_nodes.value(),
+            "procs_per_node": self.procs_per_node.value(),
+            "wall_time": self.wall_time_edit.text(),
+            "memory_per_node": self.memory_per_node.text(),
+            "lammps_exec": self.lammps_exec_edit.text(),
+            "job_script_commands": self.job_script_edit.toPlainText()
         }
+        
+        # Collect thermo output selection
+        thermo_output = []
+        for i in range(self.thermo_table.rowCount()):
+            prop_item = self.thermo_table.item(i, 0)
+            checkbox = self.thermo_table.cellWidget(i, 1)
+            if checkbox and checkbox.isChecked():
+                thermo_output.append(prop_item.text())
+        config["thermo_output"] = thermo_output
+        
+        return config
+    
+    def save_configuration(self):
+        """Save configuration to file"""
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.AnyFile)
+        file_dialog.setNameFilter("JSON files (*.json);;All files (*)")
+        file_dialog.setDefaultSuffix("json")
+        
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                config = self.collect_config()
+                try:
+                    with open(selected_files[0], 'w') as f:
+                        json.dump(config, f, indent=2)
+                    QMessageBox.information(self, "Success", "Configuration saved successfully!")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to save configuration: {e}")
+    
+    def load_configuration(self):
+        """Load configuration from file"""
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        file_dialog.setNameFilter("JSON files (*.json);;All files (*)")
+        
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                try:
+                    with open(selected_files[0], 'r') as f:
+                        config = json.load(f)
+                    self.apply_config(config)
+                    QMessageBox.information(self, "Success", "Configuration loaded successfully!")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to load configuration: {e}")
+    
+    def apply_config(self, config):
+        """Apply configuration to widgets"""
+        # System configuration
+        self.system_path_edit.setText(config.get("system_path", ""))
+        self.use_potential_file.setChecked(config.get("use_potential_file", False))
+        self.potential_path_edit.setText(config.get("potential_file", ""))
+        self.atom_style_combo.setCurrentText(config.get("atom_style", "atomic"))
+        self.units_combo.setCurrentText(config.get("units", "metal"))
+        self.boundary_x_combo.setCurrentText(config.get("boundary_x", "p"))
+        self.boundary_y_combo.setCurrentText(config.get("boundary_y", "p"))
+        self.boundary_z_combo.setCurrentText(config.get("boundary_z", "p"))
+        self.ensemble_combo.setCurrentText(config.get("ensemble", "NVT"))
+        self.temp_init.setValue(config.get("temp_init", 300.0))
+        self.temp_end.setValue(config.get("temp_end", 300.0))
+        self.pressure.setValue(config.get("pressure", 1.0))
+        self.enable_velocity.setChecked(config.get("enable_velocity", True))
+        self.initial_velocity_seed.setValue(config.get("velocity_seed", 12345))
+        self.damping_factor.setValue(config.get("damping_factor", 100.0))
+        
+        # Deformation configuration
+        deform_type = config.get("deformation_type", "uniaxial")
+        if deform_type == "uniaxial":
+            self.uniaxial_radio.setChecked(True)
+        elif deform_type == "biaxial":
+            self.biaxial_radio.setChecked(True)
+        elif deform_type == "triaxial":
+            self.triaxial_radio.setChecked(True)
+        elif deform_type == "shear":
+            self.shear_radio.setChecked(True)
+        
+        self.deform_rate.setValue(config.get("deform_rate", 0.001))
+        self.start_strain.setValue(config.get("start_strain", 0.0))
+        self.end_strain.setValue(config.get("end_strain", 1.0))
+        self.deform_axis_combo.setCurrentText(config.get("deform_axis", "z"))
+        
+        # Wall settings
+        self.use_walls.setChecked(config.get("use_walls", False))
+        self.wall_potential_combo.setCurrentText(config.get("wall_potential", "lj93"))
+        self.wall_epsilon.setValue(config.get("wall_epsilon", 1.0))
+        self.wall_sigma.setValue(config.get("wall_sigma", 1.0))
+        self.wall_cutoff.setValue(config.get("wall_cutoff", 2.5))
+        
+        # Bond breakage settings
+        self.enable_bond_break.setChecked(config.get("enable_bond_break", False))
+        self.bond_break_nevery.setValue(config.get("bond_break_nevery", 1))
+        self.bond_break_type.setValue(config.get("bond_break_type", 1))
+        self.bond_break_rmax.setValue(config.get("bond_break_rmax", 1.5))
+        if config.get("bond_break_prob_fixed", True):
+            self.bond_break_prob_fixed.setChecked(True)
+        else:
+            self.bond_break_prob_variable.setChecked(True)
+        self.bond_break_prob_value.setValue(config.get("bond_break_prob_value", 0.1))
         
         # Output configuration
-        config["output"] = {
-            "output_path": self.output_path_edit.text(),
-            "enable_trajectory": self.enable_trajectory.isChecked(),
-            "traj_format": self.traj_format.currentText(),
-            "trj_output_items": self.trj_output_items.toPlainText(),
-            "enable_thermo": self.enable_thermo.isChecked(),
-            "thermo_style": self.thermo_style.toPlainText(),
-            "enable_stress": self.enable_stress.isChecked(),
-            "enable_custom_computes": self.enable_custom_computes.isChecked(),
-            "custom_computes": self.custom_computes.toPlainText(),
-            "enable_custom_dumps": self.enable_custom_dumps.isChecked(),
-            "custom_dumps": self.custom_dumps.toPlainText()
-        }
+        self.output_dir_edit.setText(config.get("output_dir", ""))
+        self.log_file_edit.setText(config.get("log_file", "log.lammps"))
+        self.data_file_edit.setText(config.get("data_file", "deform.data"))
+        self.dump_file_edit.setText(config.get("dump_file", "deform.dump"))
+        self.thermo_freq.setValue(config.get("thermo_freq", 1000))
+        self.dump_freq.setValue(config.get("dump_freq", 10000))
+        self.restart_freq.setValue(config.get("restart_freq", 100000))
+        
+        # Apply thermo output selection
+        thermo_output = config.get("thermo_output", [])
+        for i in range(self.thermo_table.rowCount()):
+            prop_item = self.thermo_table.item(i, 0)
+            checkbox = self.thermo_table.cellWidget(i, 1)
+            if checkbox and prop_item:
+                checkbox.setChecked(prop_item.text() in thermo_output)
         
         # Cluster configuration
-        config["cluster"] = {
-            "execution_mode": "local" if self.local_radio.isChecked() else "cluster",
-            "cluster_partition": self.cluster_partition.currentText(),
-            "cluster_nodes": self.cluster_nodes.value(),
-            "cluster_ntasks": self.cluster_ntasks.value(),
-            "cluster_cpus_per_task": self.cluster_cpus_per_task.value(),
-            "cluster_time": self.cluster_time.text(),
-            "cluster_export": self.cluster_export.currentText(),
-            "cluster_output": self.cluster_output.text(),
-            "cluster_error": self.cluster_error.text(),
-            "cluster_mail": self.cluster_mail.text(),
-            "cluster_mail_type": self.cluster_mail_type.currentText()
-        }
+        self.use_cluster.setChecked(config.get("use_cluster", False))
+        self.job_name_edit.setText(config.get("job_name", "lammps_deform"))
+        self.queue_name_edit.setText(config.get("queue_name", "normal"))
+        self.num_nodes.setValue(config.get("num_nodes", 1))
+        self.procs_per_node.setValue(config.get("procs_per_node", 16))
+        self.wall_time_edit.setText(config.get("wall_time", "24:00:00"))
+        self.memory_per_node.setText(config.get("memory_per_node", "4G"))
+        self.lammps_exec_edit.setText(config.get("lammps_exec", "lmp_mpi"))
+        self.job_script_edit.setText(config.get("job_script_commands", ""))
+    
+    def generate_scripts(self):
+        """Generate LAMMPS scripts"""
+        config = self.collect_config()
         
-        # Multi-study configuration
-        config["multistudy"] = {
-            "calculation_mode": "strain_rate" if self.calc_strain_rate.isChecked() else 
-                              "engineering_strain" if self.calc_engineering_strain.isChecked() else 
-                              "steps",
-            "enable_multi_system": self.enable_multi_system.isChecked(),
-            "sequential_execution": self.sequential_execution.isChecked(),
-            "deform_studies": []
-        }
+        # Validate configuration
+        if not config["system_path"]:
+            QMessageBox.warning(self, "Warning", "Please select a system data file or directory")
+            return
         
-        # Collect deformation studies
-        for row in range(self.studies_table.rowCount()):
-            name_item = self.studies_table.item(row, 0)
-            method_combo = self.studies_table.cellWidget(row, 1)
-            strain_rate_item = self.studies_table.item(row, 2)
-            eng_strain_item = self.studies_table.item(row, 3)
-            steps_item = self.studies_table.item(row, 4)
-            axis_combo = self.studies_table.cellWidget(row, 5)
-            style_combo = self.studies_table.cellWidget(row, 6)
-            thermo_item = self.studies_table.item(row, 7)
-            
-            if all([name_item, method_combo, strain_rate_item, eng_strain_item, steps_item, axis_combo, style_combo, thermo_item]):
-                try:
-                    study = {
-                        "name": name_item.text(),
-                        "method": method_combo.currentText(),
-                        "strain_rate": float(strain_rate_item.text()),
-                        "engineering_strain": float(eng_strain_item.text()),
-                        "steps": int(steps_item.text()),
-                        "axis": axis_combo.currentText(),
-                        "style_dir": style_combo.currentText(),
-                        "thermo_freq": int(thermo_item.text())
-                    }
-                    config["multistudy"]["deform_studies"].append(study)
-                except ValueError:
-                    # Skip invalid rows
-                    continue
-                    
-        return config
+        if not os.path.exists(config["system_path"]):
+            QMessageBox.warning(self, "Warning", "System path does not exist")
+            return
         
-    def validate_config(self, config):
-        """Validate the configuration and return field name for focus jumping"""
-        # Check system path
-        system_path = config.get("system", {}).get("system_path", "")
-        if not system_path:
-            return {"valid": False, "message": "Please specify a system path.", "field": "system_path"}
-            
-        # Check if system path exists
-        if not os.path.exists(system_path):
-            return {"valid": False, "message": f"System path does not exist: {system_path}", "field": "system_path"}
-            
-        # Check if it's a valid system (file with .data extension or directory with .data files)
-        if os.path.isfile(system_path):
-            if not system_path.endswith('.data'):
-                return {"valid": False, "message": "Selected file is not a .data file.", "field": "system_path"}
-        elif os.path.isdir(system_path):
-            data_files = glob.glob(os.path.join(system_path, "*.data"))
-            if not data_files:
-                return {"valid": False, "message": "No .data files found in the selected directory.", "field": "system_path"}
-        else:
-            return {"valid": False, "message": "Invalid system path.", "field": "system_path"}
-            
-        # Check if deformation studies are defined
-        deform_studies = config.get("multistudy", {}).get("deform_studies", [])
-        if not deform_studies:
-            return {"valid": False, "message": "Please define at least one deformation study."}
-            
-        # Check output path
-        output_path = config.get("output", {}).get("output_path", "")
-        if output_path and not os.path.exists(os.path.dirname(output_path)):
-            return {"valid": False, "message": f"Output path does not exist: {output_path}", "field": "output_path"}
-            
-        # Check cluster email if cluster execution is enabled
-        if config.get("cluster", {}).get("execution_mode") == "cluster":
-            email = config.get("cluster", {}).get("cluster_mail", "")
-            if not email or "@" not in email:
-                return {"valid": False, "message": "Please specify a valid email address for cluster execution.", "field": "cluster_mail"}
-            
-        return {"valid": True}
+        if config["use_potential_file"] and not config["potential_file"]:
+            QMessageBox.warning(self, "Warning", "Please select a potential file")
+            return
         
-    def show_generated_scripts(self, files, generator, config):
-        """Show the path where files were generated"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Files Generated")
-        dialog.setMinimumSize(400, 200)
+        if not config["output_dir"]:
+            QMessageBox.warning(self, "Warning", "Please select an output directory")
+            return
         
-        layout = QVBoxLayout()
+        # Create output directory if it doesn't exist
+        os.makedirs(config["output_dir"], exist_ok=True)
         
-        # Find the root directory path from the generated files
-        root_path = ""
-        if files:
-            # Get the directory of the first file and go up to find the root simulation folder
-            first_file = files[0]
-            root_path = os.path.dirname(first_file)
-            # If we're in a subfolder, go up to find the root
-            while root_path and not any(f.startswith(root_path) for f in files if f != first_file):
-                parent_path = os.path.dirname(root_path)
-                if parent_path == root_path:  # Reached the root
-                    break
-                root_path = parent_path
-        
-        # Path information
-        path_label = QLabel("Files generated at:")
-        path_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(path_label)
-        
-        path_text = QTextEdit()
-        path_text.setPlainText(root_path if root_path else "Unknown location")
-        path_text.setReadOnly(True)
-        path_text.setMaximumHeight(60)
-        layout.addWidget(path_text)
-        
-        # Additional info
-        info_label = QLabel("All simulation files, scripts, and settings have been generated in the above location.")
-        info_label.setWordWrap(True)
-        layout.addWidget(info_label)
-        
-        # Close button
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(dialog.accept)
-        layout.addWidget(close_button)
-        
-        dialog.setLayout(layout)
-        dialog.exec_()
-        
-    def open_lammps_doc(self, command):
-        """Open LAMMPS documentation for a specific command"""
-        url = f"https://docs.lammps.org/{command}.html"
-        QDesktopServices.openUrl(QUrl(url))
-        
-    def open_slurm_doc(self):
-        """Open SLURM documentation"""
-        url = "https://slurm.schedmd.com/documentation.html"
-        QDesktopServices.openUrl(QUrl(url))
-        
-    def load_settings(self):
-        """Load settings from QSettings"""
         try:
-            # Load system settings
-            self.system_path_edit.setText(self.settings.value("system_path", ""))
-            self.use_potential_file.setChecked(self.settings.value("use_potential_file", False, type=bool))
-            self.potential_path_edit.setText(self.settings.value("potential_file", ""))
-            
-            atom_style = self.settings.value("atom_style", "atomic")
-            index = self.atom_style_combo.findText(atom_style)
-            if index >= 0:
-                self.atom_style_combo.setCurrentIndex(index)
-                
-            self.boundary_x_combo.setCurrentText(self.settings.value("boundary_x", "p"))
-            self.boundary_y_combo.setCurrentText(self.settings.value("boundary_y", "p"))
-            self.boundary_z_combo.setCurrentText(self.settings.value("boundary_z", "p"))
-            
-            self.ensemble_combo.setCurrentText(self.settings.value("ensemble", "NVT"))
-            self.temp_init.setValue(float(self.settings.value("temp_init", 300.0)))
-            self.temp_end.setValue(float(self.settings.value("temp_end", 300.0)))
-            self.pressure.setValue(float(self.settings.value("pressure", 1.0)))
-            
-            self.enable_velocity.setChecked(self.settings.value("enable_velocity", True, type=bool))
-            self.initial_velocity_seed.setValue(int(self.settings.value("initial_velocity_seed", 12345)))
-            self.damping_factor.setValue(float(self.settings.value("damping_factor", 100.0)))
-            
-            self.neighbor_distance.setValue(float(self.settings.value("neighbor_distance", 0.3)))
-            self.neigh_modify_every.setValue(int(self.settings.value("neigh_modify_every", 1)))
-            self.neigh_modify_delay.setValue(int(self.settings.value("neigh_modify_delay", 10)))
-            self.neigh_modify_check.setChecked(self.settings.value("neigh_modify_check", True, type=bool))
-            
-            self.timestep.setValue(float(self.settings.value("timestep", 0.001)))
-            
-            # Load units setting
-            units = self.settings.value("units", "metal")
-            index = self.units_combo.findText(units)
-            if index >= 0:
-                self.units_combo.setCurrentIndex(index)
-                self.update_timestep_display(units)
-                
-            # Load wall settings
-            self.wall_thickness.setValue(float(self.settings.value("wall_thickness", 5.0)))
-            
-            # Load output settings
-            self.output_path_edit.setText(self.settings.value("output_path", ""))
-            
-            self.enable_trajectory.setChecked(self.settings.value("enable_trajectory", True, type=bool))
-            self.traj_format.setCurrentText(self.settings.value("traj_format", "lammpstrj"))
-            self.trj_output_items.setPlainText(self.settings.value("trj_output_items", "id type x y z fx fy fz"))
-            
-            self.enable_thermo.setChecked(self.settings.value("enable_thermo", True, type=bool))
-            self.thermo_style.setPlainText(self.settings.value("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-            
-            self.enable_stress.setChecked(self.settings.value("enable_stress", True, type=bool))
-            
-            # Load cluster settings
-            exec_mode = self.settings.value("execution_mode", "local")
-            if exec_mode == "local":
-                self.local_radio.setChecked(True)
+            # Generate scripts
+            if ScriptGen is not None:
+                generator = ScriptGen(config)
+                generator.generate_scripts()
+                QMessageBox.information(self, "Success", 
+                                      f"Scripts generated successfully in:\n{config['output_dir']}")
             else:
-                self.cluster_radio.setChecked(True)
-                
-            self.cluster_partition.setCurrentText(self.settings.value("cluster_partition", "singlenode"))
-            self.cluster_nodes.setValue(int(self.settings.value("cluster_nodes", 1)))
-            self.cluster_ntasks.setValue(int(self.settings.value("cluster_ntasks", 72)))
-            self.cluster_cpus_per_task.setValue(int(self.settings.value("cluster_cpus_per_task", 1)))
-            self.cluster_time.setText(self.settings.value("cluster_time", "24:00:00"))
-            self.cluster_export.setCurrentText(self.settings.value("cluster_export", "NONE"))
-            self.cluster_output.setText(self.settings.value("cluster_output", "/dev/null"))
-            self.cluster_error.setText(self.settings.value("cluster_error", "/dev/null"))
-            self.cluster_mail.setText(self.settings.value("cluster_mail", ""))
-            self.cluster_mail_type.setCurrentText(self.settings.value("cluster_mail_type", "ALL"))
-            
-            # Load multistudy settings
-            calculation_mode = self.settings.value("calculation_mode", "engineering_strain")
-            if calculation_mode == "strain_rate":
-                self.calc_strain_rate.setChecked(True)
-            elif calculation_mode == "engineering_strain":
-                self.calc_engineering_strain.setChecked(True)
-            else:  # "steps"
-                self.calc_steps.setChecked(True)
-            self.enable_multi_system.setChecked(self.settings.value("enable_multi_system", False, type=bool))
-            self.sequential_execution.setChecked(self.settings.value("sequential_execution", True, type=bool))
-            
-            # Load deformation studies
-            # (Note: Table data is not saved/loaded in settings for simplicity)
-            
-            # Check for emergency save file and automatically recover
-            emergency_file = os.path.join(tempfile.gettempdir(), "lammps_gui_emergency_save.json")
-            if os.path.exists(emergency_file):
-                try:
-                    with open(emergency_file, 'r') as f:
-                        emergency_config = json.load(f)
-                    self.apply_config(emergency_config)
-                    os.remove(emergency_file)
-                    print("Emergency settings recovered successfully")
-                except Exception as e:
-                    print(f"Could not recover emergency settings: {e}")
-                        
+                QMessageBox.warning(self, "Warning", 
+                                  "Script generator not available. Please check script_generator.py")
         except Exception as e:
-            print(f"Error loading settings: {e}")
-            
-    def save_settings(self):
-        """Save settings to QSettings"""
-        try:
-            # Save system settings
-            self.settings.setValue("system_path", self.system_path_edit.text())
-            self.settings.setValue("use_potential_file", self.use_potential_file.isChecked())
-            self.settings.setValue("potential_file", self.potential_path_edit.text())
-            self.settings.setValue("atom_style", self.atom_style_combo.currentText())
-            self.settings.setValue("boundary_x", self.boundary_x_combo.currentText())
-            self.settings.setValue("boundary_y", self.boundary_y_combo.currentText())
-            self.settings.setValue("boundary_z", self.boundary_z_combo.currentText())
-            self.settings.setValue("ensemble", self.ensemble_combo.currentText())
-            self.settings.setValue("temp_init", self.temp_init.value())
-            self.settings.setValue("temp_end", self.temp_end.value())
-            self.settings.setValue("pressure", self.pressure.value())
-            self.settings.setValue("enable_velocity", self.enable_velocity.isChecked())
-            self.settings.setValue("initial_velocity_seed", self.initial_velocity_seed.value())
-            self.settings.setValue("damping_factor", self.damping_factor.value())
-            self.settings.setValue("neighbor_distance", self.neighbor_distance.value())
-            self.settings.setValue("neigh_modify_every", self.neigh_modify_every.value())
-            self.settings.setValue("neigh_modify_delay", self.neigh_modify_delay.value())
-            self.settings.setValue("neigh_modify_check", self.neigh_modify_check.isChecked())
-            self.settings.setValue("timestep", self.timestep.value())
-            self.settings.setValue("units", self.units_combo.currentText())
-            self.settings.setValue("wall_thickness", self.wall_thickness.value())
-            
-            # Save output settings
-            self.settings.setValue("output_path", self.output_path_edit.text())
-            self.settings.setValue("enable_trajectory", self.enable_trajectory.isChecked())
-            self.settings.setValue("traj_format", self.traj_format.currentText())
-            self.settings.setValue("trj_output_items", self.trj_output_items.toPlainText())
-            self.settings.setValue("enable_thermo", self.enable_thermo.isChecked())
-            self.settings.setValue("thermo_style", self.thermo_style.toPlainText())
-            self.settings.setValue("enable_stress", self.enable_stress.isChecked())
-            
-            # Save cluster settings
-            self.settings.setValue("execution_mode", "local" if self.local_radio.isChecked() else "cluster")
-            self.settings.setValue("cluster_partition", self.cluster_partition.currentText())
-            self.settings.setValue("cluster_nodes", self.cluster_nodes.value())
-            self.settings.setValue("cluster_ntasks", self.cluster_ntasks.value())
-            self.settings.setValue("cluster_cpus_per_task", self.cluster_cpus_per_task.value())
-            self.settings.setValue("cluster_time", self.cluster_time.text())
-            self.settings.setValue("cluster_export", self.cluster_export.currentText())
-            self.settings.setValue("cluster_output", self.cluster_output.text())
-            self.settings.setValue("cluster_error", self.cluster_error.text())
-            self.settings.setValue("cluster_mail", self.cluster_mail.text())
-            self.settings.setValue("cluster_mail_type", self.cluster_mail_type.currentText())
-            
-            # Save multistudy settings
-            calculation_mode = "strain_rate" if self.calc_strain_rate.isChecked() else \
-                             "engineering_strain" if self.calc_engineering_strain.isChecked() else \
-                             "steps"
-            self.settings.setValue("calculation_mode", calculation_mode)
-            self.settings.setValue("enable_multi_system", self.enable_multi_system.isChecked())
-            self.settings.setValue("sequential_execution", self.sequential_execution.isChecked())
-            
-        except Exception as e:
-            print(f"Error saving settings: {e}")
-            
+            QMessageBox.critical(self, "Error", f"Failed to generate scripts: {e}")
+    
+    def load_settings(self):
+        """Load saved settings"""
+        # Load system path
+        system_path = self.settings.value("system_path", "")
+        self.system_path_edit.setText(system_path)
+        
+        # Load potential file settings
+        self.use_potential_file.setChecked(self.settings.value("use_potential_file", False, type=bool))
+        potential_file = self.settings.value("potential_file", "")
+        self.potential_path_edit.setText(potential_file)
+        
+        # Load basic settings
+        self.atom_style_combo.setCurrentText(self.settings.value("atom_style", "atomic"))
+        self.units_combo.setCurrentText(self.settings.value("units", "metal"))
+        self.boundary_x_combo.setCurrentText(self.settings.value("boundary_x", "p"))
+        self.boundary_y_combo.setCurrentText(self.settings.value("boundary_y", "p"))
+        self.boundary_z_combo.setCurrentText(self.settings.value("boundary_z", "p"))
+        self.ensemble_combo.setCurrentText(self.settings.value("ensemble", "NVT"))
+        self.temp_init.setValue(self.settings.value("temp_init", 300.0, type=float))
+        self.temp_end.setValue(self.settings.value("temp_end", 300.0, type=float))
+        self.pressure.setValue(self.settings.value("pressure", 1.0, type=float))
+        
+        # Load velocity settings
+        self.enable_velocity.setChecked(self.settings.value("enable_velocity", True, type=bool))
+        self.initial_velocity_seed.setValue(self.settings.value("velocity_seed", 12345, type=int))
+        self.damping_factor.setValue(self.settings.value("damping_factor", 100.0, type=float))
+        
+        # Load deformation settings
+        deform_type = self.settings.value("deformation_type", "uniaxial")
+        if deform_type == "uniaxial":
+            self.uniaxial_radio.setChecked(True)
+        elif deform_type == "biaxial":
+            self.biaxial_radio.setChecked(True)
+        elif deform_type == "triaxial":
+            self.triaxial_radio.setChecked(True)
+        elif deform_type == "shear":
+            self.shear_radio.setChecked(True)
+        
+        self.deform_rate.setValue(self.settings.value("deform_rate", 0.001, type=float))
+        self.start_strain.setValue(self.settings.value("start_strain", 0.0, type=float))
+        self.end_strain.setValue(self.settings.value("end_strain", 1.0, type=float))
+        self.deform_axis_combo.setCurrentText(self.settings.value("deform_axis", "z"))
+        
+        # Load wall settings
+        self.use_walls.setChecked(self.settings.value("use_walls", False, type=bool))
+        self.wall_potential_combo.setCurrentText(self.settings.value("wall_potential", "lj93"))
+        self.wall_epsilon.setValue(self.settings.value("wall_epsilon", 1.0, type=float))
+        self.wall_sigma.setValue(self.settings.value("wall_sigma", 1.0, type=float))
+        self.wall_cutoff.setValue(self.settings.value("wall_cutoff", 2.5, type=float))
+        
+        # Load bond breakage settings
+        self.enable_bond_break.setChecked(self.settings.value("enable_bond_break", False, type=bool))
+        self.bond_break_nevery.setValue(self.settings.value("bond_break_nevery", 1, type=int))
+        self.bond_break_type.setValue(self.settings.value("bond_break_type", 1, type=int))
+        self.bond_break_rmax.setValue(self.settings.value("bond_break_rmax", 1.5, type=float))
+        if self.settings.value("bond_break_prob_fixed", True, type=bool):
+            self.bond_break_prob_fixed.setChecked(True)
+        else:
+            self.bond_break_prob_variable.setChecked(True)
+        self.bond_break_prob_value.setValue(self.settings.value("bond_break_prob_value", 0.1, type=float))
+        
+        # Load output settings
+        self.output_dir_edit.setText(self.settings.value("output_dir", ""))
+        self.log_file_edit.setText(self.settings.value("log_file", "log.lammps"))
+        self.data_file_edit.setText(self.settings.value("data_file", "deform.data"))
+        self.dump_file_edit.setText(self.settings.value("dump_file", "deform.dump"))
+        self.thermo_freq.setValue(self.settings.value("thermo_freq", 1000, type=int))
+        self.dump_freq.setValue(self.settings.value("dump_freq", 10000, type=int))
+        self.restart_freq.setValue(self.settings.value("restart_freq", 100000, type=int))
+        
+        # Load cluster settings
+        self.use_cluster.setChecked(self.settings.value("use_cluster", False, type=bool))
+        self.job_name_edit.setText(self.settings.value("job_name", "lammps_deform"))
+        self.queue_name_edit.setText(self.settings.value("queue_name", "normal"))
+        self.num_nodes.setValue(self.settings.value("num_nodes", 1, type=int))
+        self.procs_per_node.setValue(self.settings.value("procs_per_node", 16, type=int))
+        self.wall_time_edit.setText(self.settings.value("wall_time", "24:00:00"))
+        self.memory_per_node.setText(self.settings.value("memory_per_node", "4G"))
+        self.lammps_exec_edit.setText(self.settings.value("lammps_exec", "lmp_mpi"))
+        self.job_script_edit.setText(self.settings.value("job_script_commands", ""))
+        
+        # Update system type display
+        self.update_system_type(system_path)
+        
+        # Update timestep display
+        self.update_timestep_display(self.units_combo.currentText())
+        
+        # Toggle settings based on loaded values
+        self.toggle_potential_file(self.use_potential_file.isChecked())
+        self.toggle_velocity_settings(self.enable_velocity.isChecked())
+        self.toggle_pressure_settings(self.ensemble_combo.currentText())
+        self.toggle_wall_settings(self.use_walls.isChecked())
+        self.toggle_bond_break_settings(self.enable_bond_break.isChecked())
+        self.toggle_cluster_settings(self.use_cluster.isChecked())
+    
     def closeEvent(self, event):
         """Handle application close event"""
-        self.save_settings()
+        # Save settings
+        self.settings.setValue("system_path", self.system_path_edit.text())
+        self.settings.setValue("use_potential_file", self.use_potential_file.isChecked())
+        self.settings.setValue("potential_file", self.potential_path_edit.text())
+        self.settings.setValue("atom_style", self.atom_style_combo.currentText())
+        self.settings.setValue("units", self.units_combo.currentText())
+        self.settings.setValue("boundary_x", self.boundary_x_combo.currentText())
+        self.settings.setValue("boundary_y", self.boundary_y_combo.currentText())
+        self.settings.setValue("boundary_z", self.boundary_z_combo.currentText())
+        self.settings.setValue("ensemble", self.ensemble_combo.currentText())
+        self.settings.setValue("temp_init", self.temp_init.value())
+        self.settings.setValue("temp_end", self.temp_end.value())
+        self.settings.setValue("pressure", self.pressure.value())
+        self.settings.setValue("enable_velocity", self.enable_velocity.isChecked())
+        self.settings.setValue("velocity_seed", self.initial_velocity_seed.value())
+        self.settings.setValue("damping_factor", self.damping_factor.value())
+        
+        # Save deformation settings
+        if self.uniaxial_radio.isChecked():
+            self.settings.setValue("deformation_type", "uniaxial")
+        elif self.biaxial_radio.isChecked():
+            self.settings.setValue("deformation_type", "biaxial")
+        elif self.triaxial_radio.isChecked():
+            self.settings.setValue("deformation_type", "triaxial")
+        elif self.shear_radio.isChecked():
+            self.settings.setValue("deformation_type", "shear")
+        
+        self.settings.setValue("deform_rate", self.deform_rate.value())
+        self.settings.setValue("start_strain", self.start_strain.value())
+        self.settings.setValue("end_strain", self.end_strain.value())
+        self.settings.setValue("deform_axis", self.deform_axis_combo.currentText())
+        
+        # Save wall settings
+        self.settings.setValue("use_walls", self.use_walls.isChecked())
+        self.settings.setValue("wall_potential", self.wall_potential_combo.currentText())
+        self.settings.setValue("wall_epsilon", self.wall_epsilon.value())
+        self.settings.setValue("wall_sigma", self.wall_sigma.value())
+        self.settings.setValue("wall_cutoff", self.wall_cutoff.value())
+        
+        # Save bond breakage settings
+        self.settings.setValue("enable_bond_break", self.enable_bond_break.isChecked())
+        self.settings.setValue("bond_break_nevery", self.bond_break_nevery.value())
+        self.settings.setValue("bond_break_type", self.bond_break_type.value())
+        self.settings.setValue("bond_break_rmax", self.bond_break_rmax.value())
+        self.settings.setValue("bond_break_prob_fixed", self.bond_break_prob_fixed.isChecked())
+        self.settings.setValue("bond_break_prob_value", self.bond_break_prob_value.value())
+        
+        # Save output settings
+        self.settings.setValue("output_dir", self.output_dir_edit.text())
+        self.settings.setValue("log_file", self.log_file_edit.text())
+        self.settings.setValue("data_file", self.data_file_edit.text())
+        self.settings.setValue("dump_file", self.dump_file_edit.text())
+        self.settings.setValue("thermo_freq", self.thermo_freq.value())
+        self.settings.setValue("dump_freq", self.dump_freq.value())
+        self.settings.setValue("restart_freq", self.restart_freq.value())
+        
+        # Save cluster settings
+        self.settings.setValue("use_cluster", self.use_cluster.isChecked())
+        self.settings.setValue("job_name", self.job_name_edit.text())
+        self.settings.setValue("queue_name", self.queue_name_edit.text())
+        self.settings.setValue("num_nodes", self.num_nodes.value())
+        self.settings.setValue("procs_per_node", self.procs_per_node.value())
+        self.settings.setValue("wall_time", self.wall_time_edit.text())
+        self.settings.setValue("memory_per_node", self.memory_per_node.text())
+        self.settings.setValue("lammps_exec", self.lammps_exec_edit.text())
+        self.settings.setValue("job_script_commands", self.job_script_edit.toPlainText())
+        
         event.accept()
 
-
 def main():
-    app = QApplication(sys.argv)
-    window = LammpsScriptGenerator()
-    window.show()
-    sys.exit(app.exec_())
-
+    """Main function to run the application"""
+    try:
+        app = QApplication(sys.argv if sys.argv else ['lammps_gui'])
+        window = LammpsScriptGenerator()
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"Error starting application: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

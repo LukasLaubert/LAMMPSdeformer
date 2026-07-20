@@ -47,11 +47,6 @@ class LammpsScriptGenerator:
             else:
                 return {"success": False, "message": "Invalid system path."}
             
-            # Check if multi-system processing is enabled
-            enable_multi_system = self.config.get("multistudy", {}).get("enable_multi_system", False)
-            if is_multi_system and not enable_multi_system:
-                return {"success": False, "message": "Multiple .data files found but multi-system processing is not enabled."}
-            
             # Create output directory structure
             output_path = self.config.get("output", {}).get("output_path", "")
             if not output_path:
@@ -128,8 +123,8 @@ class LammpsScriptGenerator:
             
             # Generate execution script based on execution mode
             execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
-            if execution_mode == "local" and self.config.get("multistudy", {}).get("sequential_execution", True):
-                # Sequential execution only for local runs
+            if execution_mode == "local":
+                # Always run in parallel for local execution
                 exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
                 if not exec_script_result["success"]:
                     return exec_script_result
