@@ -225,7 +225,7 @@ class LammpsScriptGenerator(QMainWindow):
         system_layout.addWidget(scroll)
         
         # System selection
-        system_group = QGroupBox("System Selection")
+        system_group = InfoGroupBox("System Selection", "")
         system_layout_main = QVBoxLayout()
         
         # Single field for file/directory selection
@@ -256,7 +256,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(system_group)
         
         # Potential file selection
-        potential_group = QGroupBox("Potential File Selection")
+        potential_group = InfoGroupBox("Potential File Selection", "include")
         potential_layout = QFormLayout()
         
         self.use_potential_file = QCheckBox("Use separate potential file")
@@ -293,7 +293,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(potential_group)
         
         # Basic LAMMPS settings
-        basic_group = QGroupBox("Basic LAMMPS Settings")
+        basic_group = InfoGroupBox("Basic LAMMPS Settings", "atom_style")
         basic_layout = QFormLayout()
         
         self.atom_style_combo = QComboBox()
@@ -314,7 +314,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(basic_group)
         
         # Units selection (moved here from top)
-        units_group = QGroupBox("Units Selection")
+        units_group = InfoGroupBox("Units Selection", "units")
         units_layout = QHBoxLayout()
         
         units_label = QLabel("Units:")
@@ -342,7 +342,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(units_group)
 
         # Timestep settings
-        timestep_group = QGroupBox("Timestep Settings")
+        timestep_group = InfoGroupBox("Timestep Settings", "timestep")
         timestep_layout = QHBoxLayout()
 
         self.timestep = QDoubleSpinBox()
@@ -373,7 +373,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(timestep_group)
 
         # Boundary conditions
-        boundary_group = QGroupBox("Boundary Conditions")
+        boundary_group = InfoGroupBox("Boundary Conditions", "boundary")
         main_boundary_layout = QVBoxLayout()
         boundary_layout = QHBoxLayout()
 
@@ -415,7 +415,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(boundary_group)
 
         # Ensemble settings
-        ensemble_group = QGroupBox("Ensemble Settings")
+        ensemble_group = InfoGroupBox("Ensemble Settings", "fix_nh")
         ensemble_layout = QFormLayout()
 
         self.ensemble_combo = QComboBox()
@@ -508,7 +508,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(velocity_group)
         
         # Neighbor settings
-        neighbor_group = QGroupBox("Neighbor Settings")
+        neighbor_group = InfoGroupBox("Neighbor Settings", "neighbor")
         neighbor_layout = QFormLayout()
         
         self.neighbor_distance = QDoubleSpinBox()
@@ -565,7 +565,7 @@ class LammpsScriptGenerator(QMainWindow):
         fixes_layout.addWidget(scroll)
 
         # Bond breakage settings
-        bond_breakage_group = QGroupBox("Bond Breakage Settings")
+        bond_breakage_group = InfoGroupBox("Bond Breakage Settings", "bond_break")
         bond_breakage_layout = QVBoxLayout()
 
         self.enable_bond_breakage = QCheckBox("Enable Bond Breakage")
@@ -1858,8 +1858,8 @@ class LammpsScriptGenerator(QMainWindow):
                     # No studies in settings, or settings were corrupted. Create a default one.
                     self.deformation_tab_widget._add_study(is_first=True)
                 
-                # Always add the plus tab back
-                self.deformation_tab_widget.add_plus_tab()
+                # Plus tab is handled by the corner widget button, no need to add it here
+                pass
 
         except Exception as e:
             print(f"Error loading settings: {e}")

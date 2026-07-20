@@ -326,6 +326,7 @@ class StudyWidget(QWidget):
         
         self.deform_axis_combo = QComboBox()
         self.deform_axis_combo.addItems(["x", "y", "z"])
+        self.deform_axis_combo.setMinimumWidth(100)  # Increase horizontal size
         bottom_controls_layout.addWidget(QLabel("Deformation Axis:"))
         bottom_controls_layout.addWidget(self.deform_axis_combo)
         
@@ -492,7 +493,7 @@ class DeformationTab(QWidget):
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.tabBar().setMovable(True)
-        self.tab_widget.setStyleSheet("QTabBar::tab { height: 20px; }")
+        self.tab_widget.setStyleSheet("QTabBar::tab { height: 15px; min-width: 80px; }")
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
 
         add_tab_button = QPushButton("+")

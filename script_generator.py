@@ -65,23 +65,16 @@ class LammpsScriptGenerator:
                     return {"success": False, "message": units_check["message"]}
             
             # Get deformation studies
-            multistudy_config = self.config.get("multistudy", {})
-            if not isinstance(multistudy_config, dict):
-                return {"success": False, "message": "Invalid multistudy configuration"}
-                
-            deform_studies = multistudy_config.get("deform_studies", [])
-            if not isinstance(deform_studies, list):
-                return {"success": False, "message": "Invalid deformation studies configuration"}
-                
+            deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
             if not deform_studies:
-                return {"success": False, "message": "No deformation studies defined"}
+                return {"success": False, "message": "No deformation studies defined."}
             
             # Validate each deformation study
             for i, study in enumerate(deform_studies):
                 if not isinstance(study, dict):
                     return {"success": False, "message": f"Invalid deformation study at index {i}"}
                 
-                required_fields = ["name", "points", "max_steps", "min_strain", "max_strain", "thermo_freq"]
+                required_fields = ["name", "data_points", "max_steps", "min_strain", "max_strain", "thermo_freq"]
                 for field in required_fields:
                     if field not in study:
                         return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
@@ -427,7 +420,7 @@ class LammpsScriptGenerator:
                 "#------------------------"
             ])
 
-            points = deform_study.get("points", [])
+            points = deform_study.get("data_points", [])
             if len(points) > 1:
                 timestep = system_config.get("timestep", 0.001)
                 for i in range(len(points) - 1):
