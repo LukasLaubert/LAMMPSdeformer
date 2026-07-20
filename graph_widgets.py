@@ -1024,8 +1024,8 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.addItems(["x", "y", "z"])
         self.deform_axis_combo.setMinimumWidth(30)
         self.deform_axis_combo.setMaximumWidth(40)
-        self.deform_axis_label.setVisible(False)
-        self.deform_axis_combo.setVisible(False)
+        self.deform_axis_label.setVisible(True)
+        self.deform_axis_combo.setVisible(True)
         self.deform_axis_combo.setStyleSheet(""" 
             QComboBox {
                 combobox-popup: 0;
@@ -1040,8 +1040,8 @@ class StudyWidget(QWidget):
         self.deform_scenario_label = QLabel("<b>Deform Scenario:</b>")
         self.deform_scenario_combo = QComboBox()
         self.deform_scenario_combo.addItems(["symmetric", "shift hi, fix lo", "shift lo, fix hi"])
-        self.deform_scenario_label.setVisible(False)
-        self.deform_scenario_combo.setVisible(False)
+        self.deform_scenario_label.setVisible(True)
+        self.deform_scenario_combo.setVisible(True)
         self.deform_scenario_combo.setStyleSheet(""" 
             QComboBox {
                 combobox-popup: 0;

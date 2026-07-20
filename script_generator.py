@@ -319,7 +319,7 @@ class LammpsScriptGenerator:
                     "# Start settings",
                     "#------------------------",
                     "# Create directory for restart files",
-                    "shell \"mkdir -p restart_files\"",
+                    "shell \"mkdir restart_files\"",
                     f"restart {restart_freq} restart_files/{model_name}.restart.*",
                     ""
                 ])
@@ -405,7 +405,73 @@ class LammpsScriptGenerator:
                 f""
                 ""
             ])
+
+            # Fixes & Computes section
+            fixes_computes_lines = []
             
+            thermo_style = output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
+            time_averaged_thermo_style = output_config.get("time_averaged_thermo_style", "")
+            thermo_output_freq = output_config.get("thermo_freq", 100)
+            mode = deform_study.get("mode", "Deformation")
+            deform_axis = deform_study.get("deform_axis", "x")
+
+            if time_averaged_thermo_style:
+                nevery = 1
+                nrepeat = thermo_output_freq
+                nfreq = thermo_output_freq
+
+                avg_quantities = time_averaged_thermo_style.split()
+                for qty in avg_quantities:
+                    fixes_computes_lines.append(f"fix avg_{qty} all ave/time {nevery} {nrepeat} {nfreq} {qty}")
+                    fixes_computes_lines.append(f"variable {qty}_avg equal f_avg_{qty}")
+                    thermo_style += f" v_{qty}_avg"
+                
+                fixes_computes_lines.append("")
+
+                # Average Target Strain/Temp
+                if mode == "Deformation":
+                    fixes_computes_lines.append(f"fix avg_target_strain all ave/time {nevery} {nrepeat} {nfreq} v_estrain_{deform_axis}{deform_axis}")
+                    fixes_computes_lines.append(f"variable target_strain_avg equal f_avg_target_strain")
+                    thermo_style += " v_target_strain_avg"
+                else: # Temperature
+                    points = deform_study.get("data_points", [])
+                    initial_temp = points[0][1] if points else 300.0
+                    fixes_computes_lines.append(f"variable set_temp equal {initial_temp}")
+                    fixes_computes_lines.append(f"fix avg_target_temp all ave/time {nevery} {nrepeat} {nfreq} v_set_temp")
+                    fixes_computes_lines.append(f"variable target_temp_avg equal f_avg_target_temp")
+                    thermo_style += " v_target_temp_avg"
+
+                fixes_computes_lines.append("")
+
+            # Custom fixes
+            if fixes_config.get("enable_custom_fixes", False):
+                custom_fixes = fixes_config.get("custom_fixes", "")
+                if custom_fixes:
+                    fixes_computes_lines.extend([
+                        "# Custom fixes",
+                        custom_fixes,
+                        ""
+                    ])
+
+            # Custom computes
+            if output_config.get("enable_custom_computes", False):
+                custom_computes = output_config.get("custom_computes", "")
+                if custom_computes:
+                    fixes_computes_lines.extend([
+                        "# Custom computes",
+                        custom_computes,
+                        ""
+                    ])
+            
+            if fixes_computes_lines:
+                script_lines.extend([
+                    "#------------------------",
+                    "# Fixes & Computes",
+                    "#------------------------",
+                ])
+                script_lines.extend(fixes_computes_lines)
+
+
             # Ensemble settings (specific to each study)
             ensemble_config = deform_study.get("ensemble", {})
             ensemble = ensemble_config.get("ensemble", "NVT")
@@ -448,28 +514,24 @@ class LammpsScriptGenerator:
                 ])
 
             # Additional output settings specific to this study
-            thermo_output_freq = output_config.get("thermo_freq", 100)
             trj_output_freq = output_config.get("traj_freq", 100)
 
             output_lines = []
             
             # Thermo output settings
             if output_config.get("enable_thermo", True):
-                thermo_style = output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
                 add_target_to_thermo = output_config.get("add_target_to_thermo", False)
-                mode = deform_study.get("mode", "Deformation")
-                deform_axis = deform_study.get("deform_axis", "x")
 
-                if add_target_to_thermo:
+                if add_target_to_thermo and not time_averaged_thermo_style:
                     if mode == "Deformation":
                         thermo_style += f" v_estrain_{deform_axis}{deform_axis}"
                     else: # Temperature
-                        # Get initial temperature from the first point
                         points = deform_study.get("data_points", [])
                         initial_temp = points[0][1] if points else 300.0
+                        # Define variable right before it's used in thermo_style
                         output_lines.append(f"variable set_temp equal {initial_temp}")
                         thermo_style += " v_set_temp"
-
+                
                 output_lines.extend([
                     f"thermo {thermo_output_freq}",
                     f"thermo_style custom {thermo_style}",
@@ -695,6 +757,9 @@ class LammpsScriptGenerator:
                 full_local_cmd = f"{local_lammps_cmd} -np {num_processors} {lammps_executable}"
             else:
                 full_local_cmd = local_lammps_cmd
+
+            if job_submission_config.get("enable_restart", False):
+                full_local_cmd += " -var restart FALSE -var maxtime 86400"
             
             # Local execution should not have restart logic.
             for study in deform_studies:

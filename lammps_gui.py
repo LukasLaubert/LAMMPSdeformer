@@ -2198,6 +2198,7 @@ class LammpsGui(QMainWindow):
                 "thermo_style": self.thermo_style.text(),
                 "time_averaged_thermo_style": self.time_averaged_thermo_style.text(),
                 "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
+                "enable_custom_computes": self.enable_custom_computes.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
                 "custom_dumps": self.custom_dumps_text.toPlainText(),
                 "write_data_option": self.write_data_combo.currentText(),
