@@ -299,7 +299,7 @@ class LammpsGui(QMainWindow):
     def emergency_save(self):
         """Emergency save of current settings"""
         try:
-            config = self.collect_config()
+            config = self.collect_config(for_saving=True)
             emergency_file = os.path.join(tempfile.gettempdir(), "lammps_gui_emergency_save.json")
             with open(emergency_file, 'w') as f:
                 json.dump(config, f, indent=2)
@@ -2254,7 +2254,7 @@ class LammpsGui(QMainWindow):
         """
         self.setStyleSheet(stylesheet)
     
-    def collect_config(self):
+    def collect_config(self, for_saving=False):
         """Collect configuration from all GUI elements"""
         config = {
             "system": {
@@ -2345,10 +2345,11 @@ class LammpsGui(QMainWindow):
                 if study_name == "+":
                     continue
                 
-                # Get the full state from the study widget
-                study_state = study_widget.get_state()
-                study_state["name"] = study_name # Add the name to the state
-                config["multistudy"]["deform_studies"].append(study_state)
+                if for_saving or study_widget.is_enabled:
+                    # Get the full state from the study widget
+                    study_state = study_widget.get_state()
+                    study_state["name"] = study_name # Add the name to the state
+                    config["multistudy"]["deform_studies"].append(study_state)
 
         return config
     
@@ -2505,11 +2506,17 @@ class LammpsGui(QMainWindow):
 
                         self.deformation_tab_widget.tab_widget.setTabText(i, final_name)
 
-                        # Restore the state of the study widget
+                        # Restore the state of the study widget, blocking signals to prevent premature updates
+                        study_widget.blockSignals(True)
                         study_widget.set_state(study)
+                        study_widget.blockSignals(False)
                 else:
                     # No studies in settings, or settings were corrupted. Create a default one.
                     self.deformation_tab_widget._add_study(is_first=True)
+                
+                # After loading all tabs, trigger a single manual update
+                self.deformation_tab_widget.update_summaries()
+                self.deformation_tab_widget._update_tab_colors()
                 
                 # Plus tab is handled by the corner widget button, no need to add it here
                 pass
@@ -2520,7 +2527,7 @@ class LammpsGui(QMainWindow):
     def save_settings(self):
         """Save settings to QSettings"""
         try:
-            config = self.collect_config()
+            config = self.collect_config(for_saving=True)
             
             # Save system settings
             self.settings.setValue("system/system_path", config["system"]["system_path"])
@@ -2578,7 +2585,11 @@ class LammpsGui(QMainWindow):
         try:
             # Collect configuration with error handling
             try:
-                config = self.collect_config()
+                # For script generation, only collect enabled studies
+                config = self.collect_config(for_saving=False)
+                
+                # Also collect full configuration (for saving) to preserve all studies 
+                full_config = self.collect_config(for_saving=True)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Error collecting configuration: {str(e)}")
                 return
@@ -2590,7 +2601,7 @@ class LammpsGui(QMainWindow):
             
             deform_studies = config.get("multistudy", {}).get("deform_studies", [])
             if not deform_studies:
-                QMessageBox.warning(self, "Warning", "Please define at least one deformation study.")
+                QMessageBox.warning(self, "Warning", "Please define or activate at least one study.")
                 return
             
             # Validate system path exists
@@ -2686,7 +2697,17 @@ class LammpsGui(QMainWindow):
             if ScriptGen:
                 try:
                     generator = ScriptGen(config)
+                    
+                    # Save the full configuration (including disabled studies) by temporarily replacing the method
+                    original_save_settings = generator.save_settings_to_json
+                    def save_all_studies_settings(root_simulation_dir):
+                        return self._save_full_config_for_generator(full_config, root_simulation_dir)
+                    generator.save_settings_to_json = save_all_studies_settings
+                    
                     result = generator.generate_all_scripts()
+                    
+                    # Restore the original method if needed
+                    generator.save_settings_to_json = original_save_settings
                     
                     if result.get("success"):
                         self.show_generated_files_dialog(result)
@@ -2741,7 +2762,7 @@ class LammpsGui(QMainWindow):
         try:
             file_path, _ = QFileDialog.getSaveFileName(self, "Save Configuration", "", "JSON Files (*.json);;All Files (*)")
             if file_path:
-                config = self.collect_config()
+                config = self.collect_config(for_saving=True)
                 with open(file_path, 'w') as f:
                     json.dump(config, f, indent=2)
                 QMessageBox.information(self, "Success", f"Configuration saved to {file_path}")
@@ -2892,13 +2913,34 @@ class LammpsGui(QMainWindow):
                         self.deformation_tab_widget._add_study(is_first=(i==0))
                         study_widget = self.deformation_tab_widget.tab_widget.widget(i)
                         self.deformation_tab_widget.tab_widget.setTabText(i, study_data.get("name", f"Study {i+1}"))
+                        
+                        # Restore the state of the study widget, blocking signals
+                        study_widget.blockSignals(True)
                         study_widget.set_state(study_data)
+                        study_widget.blockSignals(False)
                 else:
                     # if no studies, create a default one
                     self.deformation_tab_widget._add_study(is_first=True)
 
+                # After loading all tabs, trigger a single manual update
+                self.deformation_tab_widget.update_summaries()
+                self.deformation_tab_widget._update_tab_colors()
+
         except Exception as e:
             print(f"Error applying configuration: {e}")
+    
+    def _save_full_config_for_generator(self, full_config, root_simulation_dir):
+        """Save the full configuration (including disabled studies) for the script generator"""
+        try:
+            import json
+            import os
+            settings_file = os.path.join(root_simulation_dir, "lammps_settings.json")
+            with open(settings_file, 'w') as f:
+                json.dump(full_config, f, indent=2)
+            return {"success": True, "message": f"Settings saved to: {settings_file}"}
+        except Exception as e:
+            return {"success": False, "message": f"Error saving settings: {str(e)}"}
+
 
 def main():
     """Main function to run the application"""

@@ -441,9 +441,80 @@ class GraphWidget(QWidget):
             if (pos - (p1_w + t * v)).manhattanLength() < 5: return i
         return None
     def paintEvent(self, event):
-        painter = QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), STYLE_BACKGROUND); self._clickable_regions.clear()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # --- Draw the normal graph content first ---
+        painter.fillRect(self.rect(), STYLE_BACKGROUND)
+        self._clickable_regions.clear()
         self._draw_axes_and_frame(painter)
+
+        if self.points_norm:
+            fm = QFontMetrics(QFont("Arial", 10))
+            # Draw the line segments and slope labels
+            for i in range(len(self.points_norm) - 1):
+                p1_w, p2_w = self._norm_to_widget(self.points_norm[i]), self._norm_to_widget(self.points_norm[i+1])
+                painter.setPen(QPen(self.STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
+                p1_d, p2_d = self._norm_to_data(self.points_norm[i]), self._norm_to_data(self.points_norm[i+1])
+                dx_s, dy_e, dx_t = p2_d.x() - p1_d.x(), p2_d.y() - p1_d.y(), (p2_d.x() - p1_d.x()) * self._timestep
+                slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
+                slope_text = f"{slope:.4e} {self.get_y_unit()}/step"
+                rate_text = f"{rate:.4e} {self.get_y_unit()}/t"
+                slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 20))
+                rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 6))
+                if i in self._fixed_segments:
+                    painter.setPen(QColor("red"))
+                else:
+                    painter.setPen(STYLE_SLOPE_TEXT)
+                painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
+                if i in self._fixed_segments:
+                    painter.setPen(QColor("red"))
+                else:
+                    painter.setPen(STYLE_TEXT_SECONDARY)
+                painter.drawText(rate_rect, rate_text)
+                self._clickable_regions.append((slope_rect.united(rate_rect), "slope", i))
+            # Draw the handles and labels
+            for i, p_norm in enumerate(self.points_norm):
+                p_data, p_w = self._norm_to_data(p_norm), self._norm_to_widget(p_norm)
+                painter.setPen(QPen(STYLE_HANDLE_OUTLINE, 2)); painter.setBrush(self.STYLE_HANDLE); painter.drawEllipse(p_w, HANDLE_RADIUS, HANDLE_RADIUS)
+                y_text = f"{p_data.y():.3f}"; y_rect = QRectF(fm.boundingRect(y_text)); y_rect.moveCenter(QPointF(p_w.x() + 35, p_w.y()))
+                if i in self._locked_y_labels:
+                    painter.setPen(QColor("red"))
+                elif self.mode == 'Temperature':
+                    painter.setPen(QColor("darkorange"))
+                else:
+                    painter.setPen(STYLE_TEXT_PRIMARY)
+                painter.setFont(QFont("Arial", 10, QFont.Weight.Bold)); painter.drawText(y_rect, y_text)
+                self._clickable_regions.append((y_rect, "y_val", i))
+                step_text, time_text = f"{p_data.x():.0f}", f"({p_data.x() * self._timestep:.2f}{self._time_unit})"
+                step_rect = QRectF(fm.boundingRect(step_text).adjusted(-4,0,4,0)); step_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 18))
+                time_rect = QRectF(fm.boundingRect(time_text)); time_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 34))
+                if i in self._locked_x_ticks:
+                    painter.setPen(QColor("red"))
+                else:
+                    painter.setPen(STYLE_TEXT_PRIMARY)
+                painter.drawText(step_rect, step_text)
+                if i in self._locked_x_ticks:
+                    painter.setPen(QColor("red"))
+                else:
+                    painter.setPen(STYLE_TEXT_SECONDARY)
+                painter.setFont(QFont("Arial", 9)); painter.drawText(time_rect, time_text)
+                self._clickable_regions.append((step_rect.united(time_rect), "x_val", i))
+
+        # --- Now, draw the overlay if disabled ---
+        parent_study_widget = self.parent()
+        if parent_study_widget and hasattr(parent_study_widget, 'is_enabled') and not parent_study_widget.is_enabled:
+            overlay_color = QColor("#E9ECEF")
+            overlay_color.setAlphaF(0.85)
+            painter.fillRect(self.rect(), overlay_color)
+            painter.setPen(QColor("#495057"))
+            font_bold = QFont("Arial", 14, QFont.Weight.Bold)
+            painter.setFont(font_bold)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "STUDY DISABLED")
+            font_normal = QFont("Arial", 10)
+            painter.setFont(font_normal)
+            text_rect = self.rect().adjusted(0, 40, 0, 0)
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, "right-click the study tab to reactivate")
         if not self.points_norm: return
         fm = QFontMetrics(QFont("Arial", 10))
         # Draw the line segments and slope labels
@@ -991,8 +1062,9 @@ class GraphWidget(QWidget):
 class StudyWidget(QWidget):
     dataChanged = pyqtSignal()
     def __init__(self, initial_state=None, parent=None):
-        super().__init__(parent); 
-        self.mode = "Deformation" 
+        super().__init__(parent)
+        self.is_enabled = True
+        self.mode = "Deformation"
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5,5,5,5)
         layout.setSpacing(2)
@@ -1435,6 +1507,42 @@ class StudyWidget(QWidget):
         self.graph_widget.update()
         self.dataChanged.emit()
 
+    def set_enabled(self, enabled):
+        if self.is_enabled == enabled:
+            return
+        self.is_enabled = enabled
+
+        # Manually enable/disable all interactive child widgets.
+        # This avoids disabling the parent StudyWidget, which may have been causing it to not be rendered
+        # correctly on load. The GraphWidget itself is handled separately by its paintEvent.
+        self.max_steps_spinbox.setEnabled(enabled)
+        self.min_strain_spinbox.setEnabled(enabled)
+        self.max_strain_spinbox.setEnabled(enabled)
+        self.undo_button.setEnabled(enabled)
+        self.redo_button.setEnabled(enabled)
+        self.generate_button.setEnabled(enabled)
+        self.reset_button.setEnabled(enabled)
+        self.deform_axis_combo.setEnabled(enabled)
+        self.deform_scenario_combo.setEnabled(enabled)
+        self.ensemble_combo.setEnabled(enabled)
+        self.temp_spinbox.setEnabled(enabled)
+        self.pressure_spinbox.setEnabled(enabled)
+        self.npt_aniso_combo.setEnabled(enabled)
+        self.sync_ensemble_checkbox.setEnabled(enabled)
+        self.enable_bond_breakage_checkbox.setEnabled(enabled)
+        self.sync_bond_break_checkbox.setEnabled(enabled)
+        
+        # These functions will correctly handle the logic for their own children
+        # based on the state of the parent checkboxes, which are now correctly enabled/disabled.
+        self._update_ensemble_ui_state()
+        self._update_bond_breakage_ui_state()
+
+        # The graph widget is a special case; we don't disable it,
+        # but its paintEvent will draw an overlay. We just need to trigger a repaint.
+        self.graph_widget.update()
+
+        self.dataChanged.emit()
+
 
 
     def get_state(self):
@@ -1447,6 +1555,7 @@ class StudyWidget(QWidget):
             'deform_scenario': self.deform_scenario_combo.currentText(),
             'mode': self.mode,
             'fixed_segments': list(self.graph_widget._fixed_segments),  # Save fixed segments
+            'is_enabled': self.is_enabled,
             'ensemble': {
                 'ensemble': self.ensemble_combo.currentText(),
                 'temperature': self.temp_spinbox.value(),
@@ -1561,6 +1670,8 @@ class StudyWidget(QWidget):
         # Update bond breakage UI state to ensure fields are enabled/disabled correctly
         self._update_ensemble_ui_state()
         self._update_bond_breakage_ui_state()
+
+        self.set_enabled(state.get('is_enabled', True))
 
     def _update_bond_breakage_ui_state(self):
         enabled_bond_breakage = self.enable_bond_breakage_checkbox.isChecked()
@@ -1715,6 +1826,8 @@ class DeformationTab(QWidget):
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.tabBar().setMovable(True)
         self.tab_widget.tabBar().tabMoved.connect(self.update_summaries)
+        self.tab_widget.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tab_widget.tabBar().customContextMenuRequested.connect(self._show_tab_context_menu)
         # Set base stylesheet for the tab widget
         self._update_tab_stylesheet()
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
@@ -1812,10 +1925,14 @@ class DeformationTab(QWidget):
         # Update individual tab text colors
         for i in range(self.tab_widget.count()):
             widget = self.tab_widget.widget(i)
-            if widget and hasattr(widget, 'mode') and widget.mode == "Temperature":
-                self.tab_widget.tabBar().setTabTextColor(i, QColor("darkorange"))
-            else:
-                self.tab_widget.tabBar().setTabTextColor(i, QColor(Qt.GlobalColor.black))
+            if widget:
+                if not widget.is_enabled:
+                    self.tab_widget.tabBar().setTabTextColor(i, QColor(Qt.GlobalColor.gray))
+                else:
+                    if widget.mode == "Temperature":
+                        self.tab_widget.tabBar().setTabTextColor(i, QColor("darkorange"))
+                    else:
+                        self.tab_widget.tabBar().setTabTextColor(i, QColor(Qt.GlobalColor.black))
                 
         # Update the stylesheet for selected tab indicator
         self._update_tab_stylesheet()
@@ -2005,6 +2122,29 @@ class DeformationTab(QWidget):
             target_study_widget._update_ensemble_ui_state()
             target_study_widget.dataChanged.emit()
 
+    def _show_tab_context_menu(self, pos):
+        tab_bar = self.tab_widget.tabBar()
+        index = tab_bar.tabAt(pos)
+        if index < 0:
+            return
+
+        widget = self.tab_widget.widget(index)
+        if not widget:
+            return
+
+        menu = QMenu(self)
+        enabled_action = QAction("Enabled", self, checkable=True)
+        enabled_action.setChecked(widget.is_enabled)
+        enabled_action.toggled.connect(lambda checked: self._toggle_study_enabled(index, checked))
+        menu.addAction(enabled_action)
+    
+        menu.exec(tab_bar.mapToGlobal(pos))
+
+    def _toggle_study_enabled(self, index, enabled):
+        widget = self.tab_widget.widget(index)
+        if widget:
+            widget.set_enabled(enabled)
+
     def update_all_graphs(self, timestep, unit_key):
         for i in range(self.tab_widget.count()):
             widget = self.tab_widget.widget(i)
@@ -2013,6 +2153,7 @@ class DeformationTab(QWidget):
         self.update_summaries()
 
     def update_summaries(self):
+        self._update_tab_colors()
         timestep = 0
         unit_key = "s"
         if self.tab_widget.count() > 0:
@@ -2024,8 +2165,15 @@ class DeformationTab(QWidget):
 
         # Build all summaries in one text area
         all_summaries = []
+        
+        # Filter for active studies first to handle separators correctly
+        active_studies = []
         for i in range(self.tab_widget.count()):
             study_widget = self.tab_widget.widget(i)
+            if study_widget and study_widget.is_enabled:
+                active_studies.append((i, study_widget))
+
+        for idx, (i, study_widget) in enumerate(active_studies):
             study_name = self.tab_widget.tabText(i)
             mode = study_widget.mode
             
@@ -2034,6 +2182,7 @@ class DeformationTab(QWidget):
             study_state = study_widget.get_state()
             if study_state.get('bond_breakage', {}).get('enable_bond_breakage', False):
                 bond_breakage_status = "Enabled"
+            
             all_summaries.append(f"--- Summary for {study_name} | Mode: {mode} | Bond Breakage: {bond_breakage_status} ---")
             
             # Add data
@@ -2057,8 +2206,8 @@ class DeformationTab(QWidget):
                         break
                 all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
             
-            # Add blank line between studies (except for the last one)
-            if i < self.tab_widget.count() - 1:
+            # Add blank line between studies if it's not the last active one
+            if idx < len(active_studies) - 1:
                 all_summaries.append("")
 
         # Set the text

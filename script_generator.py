@@ -496,8 +496,8 @@ class LammpsScriptGenerator:
         if mode == "Deformation":
             final_target_y = sub_end_y
             if is_shear:
-                lines.append(f"variable tilt_target equal {final_target_y} * v_L0{deform_axis[1]}")
-                lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box")
+                lines.append(f"variable tilt_target equal \"{final_target_y} * v_L0{deform_axis[1]}\"")
+                lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box remap x flip no")
             else:
                 deform_scenario = deform_study.get("deform_scenario", "symmetric")
                 if deform_scenario == "shift hi, fix lo":
@@ -506,7 +506,7 @@ class LammpsScriptGenerator:
                     lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y})"', f"variable {deform_axis}hi_target equal v_{deform_axis}hi0"])
                 else:
                     lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y}) / 2"', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y}) / 2"'])
-                lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box")
+                lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap x")
         
         elif mode == "Temperature":
             slope = (sub_end_y - sub_start_y) / duration if duration > 0 else 0
