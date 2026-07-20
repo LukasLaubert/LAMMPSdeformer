@@ -328,16 +328,25 @@ class InsertSineDialog(QDialog):
         }
 
 class AmplitudeEditDialog(QDialog):
-    def __init__(self, y_center, amplitude, min_strain, max_strain, parent=None):
+    def __init__(self, y_center, amplitude, min_strain, max_strain, scheme, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit Amplitude and Peak Value")
         self._y_center = y_center
         self._min_strain = min_strain
         self._max_strain = max_strain
+        self._scheme = scheme
+        self.is_compressive_pulsating = "Pulsating compressive" in self._scheme
+
+        if self.is_compressive_pulsating:
+            self.setWindowTitle("Edit Amplitude and Trough Value")
+            self._peak_value = y_center - amplitude  # It's a trough
+            label_text = "Trough Value:"
+        else:
+            self.setWindowTitle("Edit Amplitude and Peak Value")
+            self._peak_value = y_center + amplitude
+            label_text = "Peak Value:"
         
         # Calculate initial peak value
         self._amplitude = amplitude
-        self._peak_value = y_center + amplitude
         
         layout = QFormLayout(self)
         
@@ -354,7 +363,7 @@ class AmplitudeEditDialog(QDialog):
         self.peak_box.setSingleStep(0.01)
         
         layout.addRow("Amplitude:", self.amplitude_box)
-        layout.addRow("Peak Value:", self.peak_box)
+        layout.addRow(label_text, self.peak_box)
         
         # Connect value changes to automatically update the other
         self.amplitude_box.valueChanged.connect(self._amplitude_changed)
@@ -367,7 +376,10 @@ class AmplitudeEditDialog(QDialog):
     
     def _amplitude_changed(self, value):
         self.peak_box.blockSignals(True)  # Prevent circular updates
-        new_peak = self._y_center + value
+        if self.is_compressive_pulsating:
+            new_peak = self._y_center - value # Trough
+        else:
+            new_peak = self._y_center + value # Peak
         self.peak_box.setValue(new_peak)
         self._peak_value = new_peak
         self._amplitude = value
@@ -624,7 +636,7 @@ class GraphWidget(QWidget):
         sine_start_step = new_data_points[-1].x()
         sine_end_step = sine_start_step + sine_duration_steps
         new_data_points.append(QPointF(sine_end_step, end_y_val))
-        new_segments.append({'type': 'sine', 'num_cycles': num_cycles, 'scheme': scheme})
+        new_segments.append({'type': 'sine', 'num_cycles': num_cycles, 'scheme': scheme, 'amplitude': abs(amplitude)})
 
         if relax_duration_steps > 0:
             relax_end_step = sine_end_step + relax_duration_steps
@@ -1316,42 +1328,29 @@ class GraphWidget(QWidget):
             # For pulsating schemes: y_center is calculated as per original sine formula
             num_cycles = segment_info['num_cycles']
             scheme = segment_info['scheme']
+            is_pulsating_scheme = "Pulsating" in scheme
             
-            if "Alternating" in scheme:
-                # For alternating schemes, both endpoints should have the same y-value for even multiples (horizontal line)
-                is_even_multiple = (segment_info['num_cycles'] * 4) % 2 == 0
-                if is_even_multiple:
-                    y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as horizontal line
+            if is_pulsating_scheme:
+                # Corrected logic for pulsating schemes.
+                # The handle position represents the peak/trough. The wave oscillates around a baseline y-value (p1_d.y()).
+                # The amplitude is therefore half the distance from the handle to this baseline.
+                clamped_pos_data_y = max(self._min_strain, min(self._max_strain, new_pos_data_y))
+                new_amplitude = abs(clamped_pos_data_y - p1_d.y()) / 2.0
+            else:
+                # Original logic for alternating schemes
+                if "Alternating" in scheme:
+                    # For alternating schemes, both endpoints should have the same y-value for even multiples (horizontal line)
+                    is_even_multiple = (segment_info['num_cycles'] * 4) % 2 == 0
+                    if is_even_multiple:
+                        y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as horizontal line
+                    else:
+                        # For non-even multiple alternating schemes
+                        orig_amp, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                        y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
                 else:
-                    # For non-even multiple alternating schemes
+                    # For other schemes, calculate y_center using original method
                     orig_amp, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
                     y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
-            elif "Pulsating" in scheme:
-                # For pulsating schemes, both endpoints should have the same y-value for integer full periods (horizontal line)
-                is_integer_full_period = (segment_info['num_cycles'] * 4) % 4 == 0
-                if is_integer_full_period:
-                    # For integer full period pulsating schemes, both endpoints have the same y-value (horizontal line)
-                    y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as horizontal line
-                else:
-                    # For non-integer full period pulsating schemes, calculate y_center from the starting point and phase
-                    phi_start = -math.pi / 2 if "tensile" in scheme.lower() else math.pi / 2
-                    # Use the stored amplitude if available, otherwise calculate from original parameters
-                    stored_amplitude = self.segments[seg_idx].get('amplitude')
-                    if stored_amplitude is not None:
-                        # Use stored amplitude for calculation
-                        y_center = p1_d.y() - stored_amplitude * math.sin(phi_start)
-                    else:
-                        # Calculate original y_center using original _get_sine_parameters method
-                        orig_amp, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
-                        if orig_y_center is not None:
-                            y_center = orig_y_center
-                        else:
-                            # Fallback to average if original calculation fails
-                            y_center = (p1_d.y() + p2_d.y()) / 2
-            else:
-                # For other schemes, calculate y_center using original method
-                orig_amp, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
-                y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
             
             # Determine if we have enough quarter periods for potentially 2 handles
             # For alternating schemes: show second handle at >3 quarter periods (even multiple cases)
@@ -1374,48 +1373,49 @@ class GraphWidget(QWidget):
             is_pulsating_scheme = "Pulsating" in segment_info['scheme']
             is_pulsating_compressive = is_pulsating_scheme and "compressive" in segment_info['scheme'].lower()
             
-            if has_two_handles:
-                # With two handles, both peak and trough need to be within boundaries
-                # So calculate amplitude with constraints on both sides
-                raw_amplitude = abs(new_pos_data_y - y_center)
-                
-                # Apply proper boundary constraints: ensure the entire sine wave stays within bounds
-                # For the sine wave y = y_center + A*sin(...), the range is [y_center - A, y_center + A]
-                # So we need: y_center - A >= min_strain AND y_center + A <= max_strain
-                # Which gives us: A <= y_center - min_strain AND A <= max_strain - y_center
-                max_amplitude_for_min_bound = y_center - self._min_strain
-                max_amplitude_for_max_bound = self._max_strain - y_center
-                
-                # The valid amplitude is constrained by both bounds
-                max_valid_amplitude = min(max_amplitude_for_min_bound, max_amplitude_for_max_bound)
-                max_valid_amplitude = max(0, max_valid_amplitude)  # Ensure non-negative
-                
-                # Apply the boundary constraint to the amplitude
-                new_amplitude = min(raw_amplitude, max_valid_amplitude)
-            else:
-                # With one handle, constrain only the relevant side based on current handle position
-                # For pulsating schemes, we need to consider if this is a tensile or compressive start
-                if is_pulsating_scheme and is_pulsating_compressive:
-                    # For pulsating compressive, the amplitude handle typically represents the trough (minimum)
-                    # So when dragging, the amplitude should be calculated from how far below the center line it is
-                    if new_pos_data_y < y_center:
-                        # Currently a trough handle below center, constrain lower boundary only
-                        clamped_pos_data_y = max(self._min_strain, new_pos_data_y)
-                        new_amplitude = abs(clamped_pos_data_y - y_center)
-                    else:
-                        # Currently a peak handle above center, constrain upper boundary only
-                        clamped_pos_data_y = min(self._max_strain, new_pos_data_y)
-                        new_amplitude = abs(clamped_pos_data_y - y_center)
+            if not is_pulsating_scheme: # This block is now only for non-pulsating schemes
+                if has_two_handles:
+                    # With two handles, both peak and trough need to be within boundaries
+                    # So calculate amplitude with constraints on both sides
+                    raw_amplitude = abs(new_pos_data_y - y_center)
+                    
+                    # Apply proper boundary constraints: ensure the entire sine wave stays within bounds
+                    # For the sine wave y = y_center + A*sin(...), the range is [y_center - A, y_center + A]
+                    # So we need: y_center - A >= min_strain AND y_center + A <= max_strain
+                    # Which gives us: A <= y_center - min_strain AND A <= max_strain - y_center
+                    max_amplitude_for_min_bound = y_center - self._min_strain
+                    max_amplitude_for_max_bound = self._max_strain - y_center
+                    
+                    # The valid amplitude is constrained by both bounds
+                    max_valid_amplitude = min(max_amplitude_for_min_bound, max_amplitude_for_max_bound)
+                    max_valid_amplitude = max(0, max_valid_amplitude)  # Ensure non-negative
+                    
+                    # Apply the boundary constraint to the amplitude
+                    new_amplitude = min(raw_amplitude, max_valid_amplitude)
                 else:
-                    # For alternating schemes and pulsating tensile, handle as before
-                    if new_pos_data_y > y_center:
-                        # Currently a peak handle above center, constrain upper boundary only
-                        clamped_pos_data_y = min(self._max_strain, new_pos_data_y)
-                        new_amplitude = abs(clamped_pos_data_y - y_center)
+                    # With one handle, constrain only the relevant side based on current handle position
+                    # For pulsating schemes, we need to consider if this is a tensile or compressive start
+                    if is_pulsating_scheme and is_pulsating_compressive:
+                        # For pulsating compressive, the amplitude handle typically represents the trough (minimum)
+                        # So when dragging, the amplitude should be calculated from how far below the center line it is
+                        if new_pos_data_y < y_center:
+                            # Currently a trough handle below center, constrain lower boundary only
+                            clamped_pos_data_y = max(self._min_strain, new_pos_data_y)
+                            new_amplitude = abs(clamped_pos_data_y - y_center)
+                        else:
+                            # Currently a peak handle above center, constrain upper boundary only
+                            clamped_pos_data_y = min(self._max_strain, new_pos_data_y)
+                            new_amplitude = abs(clamped_pos_data_y - y_center)
                     else:
-                        # Currently a trough handle below center, constrain lower boundary only
-                        clamped_pos_data_y = max(self._min_strain, new_pos_data_y)
-                        new_amplitude = abs(clamped_pos_data_y - y_center)
+                        # For alternating schemes and pulsating tensile, handle as before
+                        if new_pos_data_y > y_center:
+                            # Currently a peak handle above center, constrain upper boundary only
+                            clamped_pos_data_y = min(self._max_strain, new_pos_data_y)
+                            new_amplitude = abs(clamped_pos_data_y - y_center)
+                        else:
+                            # Currently a trough handle below center, constrain lower boundary only
+                            clamped_pos_data_y = max(self._min_strain, new_pos_data_y)
+                            new_amplitude = abs(clamped_pos_data_y - y_center)
             
             # For even multiple alternating schemes and integer full period pulsating schemes, 
             # the horizontal line constraint is maintained elsewhere
@@ -1978,7 +1978,8 @@ class GraphWidget(QWidget):
                 self.segments[seg_idx] = {
                     'type': 'sine',
                     'num_cycles': num_cycles,
-                    'scheme': scheme
+                    'scheme': scheme,
+                    'amplitude': amplitude
                 }
 
                 # If it's an even quarter-period in alternating mode, ensure both handles have the same y-value (horizontal line)
@@ -2048,60 +2049,36 @@ class GraphWidget(QWidget):
                 self.points_norm[index] = self._data_to_norm(p1_data)
                 self.points_norm[index+1] = self._data_to_norm(p2_data)
         elif type == "amplitude_label":
-            # Handle amplitude label editing for sine segments
             if index < len(self.segments) and self.segments[index]['type'] == 'sine':
-                # Get the current amplitude, y_center, and determine the new y-value for peak/trough
                 p1_d = self._norm_to_data(self.points_norm[index])
-                p2_d = self._norm_to_data(self.points_norm[index+1])
-                
                 segment_info = self.segments[index]
-                
-                # Calculate y_center appropriately for the scheme type
-                # For alternating schemes: y_center is the horizontal line (average of endpoints)  
-                # For pulsating schemes: y_center is calculated as per original sine formula
                 scheme = segment_info['scheme']
-                
-                if "Alternating" in scheme:
-                    # For alternating schemes with even multiple period lengths (integer full periods), both endpoints should have the same y-value (horizontal line)
-                    is_even_multiple = (segment_info['num_cycles'] * 4) % 2 == 0
-                    if is_even_multiple:
-                        y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as the horizontal line
-                    else:
-                        # For odd multiples, calculate from original formula
-                        orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
-                        y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
-                elif "Pulsating" in scheme:
-                    # For pulsating schemes with integer full periods, both endpoints should have the same y-value (horizontal line)
-                    is_integer_full_period = (segment_info['num_cycles'] * 4) % 4 == 0
-                    if is_integer_full_period:
-                        y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as the horizontal line
-                    else:
-                        # For non-integer full periods, calculate from original formula
-                        orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
-                        y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
-                else:
-                    # For other schemes, calculate from original formula
-                    orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
-                    y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
-                
-                # Get or calculate current amplitude
-                current_amplitude = self.segments[index].get('amplitude', 0.0)
-                # If no stored amplitude, calculate from original parameters
-                if current_amplitude == 0.0:
-                    orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
-                    current_amplitude = orig_amplitude if orig_amplitude is not None else 0.0
-                
+
+                # Get stored amplitude
+                current_amplitude = self.segments[index].get('amplitude')
+                if current_amplitude is None:
+                    # Fallback if not stored
+                    p2_d = self._norm_to_data(self.points_norm[index+1])
+                    orig_amp, _, _ = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                    current_amplitude = abs(orig_amp) if orig_amp is not None else 0.0
+
+                # Calculate the correct center of oscillation for the dialog
+                if "Pulsating" in scheme:
+                    if "tensile" in scheme:
+                        y_center = p1_d.y() + current_amplitude
+                    else:  # compressive
+                        y_center = p1_d.y() - current_amplitude
+                else:  # Alternating
+                    y_center = p1_d.y()
+
                 # Create and show the amplitude edit dialog
-                dialog = AmplitudeEditDialog(y_center, current_amplitude, self._min_strain, self._max_strain, self)
+                dialog = AmplitudeEditDialog(y_center, current_amplitude, self._min_strain, self._max_strain, scheme, self)
                 if dialog.exec():
-                    new_amplitude = dialog.get_amplitude()
-                    
-                    # Update the segment's amplitude
-                    self.segments[index]['amplitude'] = new_amplitude
-                    
-                    # Update the drawing
+                    new_amp = dialog.get_amplitude()
+                    self.segments[index]['amplitude'] = new_amp
                     self.update()
                     self.dataChanged.emit()
+                return # Return to avoid falling through
         
         self.points_norm[index] = self._data_to_norm(p_data)
         
@@ -2445,6 +2422,8 @@ class StudyWidget(QWidget):
 
         self.graph_widget.dataChanged.connect(self.dataChanged)
         self.graph_widget.dataChanged.connect(self._update_deform_scenario_visibility)
+        self.deform_axis_combo.currentTextChanged.connect(self._update_deform_scenario_visibility)
+        self.deform_axis_combo.currentTextChanged.connect(self._update_ensemble_ui_state)
         self.reset_button.clicked.connect(self.graph_widget.reset_graph)
         self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
@@ -2683,7 +2662,8 @@ class StudyWidget(QWidget):
         self.deform_scenario_combo.setEnabled(enabled)
         self.ensemble_combo.setEnabled(enabled)
         self.temp_spinbox.setEnabled(enabled)
-        self.pressure_spinbox.setEnabled(enabled)
+        # Don't set pressure_spinbox enabled state here, let _update_ensemble_ui_state handle it
+        # based on both study activation state and ensemble
         self.npt_aniso_combo.setEnabled(enabled)
         self.sync_ensemble_checkbox.setEnabled(enabled)
         self.enable_bond_breakage_checkbox.setEnabled(enabled)
@@ -2701,26 +2681,19 @@ class StudyWidget(QWidget):
         self.dataChanged.emit()
 
     def _update_deform_scenario_visibility(self):
-        """Update the visibility of the Deform Scenario label and field based on mode and sine segments"""
-        # Only proceed if we're in deformation mode
-        if self.mode == 'Deformation':
-            # Count sine segments in the graph
-            sine_count = self.graph_widget.count_sine_segments()
-            
-            # If there's at least one sine segment, hide the Deform Scenario controls and set to symmetric
-            if sine_count > 0:
-                self.deform_scenario_label.setVisible(False)
-                self.deform_scenario_combo.setVisible(False)
-                # Set the deform scenario to symmetric as default when sine is present
-                self.deform_scenario_combo.setCurrentText("symmetric")
-            else:
-                # If there are 0 sine segments, show the Deform Scenario controls
-                self.deform_scenario_label.setVisible(True)
-                self.deform_scenario_combo.setVisible(True)
-        else:  # Temperature mode
-            # Always hide the Deform Scenario controls in temperature mode
+        """Update the visibility of the Deform Scenario label and field based on mode, sine segments, and shear"""
+        is_shear = self.deform_axis_combo.currentText() in ["xy", "xz", "yz"]
+        sine_count = self.graph_widget.count_sine_segments()
+
+        # Hide for non-deformation modes, or if there are sine segments, or if it's a shear deformation
+        if self.mode != 'Deformation' or sine_count > 0 or is_shear:
             self.deform_scenario_label.setVisible(False)
             self.deform_scenario_combo.setVisible(False)
+            # Set the deform scenario to symmetric as default when hidden
+            self.deform_scenario_combo.setCurrentText("symmetric")
+        else:
+            self.deform_scenario_label.setVisible(True)
+            self.deform_scenario_combo.setVisible(True)
 
 
 
@@ -2895,10 +2868,57 @@ class StudyWidget(QWidget):
 
     def _update_ensemble_ui_state(self):
         is_npt = self.ensemble_combo.currentText() == "NPT"
-        self.pressure_spinbox.setEnabled(is_npt)
-        # Show/hide NPT anisotropic options when NPT is selected
+
+        # Update the prefix based on ensemble type
+        if is_npt:
+            self.pressure_spinbox.setPrefix("P: ")
+            self.pressure_spinbox.setFixedWidth(100)
+            self.pressure_spinbox.setToolTip("Target pressure for NPT ensemble")
+        else:
+            self.pressure_spinbox.setPrefix("P (used in equilibration): ")
+            self.pressure_spinbox.setFixedWidth(200)
+            self.pressure_spinbox.setToolTip("Pressure that was used during equilibration. The vaiue entered here is used only to correct the stress measured in the system during deformation.")
+
+        # Set pressure spinbox enabled state based on whether the study is enabled
+        # If the study is not enabled, always disable the pressure field
+        # If the study is enabled, the pressure field should be available for input regardless of ensemble
+        self.pressure_spinbox.setEnabled(self.is_enabled)
+
         self.npt_aniso_label.setVisible(is_npt)
         self.npt_aniso_combo.setVisible(is_npt)
+
+        if not is_npt:
+            return
+
+        is_deformation_mode = self.mode == 'Deformation'
+        is_shear = self.deform_axis_combo.currentText() in ["xy", "xz", "yz"]
+
+        current_selection = self.npt_aniso_combo.currentText()
+
+        self.npt_aniso_combo.blockSignals(True)
+        self.npt_aniso_combo.clear()
+
+        if is_deformation_mode:
+            if is_shear:
+                # For shear, only 'tri' is meaningful as the box must be triclinic
+                self.npt_aniso_combo.addItem("tri")
+                self.npt_aniso_combo.setCurrentText("tri")
+            else:
+                # For tensile deformation, 'aniso' and 'tri' are valid
+                self.npt_aniso_combo.addItems(["aniso", "tri"])
+                if current_selection == "iso" or not current_selection:
+                    self.npt_aniso_combo.setCurrentText("aniso")
+                else:
+                    self.npt_aniso_combo.setCurrentText(current_selection)
+        else: # Temperature mode
+            # In temperature mode, all options are valid
+            self.npt_aniso_combo.addItems(["iso", "aniso", "tri"])
+            if not current_selection:
+                self.npt_aniso_combo.setCurrentText("iso")
+            else:
+                self.npt_aniso_combo.setCurrentText(current_selection)
+
+        self.npt_aniso_combo.blockSignals(False)
 
     def _on_bond_breakage_setting_changed(self):
         # Update UI state first
@@ -2981,8 +3001,9 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.setVisible(not is_temp_mode)
         
         # Update the visibility of the Deform Scenario controls based on the new mode
-        # This is handled in _update_deform_scenario_visibility
         self._update_deform_scenario_visibility()
+        # Update ensemble UI state to refresh NPT options based on the new mode
+        self._update_ensemble_ui_state()
 
         self.graph_widget.set_mode(mode)
         self._update_graph_controls()
@@ -3386,7 +3407,7 @@ class DeformationTab(QWidget):
                         sine_segments_data.append({'index': j, 'p1': p1, 'p2': p2, 'info': segment_info})
 
             if linear_segments_data:
-                header = f"{ 'Lin Seg':<10} | {'Time Step':<18} | {'Time':<18} | {y_header:<18} | {f'Slope ({y_unit}/step)':<20} | {f'Rate ({y_unit}/t)':<20}"
+                header = f"{ 'Lin Seg':<8} | {'Time Step':<20} | {'Time':<30} | {y_header:<16} | {f'Slope ({y_unit}/step)':<14} | {f'Rate ({y_unit}/t)':<14}"
                 all_summaries.append(header)
                 all_summaries.append("-" * len(header))
                 for data in linear_segments_data:
@@ -3394,11 +3415,11 @@ class DeformationTab(QWidget):
                     p1_t, p2_t = p1.x() * timestep, p2.x() * timestep
                     dx_s, dx_t, dy_e = p2.x() - p1.x(), p2_t - p1_t, p2.y() - p1.y()
                     slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
-                    all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
+                    all_summaries.append(f"{j+1:<8} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<20} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<30} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<16} | {f'{slope:.4e}':<14} | {rate:.4e}")
 
             if sine_segments_data:
                 if linear_segments_data: all_summaries.append("")
-                header = f"{ 'Sine Seg':<10} | {'Time Step':<18} | {'Phase shift':<11} | {'Cycles':<8} | {'Amplitude':<12} | {'Period':<12} | {'Midpoint Slope':<14} | {'Midpoint Rate':<15}"
+                header = f"{ 'Sine Seg':<8} | {'Time Step':<20} | {'Phase shift':<11} | {'Cycles':<6} | {'Amplitude':<9} | {'Period':<7} | {'Midpoint Slope':<14} | {'Midpoint Rate':<15}"
                 all_summaries.append(header)
                 all_summaries.append("-" * len(header))
                 for data in sine_segments_data:
@@ -3431,7 +3452,7 @@ class DeformationTab(QWidget):
                     midpoint_rate = midpoint_slope / timestep if timestep > 0 else float('inf')
                     center_step_phase_shift = p1.x() + (x_range_d) * (-phi_start / (2*math.pi)) # phase shift in time steps of a sine oscillating around y = 0
 
-                    all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'{center_step_phase_shift:.2f}':<11} | {num_cycles:<8.2f} | {f'{abs(amplitude):.4f}':<12} | {f'{period:.0f}':<12} | {f'{midpoint_slope:.4e}':<14} | {f'{midpoint_rate:.4e}':<15}")
+                    all_summaries.append(f"{j+1:<8} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<20} | {f'{center_step_phase_shift:.2f}':<11} | {num_cycles:<6.2f} | {f'{abs(amplitude):.4f}':<9} | {f'{period:.0f}':<7} | {f'{midpoint_slope:.4e}':<14} | {f'{midpoint_rate:.4e}':<15}")
 
             if idx < len(active_studies) - 1: all_summaries.append("")
 

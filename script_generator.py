@@ -585,7 +585,40 @@ class LammpsScriptGenerator:
             lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
         elif ensemble == "NPT":
             npt_aniso = ensemble_config.get("npt_aniso", "iso")
-            lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt)")
+            
+            if mode == "Deformation":
+                # NPT in Deformation mode requires decoupling the deformed axis/tilt from pressure control.
+                press_dims = ['x', 'y', 'z']
+                
+                # For tensile deformation, remove the deformed axis from pressure control
+                if not is_shear:
+                    if deform_axis in press_dims:
+                        press_dims.remove(deform_axis)
+                
+                npt_command_parts = []
+                for dim in press_dims:
+                    npt_command_parts.append(f"{dim} {pressure} {pressure} $({1000}*dt)")
+
+                # For triclinic/shear cases, add tilt factor control
+                # 'aniso' does not control tilt, 'tri' does. We must add tilt control if shearing,
+                # or if the user explicitly selected 'tri' for a tensile case.
+                if npt_aniso == 'tri' or is_shear:
+                    tilt_dims = ['xy', 'xz', 'yz']
+                    # If shearing, remove the sheared tilt factor from NPT control
+                    if is_shear and deform_axis in tilt_dims:
+                        tilt_dims.remove(deform_axis)
+                    
+                    for dim in tilt_dims:
+                        npt_command_parts.append(f"{dim} 0.0 0.0 $({1000}*dt)")
+
+                if npt_command_parts:
+                    lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_command_parts)}")
+                else: # Fallback if no dimensions are left to control (should not happen)
+                    lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
+
+            else: # Temperature mode (no deformation)
+                # Original logic is fine for non-deforming modes
+                lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt)")
 
         lines.append(f"run {int(duration)}")
         
@@ -600,6 +633,8 @@ class LammpsScriptGenerator:
         
         base_thermo_style = output_config.get("thermo_style", "step ...")
         thermo_style_parts = base_thermo_style.split()
+        ensemble_config = deform_study.get("ensemble", {})
+        pressure = self._format_float(ensemble_config.get("pressure", 1.0))
 
         # --- Define all possible strain/stress variables if in Deformation mode ---
         if mode == "Deformation":
@@ -620,9 +655,9 @@ class LammpsScriptGenerator:
                 "variable exy equal xy/v_L0y",
                 "variable exz equal xz/v_L0z",
                 "variable eyz equal yz/v_L0z",
-                "variable cauchy_xx equal -pxx",
-                "variable cauchy_yy equal -pyy",
-                "variable cauchy_zz equal -pzz",
+                f"variable cauchy_xx equal -(pxx-{pressure})",
+                f"variable cauchy_yy equal -(pyy-{pressure})",
+                f"variable cauchy_zz equal -(pzz-{pressure})",
                 "variable cauchy_xy equal -pxy",
                 "variable cauchy_xz equal -pxz",
                 "variable cauchy_yz equal -pyz",
