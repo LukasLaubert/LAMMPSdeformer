@@ -81,7 +81,7 @@ class LammpsScriptGenerator:
                 if not isinstance(study, dict):
                     return {"success": False, "message": f"Invalid deformation study at index {i}"}
                 
-                required_fields = ["name", "method", "strain_rate", "engineering_strain", "steps", "axis", "style_dir", "thermo_freq"]
+                required_fields = ["name", "points", "max_steps", "min_strain", "max_strain", "thermo_freq"]
                 for field in required_fields:
                     if field not in study:
                         return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
@@ -238,7 +238,7 @@ class LammpsScriptGenerator:
         """Generate the content of a LAMMPS input script"""
         try:
             system_config = self.config.get("system", {})
-            deform_config = self.config.get("deformation", {})
+            fixes_config = self.config.get("fixes", {})
             output_config = self.config.get("output", {})
             
             # Get units from config or read from data file
@@ -357,120 +357,56 @@ class LammpsScriptGenerator:
                         ""
                     ])
             
-            # Handle wall atoms for wall movement
-            method = deform_study.get("method", "fix_deform")
-            if method == "wall_movement":
-                wall_thickness = system_config.get("wall_thickness", 5.0)
-                axis = deform_study.get("axis", "x")
-                
-                script_lines.extend([
-                    "#------------------------",
-                    "# Wall atom handling",
-                    "#------------------------",
-                    f"# Define wall atoms (outer {wall_thickness}% of box in {axis} direction)",
-                    f"variable wall_thickness equal {wall_thickness/100.0}",
-                    f"# Get box dimensions for {axis} axis",
-                    f"variable box_{axis} equal bound_{axis}",
-                    f"variable wall_size equal v_wall_thickness*v_box_{axis}",
-                    "# Define wall regions for both sides",
-                    f"region wall_{axis}_pos block INF INF INF INF INF INF ${{v_box_{axis}}}-v_wall_size EDGE EDGE EDGE EDGE EDGE EDGE",
-                    f"region wall_{axis}_neg block INF INF INF INF INF INF 0.0 v_wall_size EDGE EDGE EDGE EDGE EDGE EDGE",
-                    "# Create wall atom groups",
-                    f"group wall_atoms_{axis}_pos region wall_{axis}_pos",
-                    f"group wall_atoms_{axis}_neg region wall_{axis}_neg",
-                    f"group wall_atoms union wall_atoms_{axis}_pos wall_atoms_{axis}_neg",
-                    f"group mobile_atoms subtract all wall_atoms",
-                    "# Exclude wall atoms from standard integration",
-                    "fix integrate mobile_atoms nve",
-                    ""
-                ])
-            
             # Deformation
-            deform_params = self.get_deformation_parameters(deform_study, system_config)
+            script_lines.extend([
+                "#------------------------",
+                "# Deformation",
+                "#------------------------"
+            ])
             
-            if deform_params:
-                if method == "fix_deform":
-                    script_lines.extend([
-                        "#------------------------",
-                        "# Deformation",
-                        "#------------------------",
-                        f"fix deform all deform 1 {deform_params['axis']} {deform_params['style']} {deform_params['rate']} remap x",
-                        ""
-                    ])
-                elif method == "wall_movement":
-                    script_lines.extend([
-                        "#------------------------",
-                        "# Wall movement",
-                        "#------------------------"
-                    ])
+            points = deform_study.get("points", [])
+            if len(points) > 1:
+                for i in range(len(points) - 1):
+                    p1 = points[i]
+                    p2 = points[i+1]
                     
-                    # Handle different wall directions
-                    direction = deform_params.get('direction', 'positive')
-                    velocity = deform_params.get('velocity', 0.01)
+                    # Segment details
+                    start_step = p1[0]
+                    end_step = p2[0]
+                    duration = end_step - start_step
                     
-                    if direction == 'symmetric':
-                        # Move both walls in opposite directions
-                        script_lines.extend([
-                            "# Symmetric wall movement - both walls moving",
-                            f"fix move_wall_pos wall_atoms_{axis}_pos move linear {velocity} 0.0 0.0",
-                            f"fix move_wall_neg wall_atoms_{axis}_neg move linear {-velocity} 0.0 0.0",
-                            ""
-                        ])
-                    elif direction == 'positive':
-                        # Move only positive wall
-                        if axis == 'x':
-                            script_lines.extend([
-                                "# Positive wall movement",
-                                f"fix move_wall_pos wall_atoms_{axis}_pos move linear {velocity} 0.0 0.0",
-                                ""
-                            ])
-                        elif axis == 'y':
-                            script_lines.extend([
-                                "# Positive wall movement",
-                                f"fix move_wall_pos wall_atoms_{axis}_pos move linear 0.0 {velocity} 0.0",
-                                ""
-                            ])
-                        else:  # z axis
-                            script_lines.extend([
-                                "# Positive wall movement",
-                                f"fix move_wall_pos wall_atoms_{axis}_pos move linear 0.0 0.0 {velocity}",
-                                ""
-                            ])
-                    else:  # negative direction
-                        # Move only negative wall
-                        if axis == 'x':
-                            script_lines.extend([
-                                "# Negative wall movement",
-                                f"fix move_wall_neg wall_atoms_{axis}_neg move linear {-velocity} 0.0 0.0",
-                                ""
-                            ])
-                        elif axis == 'y':
-                            script_lines.extend([
-                                "# Negative wall movement",
-                                f"fix move_wall_neg wall_atoms_{axis}_neg move linear 0.0 {-velocity} 0.0",
-                                ""
-                            ])
-                        else:  # z axis
-                            script_lines.extend([
-                                "# Negative wall movement",
-                                f"fix move_wall_neg wall_atoms_{axis}_neg move linear 0.0 0.0 {-velocity}",
-                                ""
-                            ])
-            else:
-                script_lines.extend([
-                    "#------------------------",
-                    "# Deformation (skipped - invalid parameters)",
-                    "#------------------------",
-                    "# Invalid deformation parameters",
-                    ""
-                ])
-            
+                    if duration <= 0:
+                        continue
+
+                    start_strain = p1[1]
+                    end_strain = p2[1]
+
+                    strain_change = end_strain - start_strain
+
+                    # Strain rate in 1/time units
+                    strain_rate = strain_change / (duration * timestep) if (duration * timestep) > 0 else 0
+
+                    script_lines.append(f"# --- Segment {i+1}: from step {start_step} to {end_step} ---")
+
+                    # Unfix previous deform fix if it exists
+                    if i > 0:
+                        script_lines.append("unfix deform")
+
+                    # Apply new deform fix if strain rate is not zero
+                    if abs(strain_rate) > 1e-9:
+                        script_lines.append(f"fix deform all deform 1 x erate {strain_rate} remap x")
+                    else:
+                        script_lines.append("# Relaxation segment (zero strain rate)")
+
+                    script_lines.append(f"run {int(duration)}")
+                    script_lines.append("")
+
             # Bond breakage if enabled
-            if deform_config.get("enable_bond_breakage", False):
-                nevery = deform_config.get("nevery", 1)
-                bondtype = deform_config.get("bondtype", 1)
-                rmax = deform_config.get("rmax", 1.5)
-                enable_prob = deform_config.get("enable_prob", False)
+            if fixes_config.get("enable_bond_breakage", False):
+                nevery = fixes_config.get("nevery", 1)
+                bondtype = fixes_config.get("bondtype", 1)
+                rmax = fixes_config.get("rmax", 1.5)
+                enable_prob = fixes_config.get("enable_prob", False)
                 
                 # Build bond break command
                 bond_break_cmd = f"fix break_all all bond/break {nevery} {bondtype} {rmax}"
@@ -550,15 +486,6 @@ class LammpsScriptGenerator:
                         ""
                     ])
             
-            # Run simulation
-            run_steps = deform_study.get("steps", 10000)
-            script_lines.extend([
-                "#------------------------",
-                "# Run simulation",
-                "#------------------------",
-                f"run {run_steps}"
-            ])
-            
             # Combine all parts
             full_script = "\n".join(script_lines)
             
@@ -566,67 +493,6 @@ class LammpsScriptGenerator:
             
         except Exception as e:
             return f"# Error generating script content: {str(e)}"
-        
-    def get_deformation_parameters(self, deform_study, system_config):
-        """Get deformation parameters based on study configuration"""
-        method = deform_study.get("method", "fix_deform")
-        axis = deform_study.get("axis", "x")
-        style_dir = deform_study.get("style_dir", "final")
-        steps = deform_study.get("steps", 10000)
-        
-        use_strain_rate = self.config.get("multistudy", {}).get("use_strain_rate", True)
-        rate_strain = deform_study.get("rate_strain", 0.001)
-        
-        if method == "fix_deform":
-            if use_strain_rate:
-                # Use strain rate directly
-                return {
-                    'rate': rate_strain,
-                    'axis': axis,
-                    'style': style_dir
-                }
-            else:
-                # Use engineering strain - calculate equivalent rate
-                # For engineering strain: rate = strain / time
-                timestep = system_config.get("timestep", 0.001)
-                time = steps * timestep
-                
-                if time > 0:
-                    rate = rate_strain / time
-                else:
-                    rate = 0.001
-                    
-                return {
-                    'rate': rate,
-                    'axis': axis,
-                    'style': style_dir
-                }
-                    
-        elif method == "wall_movement":
-            # Get the new parameter structure
-            strain_rate = deform_study.get("strain_rate", 0.001)
-            engineering_strain = deform_study.get("engineering_strain", 0.1)
-            steps = deform_study.get("steps", 100)
-            axis = deform_study.get("axis", "x")
-            direction = deform_study.get("style_dir", "positive")
-            
-            # Calculate wall velocity based on strain rate
-            # For wall movement: velocity = (strain_rate * box_length) 
-            # We'll use a reasonable box length estimate, but this could be improved
-            # by reading actual box dimensions from the data file
-            estimated_box_length = 100.0  # Default estimate in Angstroms
-            timestep = system_config.get("timestep", 0.001)
-            
-            # Calculate velocity in distance/timestep units
-            velocity = strain_rate * estimated_box_length * timestep
-            
-            return {
-                'velocity': velocity,
-                'axis': axis,
-                'direction': direction
-            }
-        
-        return None
         
     def generate_execution_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
         """Generate execution script for sequential multi-system processing"""

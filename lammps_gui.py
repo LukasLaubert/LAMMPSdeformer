@@ -65,6 +65,12 @@ try:
 except ImportError as e:
     ScriptGen = None
 
+# Import the new graph widgets
+try:
+    from graph_widgets import DeformationTab
+except ImportError as e:
+    DeformationTab = None
+
 class NumericTableWidgetItem(QTableWidgetItem):
     """Custom table widget item that validates numeric input"""
     
@@ -133,6 +139,7 @@ class LammpsScriptGenerator(QMainWindow):
         # Create tabs
         self.create_system_tab()
         self.create_deformation_tab()
+        self.create_fixes_tab()
         self.create_output_tab()
         
         # Create bottom buttons
@@ -303,20 +310,45 @@ class LammpsScriptGenerator(QMainWindow):
         self.units_combo.setCurrentText("metal")
         self.units_combo.setToolTip("Select the unit system for the simulation")
         
-        self.timestep_display = QLabel("Timestep unit: ps")
-        self.timestep_display.setToolTip("Timestep unit based on selected units system")
-        
         # Update timestep display when units change
-        self.units_combo.currentTextChanged.connect(self.update_timestep_display)
+        self.units_combo.currentTextChanged.connect(self.update_units_display)
         
         units_layout.addWidget(units_label)
         units_layout.addWidget(self.units_combo)
-        units_layout.addWidget(self.timestep_display)
         units_layout.addStretch()
         
         units_group.setLayout(units_layout)
         scroll_layout.addWidget(units_group)
         
+        # Timestep settings
+        timestep_group = QGroupBox("Timestep Settings")
+        timestep_layout = QHBoxLayout()
+
+        self.timestep = QDoubleSpinBox()
+        self.timestep.setRange(0.0001, 1.0)
+        self.timestep.setValue(0.001)
+        self.timestep.setSingleStep(0.0001)
+        self.timestep.setDecimals(4)
+        self.timestep.setToolTip("Integration timestep for the simulation")
+
+        self.timestep_unit_label = QLabel("ps")
+
+        timestep_label = QLabel("Timestep:")
+        timestep_label.setStyleSheet("color: blue; text-decoration: underline;")
+        try:
+            timestep_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        except AttributeError:
+            pass
+        timestep_label.mousePressEvent = lambda e: self.open_lammps_doc("timestep")
+        timestep_label.setToolTip("Click to open LAMMPS timestep documentation")
+
+        timestep_layout.addWidget(timestep_label)
+        timestep_layout.addWidget(self.timestep)
+        timestep_layout.addWidget(self.timestep_unit_label)
+        timestep_layout.addStretch()
+        timestep_group.setLayout(timestep_layout)
+        scroll_layout.addWidget(timestep_group)
+
         # Boundary conditions
         boundary_group = QGroupBox("Boundary Conditions")
         boundary_layout = QFormLayout()
@@ -379,6 +411,12 @@ class LammpsScriptGenerator(QMainWindow):
         self.pressure.setEnabled(False)  # Only enabled for NPT
         self.pressure.setToolTip("Target pressure for NPT ensemble")
         
+        self.pressure_unit_label = QLabel("atm")
+
+        pressure_layout = QHBoxLayout()
+        pressure_layout.addWidget(self.pressure)
+        pressure_layout.addWidget(self.pressure_unit_label)
+
         ensemble_label = QLabel("Ensemble:")
         ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
         try:
@@ -391,7 +429,7 @@ class LammpsScriptGenerator(QMainWindow):
         ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
         ensemble_layout.addRow("Initial Temperature:", self.temp_init)
         ensemble_layout.addRow("Final Temperature:", self.temp_end)
-        ensemble_layout.addRow("Pressure (NPT only):", self.pressure)
+        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
         ensemble_group.setLayout(ensemble_layout)
         scroll_layout.addWidget(ensemble_group)
         
@@ -474,36 +512,92 @@ class LammpsScriptGenerator(QMainWindow):
         neighbor_group.setLayout(neighbor_layout)
         scroll_layout.addWidget(neighbor_group)
         
-        # Timestep settings
-        timestep_group = QGroupBox("Timestep Settings")
-        timestep_layout = QFormLayout()
-        
-        self.timestep = QDoubleSpinBox()
-        self.timestep.setRange(0.0001, 1.0)
-        self.timestep.setValue(0.001)
-        self.timestep.setSingleStep(0.0001)
-        self.timestep.setDecimals(4)
-        self.timestep.setToolTip("Integration timestep for the simulation")
-        
-        timestep_label = QLabel("Timestep:")
-        timestep_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            timestep_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        timestep_label.mousePressEvent = lambda e: self.open_lammps_doc("timestep")
-        timestep_label.setToolTip("Click to open LAMMPS timestep documentation")
-        
-        timestep_layout.addRow(timestep_label, self.timestep)
-        timestep_group.setLayout(timestep_layout)
-        scroll_layout.addWidget(timestep_group)
-        
         # Connect ensemble combo box signal
         self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
+    def create_fixes_tab(self):
+        """Create the fixes tab"""
+        self.fixes_tab = QWidget()
+        self.tab_widget.addTab(self.fixes_tab, "Fixes")
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll.setWidget(scroll_widget)
+
+        fixes_layout = QVBoxLayout(self.fixes_tab)
+        fixes_layout.addWidget(scroll)
+
+        # Bond breakage settings
+        bond_breakage_group = QGroupBox("Bond Breakage Settings")
+        bond_breakage_layout = QVBoxLayout()
+
+        self.enable_bond_breakage = QCheckBox("Enable Bond Breakage")
+        self.enable_bond_breakage.setToolTip("Enable bond breakage during deformation simulation")
+        self.enable_bond_breakage.stateChanged.connect(self.toggle_bond_breakage_settings)
+
+        bond_breakage_form_layout = QFormLayout()
+
+        # Nevery parameter
+        self.nevery = QSpinBox()
+        self.nevery.setRange(1, 1000000)
+        self.nevery.setValue(1)
+        self.nevery.setEnabled(False)
+        self.nevery.setToolTip("Attempt bond breaking every this many steps")
+
+        # Bond type
+        self.bondtype = QSpinBox()
+        self.bondtype.setRange(1, 100)
+        self.bondtype.setValue(1)
+        self.bondtype.setEnabled(False)
+        self.bondtype.setToolTip("Type of bonds to break (integer or type label)")
+
+        # Rmax parameter
+        self.rmax = QDoubleSpinBox()
+        self.rmax.setRange(0, 1000)
+        self.rmax.setValue(1.5)
+        self.rmax.setSingleStep(0.1)
+        self.rmax.setEnabled(False)
+        self.rmax.setToolTip("Bond longer than Rmax can break (distance units)")
+
+        # Probability options
+        self.enable_prob = QCheckBox("Enable Probability")
+        self.enable_prob.setChecked(False)
+        self.enable_prob.setEnabled(False)
+        self.enable_prob.setToolTip("Enable probabilistic bond breakage")
+        self.enable_prob.stateChanged.connect(self.toggle_probability_settings)
+
+        self.prob_fraction = QDoubleSpinBox()
+        self.prob_fraction.setRange(0, 1)
+        self.prob_fraction.setValue(0.1)
+        self.prob_fraction.setSingleStep(0.01)
+        self.prob_fraction.setEnabled(False)
+        self.prob_fraction.setToolTip("Break a bond with this probability if otherwise eligible")
+
+        self.prob_seed = QSpinBox()
+        self.prob_seed.setRange(1, 1000000)
+        self.prob_seed.setValue(12345)
+        self.prob_seed.setEnabled(False)
+        self.prob_seed.setToolTip("Random number seed (positive integer)")
+
+        bond_breakage_form_layout.addRow("Nevery:", self.nevery)
+        bond_breakage_form_layout.addRow("Bond Type:", self.bondtype)
+        bond_breakage_form_layout.addRow("Rmax:", self.rmax)
+        bond_breakage_form_layout.addRow(self.enable_prob)
+        bond_breakage_form_layout.addRow("Probability:", self.prob_fraction)
+        bond_breakage_form_layout.addRow("Seed:", self.prob_seed)
+
+        bond_breakage_layout.addWidget(self.enable_bond_breakage)
+        bond_breakage_layout.addLayout(bond_breakage_form_layout)
+        bond_breakage_group.setLayout(bond_breakage_layout)
+        scroll_layout.addWidget(bond_breakage_group)
+
+        scroll_layout.addStretch()
+
     def toggle_ensemble_settings(self, ensemble):
         """Toggle pressure field based on ensemble selection"""
         self.pressure.setEnabled(ensemble == "NPT")
@@ -646,23 +740,24 @@ class LammpsScriptGenerator(QMainWindow):
             print(f"Error reading atom style from data file: {e}")
         return None
             
-    def update_timestep_display(self, units):
-        """Update timestep unit display based on selected units"""
-        # Timestep units from LAMMPS documentation as specified by user
+    def update_units_display(self, units):
+        """Update unit displays based on selected units"""
         timestep_units = {
-            "lj": "τ",
-            "real": "fs", 
-            "metal": "ps", 
-            "si": "s",
-            "cgs": "s",
-            "electron": "fs",
-            "micro": "µs",
-            "nano": "ns"
+            "lj": "τ", "real": "fs", "metal": "ps", "si": "s",
+            "cgs": "s", "electron": "fs", "micro": "µs", "nano": "ns"
+        }
+        pressure_units = {
+            "lj": "pressure*", "real": "atm", "metal": "bars", "si": "Pa",
+            "cgs": "dyne/cm^2", "electron": "bars", "micro": "atm", "nano": "atm"
         }
         
-        unit = timestep_units.get(units.lower(), "ps")
-        self.timestep_display.setText(f"Timestep unit: {unit}")
+        self.timestep_unit_label.setText(timestep_units.get(units.lower(), "ps"))
+        self.pressure_unit_label.setText(pressure_units.get(units.lower(), "atm"))
         
+        # Update deformation tab graphs
+        if hasattr(self, 'deformation_tab_widget'):
+            self.deformation_tab_widget.update_all_graphs(self.timestep.value(), units)
+
         # Update the actual timestep value (keep default values)
         if units == "lj":
             self.timestep.setValue(0.005)
@@ -682,201 +777,23 @@ class LammpsScriptGenerator(QMainWindow):
             self.timestep.setValue(0.00045)
         
     def create_deformation_tab(self):
-        """Create the deformation processing tab with table-based approach"""
+        """Create the deformation processing tab with the graphical UI"""
         self.deformation_tab = QWidget()
         self.tab_widget.addTab(self.deformation_tab, "Deformation Processing")
         
-        # Create scroll area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
-        scroll.setWidget(scroll_widget)
-        
-        # Main layout for deformation tab
         deformation_layout = QVBoxLayout(self.deformation_tab)
-        deformation_layout.addWidget(scroll)
         
-        # Deformation input mode
-        input_group = QGroupBox("Deformation Input Mode")
-        input_layout = QVBoxLayout()
-        
-        # Add explanation label
-        explanation_label = QLabel("Select which parameter to calculate automatically:")
-        explanation_label.setWordWrap(True)
-        input_layout.addWidget(explanation_label)
-        
-        # Radio buttons for calculation mode
-        calc_mode_layout = QHBoxLayout()
-        
-        self.calc_strain_rate = QRadioButton("Calculate Strain Rate")
-        self.calc_engineering_strain = QRadioButton("Calculate Engineering Strain")
-        self.calc_steps = QRadioButton("Calculate Steps")
-        self.calc_engineering_strain.setChecked(True)  # Default to calculating engineering strain
-        
-        self.calc_strain_rate.setToolTip("Input Engineering Strain and Steps, calculate Strain Rate")
-        self.calc_engineering_strain.setToolTip("Input Strain Rate and Steps, calculate Engineering Strain")
-        self.calc_steps.setToolTip("Input Strain Rate and Engineering Strain, calculate Steps")
-        
-        calc_mode_layout.addWidget(self.calc_strain_rate)
-        calc_mode_layout.addWidget(self.calc_engineering_strain)
-        calc_mode_layout.addWidget(self.calc_steps)
-        
-        input_layout.addLayout(calc_mode_layout)
-        
-        # Add formula explanation
-        formula_label = QLabel("Formula: Strain Rate = Engineering Strain / Steps")
-        formula_label.setStyleSheet("font-style: italic; color: gray;")
-        formula_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        input_layout.addWidget(formula_label)
-        
-        input_group.setLayout(input_layout)
-        scroll_layout.addWidget(input_group)
+        if DeformationTab is None:
+            label = QLabel("Error: DeformationTab could not be imported from graph_widgets.py")
+            deformation_layout.addWidget(label)
+            return
+
+        self.deformation_tab_widget = DeformationTab(self)
+        deformation_layout.addWidget(self.deformation_tab_widget)
         
         # Connect signals
-        self.calc_strain_rate.toggled.connect(self.update_deformation_table_headers)
-        self.calc_engineering_strain.toggled.connect(self.update_deformation_table_headers)
-        self.calc_steps.toggled.connect(self.update_deformation_table_headers)
-        
-        # Deformation studies table
-        studies_group = QGroupBox("Deformation Studies")
-        studies_layout = QVBoxLayout()
-        
-        # Add documentation link for fix deform
-        fix_deform_label = QLabel("Deformation Methods Documentation:")
-        fix_deform_label.setStyleSheet("color: blue; text-decoration: underline; font-size: 10px;")
-        try:
-            fix_deform_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        fix_deform_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_deform")
-        fix_deform_label.setToolTip("Click to open LAMMPS fix deform documentation")
-        studies_layout.addWidget(fix_deform_label)
-        
-        self.studies_table = QTableWidget()
-        self.update_deformation_table_headers()
-        self.studies_table.horizontalHeader().setStretchLastSection(True)
-        self.studies_table.setMaximumHeight(300)
-        self.studies_table.setToolTip("Table of deformation studies to process")
-        
-        # Connect cellChanged signal for auto-calculation
-        self.studies_table.cellChanged.connect(self.on_table_cell_changed)
-        
-        # Add sample data
-        self.studies_table.setRowCount(2)
-        self.add_sample_study_data(0, "study1", "fix_deform", "0.001", "0.1", "100", "x", "final", "100")
-        self.add_sample_study_data(1, "study2", "wall_movement", "0.0001", "0.2", "2000", "y", "positive", "200")
-        
-        studies_buttons_layout = QHBoxLayout()
-        
-        self.add_study_button = QPushButton("Add Study")
-        self.add_study_button.clicked.connect(self.add_deformation_study)
-        self.add_study_button.setToolTip("Add a new deformation study")
-        
-        self.remove_study_button = QPushButton("Remove Study")
-        self.remove_study_button.clicked.connect(self.remove_deformation_study)
-        self.remove_study_button.setToolTip("Remove selected deformation study")
-        
-        studies_buttons_layout.addWidget(self.add_study_button)
-        studies_buttons_layout.addWidget(self.remove_study_button)
-        studies_buttons_layout.addStretch()
-        
-        studies_layout.addWidget(self.studies_table)
-        studies_layout.addLayout(studies_buttons_layout)
-        studies_group.setLayout(studies_layout)
-        scroll_layout.addWidget(studies_group)
-        
-        # Multi-system processing settings
-        # Wall settings for wall movement
-        wall_settings_group = QGroupBox("Wall Settings (for Wall Movement)")
-        wall_settings_layout = QFormLayout()
-        
-        self.wall_thickness = QDoubleSpinBox()
-        self.wall_thickness.setRange(0.1, 50.0)
-        self.wall_thickness.setValue(5.0)
-        self.wall_thickness.setSingleStep(1.0)
-        self.wall_thickness.setDecimals(1)
-        self.wall_thickness.setToolTip("Wall thickness as percentage of box size in deformation direction")
-        
-        wall_settings_label = QLabel("Wall Thickness (%):")
-        wall_settings_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            wall_settings_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        wall_settings_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_wall")
-        wall_settings_label.setToolTip("Click to open LAMMPS fix_wall documentation")
-        
-        wall_settings_layout.addRow(wall_settings_label, self.wall_thickness)
-        wall_settings_group.setLayout(wall_settings_layout)
-        scroll_layout.addWidget(wall_settings_group)
-        
-        # Bond breakage settings
-        bond_breakage_group = QGroupBox("Bond Breakage Settings")
-        bond_breakage_layout = QVBoxLayout()
-        
-        self.enable_bond_breakage = QCheckBox("Enable Bond Breakage")
-        self.enable_bond_breakage.setToolTip("Enable bond breakage during deformation simulation")
-        self.enable_bond_breakage.stateChanged.connect(self.toggle_bond_breakage_settings)
-        
-        bond_breakage_form_layout = QFormLayout()
-        
-        # Nevery parameter
-        self.nevery = QSpinBox()
-        self.nevery.setRange(1, 1000000)
-        self.nevery.setValue(1)
-        self.nevery.setEnabled(False)
-        self.nevery.setToolTip("Attempt bond breaking every this many steps")
-        
-        # Bond type
-        self.bondtype = QSpinBox()
-        self.bondtype.setRange(1, 100)
-        self.bondtype.setValue(1)
-        self.bondtype.setEnabled(False)
-        self.bondtype.setToolTip("Type of bonds to break (integer or type label)")
-        
-        # Rmax parameter
-        self.rmax = QDoubleSpinBox()
-        self.rmax.setRange(0, 1000)
-        self.rmax.setValue(1.5)
-        self.rmax.setSingleStep(0.1)
-        self.rmax.setEnabled(False)
-        self.rmax.setToolTip("Bond longer than Rmax can break (distance units)")
-        
-        # Probability options
-        self.enable_prob = QCheckBox("Enable Probability")
-        self.enable_prob.setChecked(False)
-        self.enable_prob.setEnabled(False)
-        self.enable_prob.setToolTip("Enable probabilistic bond breakage")
-        self.enable_prob.stateChanged.connect(self.toggle_probability_settings)
-        
-        self.prob_fraction = QDoubleSpinBox()
-        self.prob_fraction.setRange(0, 1)
-        self.prob_fraction.setValue(0.1)
-        self.prob_fraction.setSingleStep(0.01)
-        self.prob_fraction.setEnabled(False)
-        self.prob_fraction.setToolTip("Break a bond with this probability if otherwise eligible")
-        
-        self.prob_seed = QSpinBox()
-        self.prob_seed.setRange(1, 1000000)
-        self.prob_seed.setValue(12345)
-        self.prob_seed.setEnabled(False)
-        self.prob_seed.setToolTip("Random number seed (positive integer)")
-        
-        bond_breakage_form_layout.addRow("Nevery:", self.nevery)
-        bond_breakage_form_layout.addRow("Bond Type:", self.bondtype)
-        bond_breakage_form_layout.addRow("Rmax:", self.rmax)
-        bond_breakage_form_layout.addRow(self.enable_prob)
-        bond_breakage_form_layout.addRow("Probability:", self.prob_fraction)
-        bond_breakage_form_layout.addRow("Seed:", self.prob_seed)
-        
-        bond_breakage_layout.addWidget(self.enable_bond_breakage)
-        bond_breakage_layout.addLayout(bond_breakage_form_layout)
-        bond_breakage_group.setLayout(bond_breakage_layout)
-        scroll_layout.addWidget(bond_breakage_group)
-        
-        # Add stretch to push everything up
-        scroll_layout.addStretch()
+        self.timestep.valueChanged.connect(lambda val: self.deformation_tab_widget.update_all_graphs(val, self.units_combo.currentText()))
+        self.units_combo.currentTextChanged.connect(lambda text: self.deformation_tab_widget.update_all_graphs(self.timestep.value(), text))
         
     def update_deformation_table_headers(self):
         """Update table headers and column states based on calculation mode"""
@@ -1692,8 +1609,7 @@ class LammpsScriptGenerator(QMainWindow):
                 "neigh_modify_check": self.neigh_modify_check.isChecked(),
                 "timestep": self.timestep.value()
             },
-            "deformation": {
-                "wall_thickness": self.wall_thickness.value(),
+            "fixes": {
                 "enable_bond_breakage": self.enable_bond_breakage.isChecked(),
                 "nevery": self.nevery.value(),
                 "bondtype": self.bondtype.value(),
@@ -1735,41 +1651,28 @@ class LammpsScriptGenerator(QMainWindow):
             }
         }
         
-        # Collect deformation studies
-        for row in range(self.studies_table.rowCount()):
-            try:
-                # Get basic study info
-                name_item = self.studies_table.item(row, 0)
-                method_combo = self.studies_table.cellWidget(row, 1)
-                strain_rate_item = self.studies_table.item(row, 2)
-                eng_strain_item = self.studies_table.item(row, 3)
-                steps_item = self.studies_table.item(row, 4)
-                axis_combo = self.studies_table.cellWidget(row, 5)
-                style_combo = self.studies_table.cellWidget(row, 6)
-                thermo_item = self.studies_table.item(row, 7)
+        # Collect deformation studies from the graphical UI
+        if hasattr(self, 'deformation_tab_widget'):
+            for i in range(self.deformation_tab_widget.tab_widget.count()):
+                study_widget = self.deformation_tab_widget.tab_widget.widget(i)
+                study_name = self.deformation_tab_widget.tab_widget.tabText(i)
                 
-                # Validate all required items exist
-                if not all([name_item, method_combo, strain_rate_item, eng_strain_item, 
-                           steps_item, axis_combo, style_combo, thermo_item]):
-                    print(f"Warning: Missing data in row {row}, skipping")
-                    continue
+                # Get the points from the graph
+                points = study_widget.graph_widget.get_data_points()
                 
+                # Convert QPointF to a serializable format (list of lists)
+                serializable_points = [[p.x(), p.y()] for p in points]
+
                 study = {
-                    "name": name_item.text(),
-                    "method": method_combo.currentText(),
-                    "strain_rate": float(strain_rate_item.text()),
-                    "engineering_strain": float(eng_strain_item.text()),
-                    "steps": int(steps_item.text()),
-                    "axis": axis_combo.currentText(),
-                    "style_dir": style_combo.currentText(),
-                    "thermo_freq": int(thermo_item.text())
+                    "name": study_name,
+                    "points": serializable_points,
+                    "max_steps": study_widget.max_steps_spinbox.value(),
+                    "min_strain": study_widget.min_strain_spinbox.value(),
+                    "max_strain": study_widget.max_strain_spinbox.value(),
+                    "thermo_freq": study_widget.thermo_freq_spinbox.value()
                 }
                 config["multistudy"]["deform_studies"].append(study)
-                
-            except (ValueError, AttributeError) as e:
-                print(f"Warning: Invalid data in row {row}: {e}, skipping")
-                continue
-        
+
         return config
     
     def load_settings(self):
@@ -1803,15 +1706,14 @@ class LammpsScriptGenerator(QMainWindow):
             self.neigh_modify_check.setChecked(self.settings.value("system/neigh_modify_check", True, type=bool))
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
             
-            # Deformation settings
-            self.wall_thickness.setValue(self.settings.value("deformation/wall_thickness", 5.0, type=float))
-            self.enable_bond_breakage.setChecked(self.settings.value("deformation/enable_bond_breakage", False, type=bool))
-            self.nevery.setValue(self.settings.value("deformation/nevery", 1, type=int))
-            self.bondtype.setValue(self.settings.value("deformation/bondtype", 1, type=int))
-            self.rmax.setValue(self.settings.value("deformation/rmax", 1.5, type=float))
-            self.enable_prob.setChecked(self.settings.value("deformation/enable_prob", False, type=bool))
-            self.prob_fraction.setValue(self.settings.value("deformation/prob_fraction", 0.1, type=float))
-            self.prob_seed.setValue(self.settings.value("deformation/prob_seed", 12345, type=int))
+            # Fixes settings
+            self.enable_bond_breakage.setChecked(self.settings.value("fixes/enable_bond_breakage", False, type=bool))
+            self.nevery.setValue(self.settings.value("fixes/nevery", 1, type=int))
+            self.bondtype.setValue(self.settings.value("fixes/bondtype", 1, type=int))
+            self.rmax.setValue(self.settings.value("fixes/rmax", 1.5, type=float))
+            self.enable_prob.setChecked(self.settings.value("fixes/enable_prob", False, type=bool))
+            self.prob_fraction.setValue(self.settings.value("fixes/prob_fraction", 0.1, type=float))
+            self.prob_seed.setValue(self.settings.value("fixes/prob_seed", 12345, type=int))
             
             # Output settings
             self.output_path_edit.setText(self.settings.value("output/output_path", ""))
@@ -1841,27 +1743,32 @@ class LammpsScriptGenerator(QMainWindow):
             # self.save_scripts_only.setChecked(self.settings.value("cluster/save_scripts_only", False, type=bool))
             
             # Multi-study settings
-            
-            # Load deformation studies
-            studies_data = self.settings.value("multistudy/deform_studies")
-            if studies_data:
-                try:
-                    studies = json.loads(studies_data)
-                    self.studies_table.setRowCount(len(studies))
-                    for i, study in enumerate(studies):
-                        self.add_sample_study_data(
-                            i, study.get("name", f"study{i+1}"),
-                            study.get("method", "fix_deform"),
-                            str(study.get("strain_rate", 0.001)),
-                            str(study.get("engineering_strain", 0.1)),
-                            str(study.get("steps", 100)),
-                            study.get("axis", "x"),
-                            study.get("style_dir", "final"),
-                            str(study.get("thermo_freq", 100))
-                        )
-                except Exception as e:
-                    print(f"Error loading deformation studies: {e}")
-            
+            if hasattr(self, 'deformation_tab_widget'):
+                studies_data = self.settings.value("multistudy/deform_studies")
+                if studies_data:
+                    try:
+                        studies = json.loads(studies_data)
+                        # Clear existing tabs
+                        while self.deformation_tab_widget.tab_widget.count() > 0:
+                            self.deformation_tab_widget.tab_widget.removeTab(0)
+
+                        for i, study in enumerate(studies):
+                            self.deformation_tab_widget._add_study(is_first=(i==0))
+                            study_widget = self.deformation_tab_widget.tab_widget.widget(i)
+                            self.deformation_tab_widget.tab_widget.setTabText(i, study.get("name", f"Study {i+1}"))
+
+                            # Restore the state of the study widget
+                            state = {
+                                'points_norm': [QPointF(p[0], p[1]) for p in study.get("points", [])],
+                                'max_steps': study.get("max_steps", 100),
+                                'min_strain': study.get("min_strain", 0.0),
+                                'max_strain': study.get("max_strain", 1.0),
+                                'thermo_freq': study.get("thermo_freq", 100)
+                            }
+                            study_widget.set_state(state)
+                    except Exception as e:
+                        print(f"Error loading deformation studies: {e}")
+
         except Exception as e:
             print(f"Error loading settings: {e}")
     
@@ -1874,9 +1781,9 @@ class LammpsScriptGenerator(QMainWindow):
             for key, value in config["system"].items():
                 self.settings.setValue(f"system/{key}", value)
             
-            # Save deformation settings
-            for key, value in config["deformation"].items():
-                self.settings.setValue(f"deformation/{key}", value)
+            # Save fixes settings
+            for key, value in config["fixes"].items():
+                self.settings.setValue(f"fixes/{key}", value)
             
             # Save output settings
             for key, value in config["output"].items():
@@ -2030,17 +1937,17 @@ class LammpsScriptGenerator(QMainWindow):
                 self.timestep.setValue(system.get("timestep", 0.001))
             
             # Deformation configuration
-            if "deformation" in config:
-                deformation = config["deformation"]
-                self.wall_thickness.setValue(deformation.get("wall_thickness", 5.0))
-                self.enable_bond_breakage.setChecked(deformation.get("enable_bond_breakage", False))
-                self.nevery.setValue(deformation.get("nevery", 1))
-                self.bondtype.setValue(deformation.get("bondtype", 1))
-                self.rmax.setValue(deformation.get("rmax", 1.5))
-                self.enable_prob.setChecked(deformation.get("enable_prob", False))
-                self.prob_fraction.setValue(deformation.get("prob_fraction", 0.1))
-                self.prob_seed.setValue(deformation.get("prob_seed", 12345))
-            
+            # Fixes configuration
+            if "fixes" in config:
+                fixes = config["fixes"]
+                self.enable_bond_breakage.setChecked(fixes.get("enable_bond_breakage", False))
+                self.nevery.setValue(fixes.get("nevery", 1))
+                self.bondtype.setValue(fixes.get("bondtype", 1))
+                self.rmax.setValue(fixes.get("rmax", 1.5))
+                self.enable_prob.setChecked(fixes.get("enable_prob", False))
+                self.prob_fraction.setValue(fixes.get("prob_fraction", 0.1))
+                self.prob_seed.setValue(fixes.get("prob_seed", 12345))
+
             # Output configuration
             if "output" in config:
                 output = config["output"]
@@ -2073,24 +1980,28 @@ class LammpsScriptGenerator(QMainWindow):
                 # self.save_scripts_only.setChecked(cluster.get("save_scripts_only", False))
             
             # Multi-study configuration
-            if "multistudy" in config:
+            if "multistudy" in config and hasattr(self, 'deformation_tab_widget'):
                 multistudy = config["multistudy"]
-                
-                # Load deformation studies
                 studies = multistudy.get("deform_studies", [])
-                self.studies_table.setRowCount(len(studies))
-                for i, study in enumerate(studies):
-                    self.add_sample_study_data(
-                        i, study.get("name", f"study{i+1}"),
-                        study.get("method", "fix_deform"),
-                        str(study.get("strain_rate", 0.001)),
-                        str(study.get("engineering_strain", 0.1)),
-                        str(study.get("steps", 100)),
-                        study.get("axis", "x"),
-                        study.get("style_dir", "final"),
-                        str(study.get("thermo_freq", 100))
-                    )
-            
+
+                # Clear existing tabs
+                while self.deformation_tab_widget.tab_widget.count() > 0:
+                    self.deformation_tab_widget.tab_widget.removeTab(0)
+
+                for i, study_data in enumerate(studies):
+                    self.deformation_tab_widget._add_study(is_first=(i==0))
+                    study_widget = self.deformation_tab_widget.tab_widget.widget(i)
+                    self.deformation_tab_widget.tab_widget.setTabText(i, study_data.get("name", f"Study {i+1}"))
+
+                    state = {
+                        'points_norm': [QPointF(p[0], p[1]) for p in study_data.get("points", [])],
+                        'max_steps': study_data.get("max_steps", 100),
+                        'min_strain': study_data.get("min_strain", 0.0),
+                        'max_strain': study_data.get("max_strain", 1.0),
+                        'thermo_freq': study_data.get("thermo_freq", 100)
+                    }
+                    study_widget.set_state(state)
+
         except Exception as e:
             print(f"Error applying configuration: {e}")
 
