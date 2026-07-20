@@ -410,36 +410,88 @@ class LammpsScriptGenerator:
             fixes_computes_lines = []
             
             thermo_style = output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
-            time_averaged_thermo_style = output_config.get("time_averaged_thermo_style", "")
+            averaged_quantities = output_config.get("averaged_quantities", [])
+            avg_nevery = output_config.get("avg_nevery", 1)
             thermo_output_freq = output_config.get("thermo_freq", 100)
             mode = deform_study.get("mode", "Deformation")
             deform_axis = deform_study.get("deform_axis", "x")
 
-            if time_averaged_thermo_style:
-                nevery = 1
-                nrepeat = thermo_output_freq
+            if averaged_quantities:
+                nevery = avg_nevery
+                if nevery <= 0: nevery = 1
                 nfreq = thermo_output_freq
+                if nfreq < nevery: nfreq = nevery
+                nrepeat = nfreq // nevery
 
-                avg_quantities = time_averaged_thermo_style.split()
-                for qty in avg_quantities:
-                    fixes_computes_lines.append(f"fix avg_{qty} all ave/time {nevery} {nrepeat} {nfreq} {qty}")
-                    fixes_computes_lines.append(f"variable {qty}_avg equal f_avg_{qty}")
-                    thermo_style += f" v_{qty}_avg"
+                computes_defined = set()
+                thermo_avg_keywords = []
+                
+                pressure_map = {
+                    'pxx': 1, 'pyy': 2, 'pzz': 3,
+                    'pxy': 4, 'pxz': 5, 'pyz': 6
+                }
+
+                for qty in averaged_quantities:
+                    if qty == 'temp':
+                        if 'temp' not in computes_defined:
+                            fixes_computes_lines.append("compute avg_temp_compute all temp")
+                            computes_defined.add('temp')
+                        fixes_computes_lines.append(f"fix avg_temp all ave/time {nevery} {nrepeat} {nfreq} c_avg_temp_compute")
+                        fixes_computes_lines.append("variable temp_avg equal f_avg_temp")
+                        thermo_avg_keywords.append("v_temp_avg")
+                    
+                    elif qty in pressure_map or qty == 'press':
+                        if 'pressure' not in computes_defined:
+                            fixes_computes_lines.append("compute avg_press_compute all pressure thermo_temp")
+                            computes_defined.add('pressure')
+                        
+                        if qty == 'press':
+                            fixes_computes_lines.append(f"fix avg_press all ave/time {nevery} {nrepeat} {nfreq} c_avg_press_compute")
+                            fixes_computes_lines.append("variable press_avg equal f_avg_press")
+                            thermo_avg_keywords.append("v_press_avg")
+                        else:
+                            index = pressure_map[qty]
+                            fixes_computes_lines.append(f"fix avg_{qty} all ave/time {nevery} {nrepeat} {nfreq} c_avg_press_compute[{index}]")
+                            fixes_computes_lines.append(f"variable {qty}_avg equal f_avg_{qty}")
+                            thermo_avg_keywords.append(f"v_{qty}_avg")
+
+                    elif qty == 'ke':
+                        if 'ke' not in computes_defined:
+                            fixes_computes_lines.append("compute avg_ke_atom_compute all ke/atom")
+                            fixes_computes_lines.append("compute avg_ke_total_compute all reduce sum c_avg_ke_atom_compute")
+                            computes_defined.add('ke')
+                        fixes_computes_lines.append(f"fix avg_ke all ave/time {nevery} {nrepeat} {nfreq} c_avg_ke_total_compute")
+                        fixes_computes_lines.append("variable ke_avg equal f_avg_ke")
+                        thermo_avg_keywords.append("v_ke_avg")
+
+                    elif qty == 'pe':
+                        if 'pe' not in computes_defined:
+                            fixes_computes_lines.append("compute avg_pe_atom_compute all pe/atom")
+                            fixes_computes_lines.append("compute avg_pe_total_compute all reduce sum c_avg_pe_atom_compute")
+                            computes_defined.add('pe')
+                        fixes_computes_lines.append(f"fix avg_pe all ave/time {nevery} {nrepeat} {nfreq} c_avg_pe_total_compute")
+                        fixes_computes_lines.append("variable pe_avg equal f_avg_pe")
+                        thermo_avg_keywords.append("v_pe_avg")
+
+                if thermo_avg_keywords:
+                    fixes_computes_lines.append("") # Add a blank line for readability
+                    thermo_style += " " + " ".join(thermo_avg_keywords)
                 
                 fixes_computes_lines.append("")
 
-                # Average Target Strain/Temp
-                if mode == "Deformation":
-                    fixes_computes_lines.append(f"fix avg_target_strain all ave/time {nevery} {nrepeat} {nfreq} v_estrain_{deform_axis}{deform_axis}")
-                    fixes_computes_lines.append(f"variable target_strain_avg equal f_avg_target_strain")
-                    thermo_style += " v_target_strain_avg"
-                else: # Temperature
-                    points = deform_study.get("data_points", [])
-                    initial_temp = points[0][1] if points else 300.0
-                    fixes_computes_lines.append(f"variable set_temp equal {initial_temp}")
-                    fixes_computes_lines.append(f"fix avg_target_temp all ave/time {nevery} {nrepeat} {nfreq} v_set_temp")
-                    fixes_computes_lines.append(f"variable target_temp_avg equal f_avg_target_temp")
-                    thermo_style += " v_target_temp_avg"
+                # Average Target Strain/Temp if averaging is active
+                if output_config.get("add_target_to_thermo", False):
+                    if mode == "Deformation":
+                        fixes_computes_lines.append(f"fix avg_target_strain all ave/time {nevery} {nrepeat} {nfreq} v_estrain_{deform_axis}{deform_axis}")
+                        fixes_computes_lines.append(f"variable target_strain_avg equal f_avg_target_strain")
+                        thermo_style += " v_target_strain_avg"
+                    else: # Temperature
+                        points = deform_study.get("data_points", [])
+                        initial_temp = points[0][1] if points else 300.0
+                        fixes_computes_lines.append(f"variable set_temp equal {initial_temp}")
+                        fixes_computes_lines.append(f"fix avg_target_temp all ave/time {nevery} {nrepeat} {nfreq} v_set_temp")
+                        fixes_computes_lines.append(f"variable target_temp_avg equal f_avg_target_temp")
+                        thermo_style += " v_target_temp_avg"
 
                 fixes_computes_lines.append("")
 
@@ -521,8 +573,9 @@ class LammpsScriptGenerator:
             # Thermo output settings
             if output_config.get("enable_thermo", True):
                 add_target_to_thermo = output_config.get("add_target_to_thermo", False)
+                averaged_quantities = output_config.get("averaged_quantities", [])
 
-                if add_target_to_thermo and not time_averaged_thermo_style:
+                if add_target_to_thermo and not averaged_quantities:
                     if mode == "Deformation":
                         thermo_style += f" v_estrain_{deform_axis}{deform_axis}"
                     else: # Temperature

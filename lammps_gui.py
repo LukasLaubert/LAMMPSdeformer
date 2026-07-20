@@ -774,6 +774,59 @@ class LammpsGui(QMainWindow):
                 break
         # Refresh the system type display if a path is entered
         self.update_system_type()
+
+    def add_averaged_quantity_chip(self, index):
+        """Add a chip for the selected averaged quantity."""
+        if index == 0:  # "Add quantity..."
+            return
+
+        text = self.averaged_quantities_combo.currentText()
+        self.averaged_quantities_combo.removeItem(index)
+
+        chip = Chip(text)
+        chip.removed.connect(self.remove_averaged_quantity_chip)
+        self.avg_chips_layout.addWidget(chip)
+
+    def remove_averaged_quantity_chip(self, text):
+        """Remove an averaged quantity chip and add the option back to the combo box."""
+        # Add the item back to the combo box, maintaining sorted order.
+        current_items = [self.averaged_quantities_combo.itemText(i) for i in range(1, self.averaged_quantities_combo.count())]
+        current_items.append(text)
+        current_items.sort()
+        
+        self.averaged_quantities_combo.clear()
+        self.averaged_quantities_combo.addItem("Add quantity...")
+        self.averaged_quantities_combo.addItems(current_items)
+
+    def validate_and_round_nevery(self):
+        """Validate that avg_nevery is a divisor of thermo_freq, rounding to the nearest valid divisor if not."""
+        thermo_freq = self.thermo_freq_spinbox.value()
+        nevery = self.avg_nevery_spinbox.value()
+
+        if thermo_freq <= 0 or nevery <= 0:  # Avoid division by zero and invalid values
+            return
+        
+        # If it's already a valid divisor, do nothing.
+        if thermo_freq % nevery == 0:
+            return
+
+        # Find all divisors of thermo_freq
+        divisors = set()
+        for i in range(1, int(thermo_freq**0.5) + 1):
+            if thermo_freq % i == 0:
+                divisors.add(i)
+                divisors.add(thermo_freq // i)
+        
+        if not divisors:
+            return
+
+        # Find the closest divisor to the current nevery value
+        closest_divisor = min(divisors, key=lambda d: abs(d - nevery))
+        
+        # Set the spinbox value to the closest divisor, blocking signals to prevent recursion
+        self.avg_nevery_spinbox.blockSignals(True)
+        self.avg_nevery_spinbox.setValue(closest_divisor)
+        self.avg_nevery_spinbox.blockSignals(False)
         
     def create_fixes_tab(self):
         """Create the fixes tab"""
@@ -1358,13 +1411,30 @@ class LammpsGui(QMainWindow):
         
         # Time averaged thermo styles
         time_averaged_layout = QHBoxLayout()
-        time_averaged_label = QLabel("Time averaged thermo styles:")
-        self.time_averaged_thermo_style = QLineEdit()
-        self.time_averaged_thermo_style.setText("")
-        self.time_averaged_thermo_style.setToolTip("Time averaged thermo style specification")
+        time_averaged_label = QLabel("Averaged quantities:")
+        self.averaged_quantities_combo = QComboBox()
+        self.avg_chips_layout = QHBoxLayout()
+        self.avg_chips_layout.setSpacing(2)
+
+        self.avg_nevery_label = QLabel("Compute average every ... timesteps:")
+        self.avg_nevery_label.setToolTip("Specifies that values at timesteps not matching a multiple of this value are skipped from the average calculation.")
+        self.avg_nevery_spinbox = QSpinBox()
+        self.avg_nevery_spinbox.setRange(1, 10000)
+        self.avg_nevery_spinbox.setValue(10)
+        self.avg_nevery_spinbox.editingFinished.connect(self.validate_and_round_nevery)
+
         time_averaged_layout.addWidget(time_averaged_label)
-        time_averaged_layout.addWidget(self.time_averaged_thermo_style)
-        
+        time_averaged_layout.addLayout(self.avg_chips_layout)
+        time_averaged_layout.addWidget(self.averaged_quantities_combo, 1) # Stretch combo
+        time_averaged_layout.addStretch(0)
+        time_averaged_layout.addWidget(self.avg_nevery_label)
+        time_averaged_layout.addWidget(self.avg_nevery_spinbox)
+
+        self.all_avg_quantities = ['temp', 'press', 'pxx', 'pyy', 'pzz', 'pxy', 'pxz', 'pyz', 'ke', 'pe']
+        self.averaged_quantities_combo.addItem("Add quantity...")
+        self.averaged_quantities_combo.addItems(sorted(self.all_avg_quantities))
+        self.averaged_quantities_combo.activated.connect(self.add_averaged_quantity_chip)
+
         thermo_layout.addLayout(thermo_style_layout)
         thermo_layout.addLayout(time_averaged_layout)
         thermo_group.setLayout(thermo_layout)
@@ -2196,7 +2266,8 @@ class LammpsGui(QMainWindow):
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_freq": self.thermo_freq_spinbox.value(),
                 "thermo_style": self.thermo_style.text(),
-                "time_averaged_thermo_style": self.time_averaged_thermo_style.text(),
+                "averaged_quantities": [self.avg_chips_layout.itemAt(i).widget().text for i in range(self.avg_chips_layout.count()) if isinstance(self.avg_chips_layout.itemAt(i).widget(), Chip)],
+                "avg_nevery": self.avg_nevery_spinbox.value(),
                 "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
                 "enable_custom_computes": self.enable_custom_computes.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
@@ -2313,7 +2384,30 @@ class LammpsGui(QMainWindow):
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
             self.thermo_style.setText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-            self.time_averaged_thermo_style.setText(self.settings.value("output/time_averaged_thermo_style", ""))
+
+            # Load averaged quantities from QSettings
+            selected_quantities = self.settings.value("output/averaged_quantities", [])
+            if isinstance(selected_quantities, str): # QSettings can return a string
+                selected_quantities = [q.strip() for q in selected_quantities.split(',') if q.strip()]
+
+            while self.avg_chips_layout.count():
+                child = self.avg_chips_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            
+            self.averaged_quantities_combo.clear()
+            self.averaged_quantities_combo.addItem("Add quantity...")
+            
+            available_quantities = [q for q in self.all_avg_quantities if q not in selected_quantities]
+            available_quantities.sort()
+            self.averaged_quantities_combo.addItems(available_quantities)
+            
+            for quantity in selected_quantities:
+                chip = Chip(quantity)
+                chip.removed.connect(self.remove_averaged_quantity_chip)
+                self.avg_chips_layout.addWidget(chip)
+
+            self.avg_nevery_spinbox.setValue(self.settings.value('output/avg_nevery', 10, type=int))
             self.add_target_to_thermo_check.setChecked(self.settings.value("output/add_target_to_thermo", False, type=bool))
             self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
@@ -2639,7 +2733,27 @@ class LammpsGui(QMainWindow):
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_freq_spinbox.setValue(output.get("thermo_freq", 100))
                 self.thermo_style.setText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
-                self.time_averaged_thermo_style.setText(output.get("time_averaged_thermo_style", ""))
+
+                # Load averaged quantities
+                while self.avg_chips_layout.count():
+                    child = self.avg_chips_layout.takeAt(0)
+                    if child.widget():
+                        child.widget().deleteLater()
+                
+                self.averaged_quantities_combo.clear()
+                self.averaged_quantities_combo.addItem("Add quantity...")
+                
+                selected_quantities = output.get('averaged_quantities', [])
+                available_quantities = [q for q in self.all_avg_quantities if q not in selected_quantities]
+                available_quantities.sort()
+                self.averaged_quantities_combo.addItems(available_quantities)
+                
+                for quantity in selected_quantities:
+                    chip = Chip(quantity)
+                    chip.removed.connect(self.remove_averaged_quantity_chip)
+                    self.avg_chips_layout.addWidget(chip)
+
+                self.avg_nevery_spinbox.setValue(output.get('avg_nevery', 10))
                 self.add_target_to_thermo_check.setChecked(output.get("add_target_to_thermo", False))
                 self.enable_custom_computes.setChecked(output.get("enable_custom_computes", False))
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
