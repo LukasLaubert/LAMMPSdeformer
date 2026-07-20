@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QComboBox, QScrollArea, QMessageBox, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence
 
 # --- Professional Style & Data ---
 STYLE_BACKGROUND = QColor("#FFFFFF"); STYLE_FRAME = QColor("#ADB5BD"); STYLE_LINE = QColor("#007BFF"); STYLE_HANDLE = QColor("#007BFF")
@@ -306,8 +306,14 @@ class StudyWidget(QWidget):
         self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100)
         self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-1e9, 0.0); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3)
         self.max_strain_spinbox = QDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(0.0, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setDecimals(3)
+
+        self.undo_button = QPushButton("Undo"); self.redo_button = QPushButton("Redo")
         self.generate_button = QPushButton("Generate Scheme..."); self.reset_button = QPushButton("Reset Graph")
-        controls_layout.addWidget(QLabel("<b>Axis Controls:</b>")); controls_layout.addWidget(self.max_steps_spinbox); controls_layout.addWidget(self.min_strain_spinbox); controls_layout.addWidget(self.max_strain_spinbox); controls_layout.addStretch(); controls_layout.addWidget(self.generate_button); controls_layout.addWidget(self.reset_button)
+
+        controls_layout.addWidget(QLabel("<b>Axis Controls:</b>")); controls_layout.addWidget(self.max_steps_spinbox); controls_layout.addWidget(self.min_strain_spinbox); controls_layout.addWidget(self.max_strain_spinbox); controls_layout.addStretch()
+        controls_layout.addWidget(self.undo_button); controls_layout.addWidget(self.redo_button)
+        controls_layout.addWidget(self.generate_button); controls_layout.addWidget(self.reset_button)
+
         self.graph_widget = GraphWidget(self)
 
         # Add Thermo Freq controls
@@ -327,10 +333,20 @@ class StudyWidget(QWidget):
         self._last_staircase_params = {'cycles': 5, 'factor': 1.0, 'direction': 'Tension'}
         self._last_cyclic_params = {'cycles': 3, 'relax_factor': 0.0, 'start_with': 'Tension'}
         self._last_scheme = "Staircase Loading"
-        if initial_state: self.set_state(initial_state)
+
+        self._undo_stack = []
+        self._redo_stack = []
+
+        if initial_state:
+            self.set_state(initial_state)
+        else:
+            self.graph_widget.reset_graph()
+
+        self._setup_undo_redo()
         self.max_steps_spinbox.valueChanged.connect(self._update_graph_controls); self.min_strain_spinbox.valueChanged.connect(self._update_graph_controls); self.max_strain_spinbox.valueChanged.connect(self._update_graph_controls)
         self.graph_widget.dataChanged.connect(self.dataChanged); self.reset_button.clicked.connect(self.graph_widget.reset_graph); self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
+        self._save_state_for_undo()
     def _update_graph_controls(self):
         max_steps, min_strain, max_strain = self.max_steps_spinbox.value(), self.min_strain_spinbox.value(), self.max_strain_spinbox.value()
         self.max_steps_spinbox.setSingleStep(max(1, int(max_steps * 0.02)))
@@ -349,6 +365,80 @@ class StudyWidget(QWidget):
                 self._last_staircase_params = params; self.graph_widget.generate_staircase_scheme(params['cycles'], params['factor'], params['direction'])
             elif scheme == "Cyclic Loading":
                 self._last_cyclic_params = params; self.graph_widget.generate_cyclic_scheme(params['cycles'], params['relax_factor'], params['start_with'])
+    def _setup_undo_redo(self):
+        self.undo_action = QAction("Undo", self)
+        self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
+        self.undo_action.triggered.connect(self.undo)
+        self.addAction(self.undo_action)
+
+        self.redo_action = QAction("Redo", self)
+        self.redo_action.setShortcut(QKeySequence("Ctrl+Y"))
+        self.redo_action.triggered.connect(self.redo)
+        self.addAction(self.redo_action)
+
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button.clicked.connect(self.redo)
+
+        self.graph_widget.dataChanged.connect(self._save_state_for_undo)
+        self.max_steps_spinbox.editingFinished.connect(self._save_state_for_undo)
+        self.min_strain_spinbox.editingFinished.connect(self._save_state_for_undo)
+        self.max_strain_spinbox.editingFinished.connect(self._save_state_for_undo)
+
+        self.update_undo_redo_buttons()
+
+    def _save_state_for_undo(self):
+        state = self.get_undo_state()
+        if not self._undo_stack or self._undo_stack[-1] != state:
+            self._undo_stack.append(state)
+            self._redo_stack.clear()
+            self.update_undo_redo_buttons()
+
+    def undo(self):
+        if len(self._undo_stack) > 1:
+            self._redo_stack.append(self._undo_stack.pop())
+            state = self._undo_stack[-1]
+            self.set_undo_state(state)
+            self.update_undo_redo_buttons()
+
+    def redo(self):
+        if self._redo_stack:
+            state = self._redo_stack.pop()
+            self._undo_stack.append(state)
+            self.set_undo_state(state)
+            self.update_undo_redo_buttons()
+
+    def update_undo_redo_buttons(self):
+        self.undo_button.setEnabled(len(self._undo_stack) > 1)
+        self.redo_button.setEnabled(len(self._redo_stack) > 0)
+        self.undo_action.setEnabled(len(self._undo_stack) > 1)
+        self.redo_action.setEnabled(len(self._redo_stack) > 0)
+
+    def get_undo_state(self):
+        return {
+            'points_norm': [QPointF(p.x(), p.y()) for p in self.graph_widget.points_norm],
+            'max_steps': self.max_steps_spinbox.value(),
+            'min_strain': self.min_strain_spinbox.value(),
+            'max_strain': self.max_strain_spinbox.value(),
+        }
+
+    def set_undo_state(self, state):
+        self.max_steps_spinbox.blockSignals(True)
+        self.min_strain_spinbox.blockSignals(True)
+        self.max_strain_spinbox.blockSignals(True)
+
+        self.max_steps_spinbox.setValue(state['max_steps'])
+        self.min_strain_spinbox.setValue(state['min_strain'])
+        self.max_strain_spinbox.setValue(state['max_strain'])
+
+        self.max_steps_spinbox.blockSignals(False)
+        self.min_strain_spinbox.blockSignals(False)
+        self.max_strain_spinbox.blockSignals(False)
+
+        self._update_graph_controls()
+        self.graph_widget.points_norm = state['points_norm']
+        self.graph_widget.update()
+        self.dataChanged.emit()
+
     def get_state(self):
         return {
             'points_norm': self.graph_widget.points_norm,
@@ -369,8 +459,9 @@ class StudyWidget(QWidget):
         self.graph_widget.update()
 
 class DeformationTab(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent); self.setWindowTitle("Interactive Strain-Time Profile Editor")
+        self.main_window = main_window
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
@@ -393,9 +484,13 @@ class DeformationTab(QWidget):
     def _add_study(self, is_first=False):
         initial_state = self.tab_widget.currentWidget().get_state() if not is_first and self.tab_widget.count() > 0 else None
         new_study = StudyWidget(initial_state)
-        # These will be connected from the main window
-        # new_study.graph_widget.set_timestep(self.timestep_spinbox.value())
-        # new_study.graph_widget.set_time_unit(LAMMPS_UNITS[self.units_combo.currentText()])
+
+        # Apply current timestep and units from main window
+        timestep = self.main_window.timestep.value()
+        units = self.main_window.units_combo.currentText()
+        new_study.graph_widget.set_timestep(timestep)
+        new_study.graph_widget.set_time_unit(LAMMPS_UNITS[units])
+
         new_study.dataChanged.connect(self.update_summaries)
         tab_name = f"Study {self._get_next_default_study_number()}"
         tab_index = self.tab_widget.addTab(new_study, tab_name); self.tab_widget.setCurrentIndex(tab_index)
@@ -403,18 +498,39 @@ class DeformationTab(QWidget):
 
     def _get_next_default_study_number(self):
         num = 1
-        while any(f"Study {num}" == self.tab_widget.tabText(i) for i in range(self.tab_widget.count())): num += 1
+        while any(f"Study{num:02d}" == self.tab_widget.tabText(i) for i in range(self.tab_widget.count())): num += 1
         return num
 
     def _close_tab(self, index):
         if self.tab_widget.count() > 1:
             self.tab_widget.widget(index).deleteLater(); self.tab_widget.removeTab(index)
-            self._renumber_default_tabs(); self.update_summaries()
+            self.update_summaries()
 
     def _rename_tab(self, index):
         current_name = self.tab_widget.tabText(index)
-        new_name, ok = QInputDialog.getText(self, "Rename Study", "New study name:", text=current_name)
-        if ok and new_name: self.tab_widget.setTabText(index, new_name); self.update_summaries()
+
+        while True:
+            new_name, ok = QInputDialog.getText(self, "Rename Study", "New study name:", text=current_name)
+
+            if not ok:
+                return # User cancelled
+
+            if not new_name:
+                QMessageBox.warning(self, "Invalid Name", "Study name cannot be empty.")
+                continue
+
+            # Validate the new name
+            if re.match(r"^[a-zA-Z0-9_-]+$", new_name):
+                # Check if name already exists
+                if any(new_name == self.tab_widget.tabText(i) for i in range(self.tab_widget.count()) if i != index):
+                    QMessageBox.warning(self, "Invalid Name", "A study with this name already exists.")
+                    continue
+
+                self.tab_widget.setTabText(index, new_name)
+                self.update_summaries()
+                break
+            else:
+                QMessageBox.warning(self, "Invalid Name", "Study name can only contain letters, numbers, underscores, and hyphens.")
 
     def _renumber_default_tabs(self):
         default_study_counter = 1
@@ -463,7 +579,9 @@ class DeformationTab(QWidget):
                         time_unit = key
                         break
                 lines.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
-            summary_text.setText("\n".join(lines)); summary_text.setFixedHeight(len(lines) * 20 + 10)
+            summary_text.setText("\n".join(lines))
+            summary_text.document().adjustSize()
+            summary_text.setFixedHeight(int(summary_text.document().size().height() + 5))
             self.summary_layout.addWidget(summary_text)
         self.summary_layout.addStretch()
 

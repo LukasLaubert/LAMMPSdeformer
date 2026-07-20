@@ -363,18 +363,18 @@ class LammpsScriptGenerator:
                 "# Deformation",
                 "#------------------------"
             ])
-            
+
             points = deform_study.get("points", [])
             if len(points) > 1:
                 for i in range(len(points) - 1):
                     p1 = points[i]
                     p2 = points[i+1]
-                    
+
                     # Segment details
                     start_step = p1[0]
                     end_step = p2[0]
                     duration = end_step - start_step
-                    
+
                     if duration <= 0:
                         continue
 
@@ -393,13 +393,66 @@ class LammpsScriptGenerator:
                         script_lines.append("unfix deform")
 
                     # Apply new deform fix if strain rate is not zero
-                    if abs(strain_rate) > 1e-9:
-                        script_lines.append(f"fix deform all deform 1 x erate {strain_rate} remap x")
-                    else:
-                        script_lines.append("# Relaxation segment (zero strain rate)")
+            # Output settings
+            thermo_output_freq = deform_study.get("thermo_freq", 100)
+            trj_output_freq = deform_study.get("thermo_freq", 1000)  # Use same as thermo for simplicity
 
-                    script_lines.append(f"run {int(duration)}")
-                    script_lines.append("")
+            script_lines.extend([
+                "#------------------------",
+                "# Output settings",
+                "#------------------------"
+            ])
+
+            # Thermo output
+            if output_config.get("enable_thermo", True):
+                thermo_style = output_config.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
+                script_lines.extend([
+                    f"thermo {thermo_output_freq}",
+                    f"thermo_style custom {thermo_style}",
+                    "thermo_modify lost warn flush yes",
+                    ""
+                ])
+
+            # Stress calculations
+            if output_config.get("enable_stress", True):
+                script_lines.extend([
+                    "# Stress calculations",
+                    "compute stress all stress/atom NULL",
+                    "compute pstress all reduce sum c_stress[1] c_stress[2] c_stress[3] c_stress[4] c_stress[5] c_stress[6]",
+                    ""
+                ])
+
+            # Custom computes
+            if output_config.get("enable_custom_computes", False):
+                custom_computes = output_config.get("custom_computes", "")
+                if custom_computes:
+                    script_lines.extend([
+                        "# Custom computes",
+                        custom_computes,
+                        ""
+                    ])
+
+            # Trajectory output
+            if output_config.get("enable_trajectory", True):
+                traj_format = output_config.get("traj_format", "lammpstrj")
+                trj_output_items = output_config.get("trj_output_items", "id type x y z fx fy fz")
+
+                # Create output directory if it doesn't exist
+                output_dir = "output"
+                script_lines.extend([
+                    f"dump trajectory all custom {trj_output_freq} {output_dir}/{model_name}.{traj_format} {trj_output_items}",
+                    ""
+                ])
+
+            # Custom dumps
+            if output_config.get("enable_custom_dumps", False):
+                custom_dumps = output_config.get("custom_dumps", "")
+                if custom_dumps:
+                    script_lines.extend([
+                        "# Custom dumps",
+                        custom_dumps,
+                        ""
+                    ])
 
             # Bond breakage if enabled
             if fixes_config.get("enable_bond_breakage", False):

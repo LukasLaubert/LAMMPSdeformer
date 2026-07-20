@@ -26,7 +26,7 @@ try:
                                 QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
                                 QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
                                 QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate)
-    from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize
+    from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF
     from PyQt6.QtGui import QIcon, QDesktopServices, QCursor, QPalette, QColor
     
     # Handle QRegularExpression vs QRegExp compatibility
@@ -325,11 +325,11 @@ class LammpsScriptGenerator(QMainWindow):
         timestep_layout = QHBoxLayout()
 
         self.timestep = QDoubleSpinBox()
-        self.timestep.setRange(0.0001, 1.0)
+        self.timestep.setRange(0.000001, 10.0)
         self.timestep.setValue(0.001)
-        self.timestep.setSingleStep(0.0001)
-        self.timestep.setDecimals(4)
+        self.timestep.setDecimals(6)
         self.timestep.setToolTip("Integration timestep for the simulation")
+        self.timestep.setMinimumWidth(120)
 
         self.timestep_unit_label = QLabel("ps")
 
@@ -351,90 +351,51 @@ class LammpsScriptGenerator(QMainWindow):
 
         # Boundary conditions
         boundary_group = QGroupBox("Boundary Conditions")
-        boundary_layout = QFormLayout()
-        
+        main_boundary_layout = QVBoxLayout()
+        boundary_layout = QHBoxLayout()
+
+        # X Boundary
+        x_layout = QVBoxLayout()
+        x_label = QLabel("X Boundary:")
         self.boundary_x_combo = QComboBox()
         self.boundary_x_combo.addItems(["p", "f", "s", "m"])
         self.boundary_x_combo.setCurrentText("p")
         self.boundary_x_combo.setToolTip("X boundary condition: p=periodic, f=fixed, s=shrink, m=shrink-wrap")
-        
+        x_layout.addWidget(x_label)
+        x_layout.addWidget(self.boundary_x_combo)
+        boundary_layout.addLayout(x_layout)
+
+        # Y Boundary
+        y_layout = QVBoxLayout()
+        y_label = QLabel("Y Boundary:")
         self.boundary_y_combo = QComboBox()
         self.boundary_y_combo.addItems(["p", "f", "s", "m"])
         self.boundary_y_combo.setCurrentText("p")
         self.boundary_y_combo.setToolTip("Y boundary condition: p=periodic, f=fixed, s=shrink, m=shrink-wrap")
-        
+        y_layout.addWidget(y_label)
+        y_layout.addWidget(self.boundary_y_combo)
+        boundary_layout.addLayout(y_layout)
+
+        # Z Boundary
+        z_layout = QVBoxLayout()
+        z_label = QLabel("Z Boundary:")
         self.boundary_z_combo = QComboBox()
         self.boundary_z_combo.addItems(["p", "f", "s", "m"])
         self.boundary_z_combo.setCurrentText("p")
         self.boundary_z_combo.setToolTip("Z boundary condition: p=periodic, f=fixed, s=shrink, m=shrink-wrap")
+        z_layout.addWidget(z_label)
+        z_layout.addWidget(self.boundary_z_combo)
+        boundary_layout.addLayout(z_layout)
         
-        boundary_label = QLabel("Boundary Conditions:")
-        boundary_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            boundary_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        boundary_label.mousePressEvent = lambda e: self.open_lammps_doc("boundary")
-        boundary_label.setToolTip("Click to open LAMMPS boundary documentation")
-        
-        boundary_layout.addRow("X Boundary:", self.boundary_x_combo)
-        boundary_layout.addRow("Y Boundary:", self.boundary_y_combo)
-        boundary_layout.addRow("Z Boundary:", self.boundary_z_combo)
-        boundary_group.setLayout(boundary_layout)
+        main_boundary_layout.addLayout(boundary_layout)
+        boundary_group.setLayout(main_boundary_layout)
         scroll_layout.addWidget(boundary_group)
         
-        # Ensemble settings
-        ensemble_group = QGroupBox("Ensemble Settings")
-        ensemble_layout = QFormLayout()
-        
-        self.ensemble_combo = QComboBox()
-        self.ensemble_combo.addItems(["NVT", "NPT"])
-        self.ensemble_combo.setCurrentText("NVT")
-        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
-        
-        self.temp_init = QDoubleSpinBox()
-        self.temp_init.setRange(0, 10000)
-        self.temp_init.setValue(300.0)
-        self.temp_init.setSingleStep(10.0)
-        self.temp_init.setToolTip("Initial temperature for the simulation")
-        
-        self.temp_end = QDoubleSpinBox()
-        self.temp_end.setRange(0, 10000)
-        self.temp_end.setValue(300.0)
-        self.temp_end.setSingleStep(10.0)
-        self.temp_end.setToolTip("Final temperature for the simulation")
-        
-        self.pressure = QDoubleSpinBox()
-        self.pressure.setRange(0, 100000)
-        self.pressure.setValue(1.0)
-        self.pressure.setSingleStep(0.1)
-        self.pressure.setEnabled(False)  # Only enabled for NPT
-        self.pressure.setToolTip("Target pressure for NPT ensemble")
-        
-        self.pressure_unit_label = QLabel("atm")
-
-        pressure_layout = QHBoxLayout()
-        pressure_layout.addWidget(self.pressure)
-        pressure_layout.addWidget(self.pressure_unit_label)
-
-        ensemble_label = QLabel("Ensemble:")
-        ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            ensemble_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
-        ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
-        
-        ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
-        ensemble_layout.addRow("Initial Temperature:", self.temp_init)
-        ensemble_layout.addRow("Final Temperature:", self.temp_end)
-        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
-        ensemble_group.setLayout(ensemble_layout)
-        scroll_layout.addWidget(ensemble_group)
-        
         # Velocity initialization settings
-        velocity_group = QGroupBox("Velocity Initialization")
+        velocity_group = QGroupBox("Velocity Initialization (LAMMPS velocity Documentation)")
+        velocity_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
+        velocity_group.installEventFilter(self)
+        self.groupbox_doc_links["velocity_group"] = "velocity"
         velocity_layout = QVBoxLayout()
         
         self.enable_velocity = QCheckBox("Enable Velocity Initialization")
@@ -512,9 +473,6 @@ class LammpsScriptGenerator(QMainWindow):
         neighbor_group.setLayout(neighbor_layout)
         scroll_layout.addWidget(neighbor_group)
         
-        # Connect ensemble combo box signal
-        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
-        
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
@@ -531,6 +489,60 @@ class LammpsScriptGenerator(QMainWindow):
 
         fixes_layout = QVBoxLayout(self.fixes_tab)
         fixes_layout.addWidget(scroll)
+
+        # Ensemble settings
+        ensemble_group = QGroupBox("Ensemble Settings")
+        ensemble_layout = QFormLayout()
+
+        self.ensemble_combo = QComboBox()
+        self.ensemble_combo.addItems(["NVT", "NPT"])
+        self.ensemble_combo.setCurrentText("NVT")
+        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
+
+        self.temp_init = QDoubleSpinBox()
+        self.temp_init.setRange(0, 10000)
+        self.temp_init.setValue(300.0)
+        self.temp_init.setSingleStep(10.0)
+        self.temp_init.setToolTip("Initial temperature for the simulation")
+
+        self.temp_end = QDoubleSpinBox()
+        self.temp_end.setRange(0, 10000)
+        self.temp_end.setValue(300.0)
+        self.temp_end.setSingleStep(10.0)
+        self.temp_end.setToolTip("Final temperature for the simulation")
+
+        self.pressure = QDoubleSpinBox()
+        self.pressure.setRange(-100000, 100000)
+        self.pressure.setValue(1.0)
+        self.pressure.setDecimals(4)
+        self.pressure.setEnabled(False)  # Only enabled for NPT
+        self.pressure.setToolTip("Target pressure for NPT ensemble")
+        self.pressure.setMinimumWidth(120)
+
+        self.pressure_unit_label = QLabel("atm")
+
+        pressure_layout = QHBoxLayout()
+        pressure_layout.addWidget(self.pressure)
+        pressure_layout.addWidget(self.pressure_unit_label)
+
+        ensemble_label = QLabel("Ensemble:")
+        ensemble_label.setStyleSheet("color: blue; text-decoration: underline;")
+        try:
+            ensemble_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        except AttributeError:
+            pass
+        ensemble_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_nh")
+        ensemble_label.setToolTip("Click to open LAMMPS ensemble documentation")
+
+        ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
+        ensemble_layout.addRow("Initial Temperature:", self.temp_init)
+        ensemble_layout.addRow("Final Temperature:", self.temp_end)
+        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
+        ensemble_group.setLayout(ensemble_layout)
+        scroll_layout.addWidget(ensemble_group)
+
+        # Connect ensemble combo box signal
+        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
 
         # Bond breakage settings
         bond_breakage_group = QGroupBox("Bond Breakage Settings")
@@ -595,6 +607,29 @@ class LammpsScriptGenerator(QMainWindow):
         bond_breakage_layout.addLayout(bond_breakage_form_layout)
         bond_breakage_group.setLayout(bond_breakage_layout)
         scroll_layout.addWidget(bond_breakage_group)
+
+        # Custom fixes
+        custom_fixes_group = QGroupBox("Custom Fixes")
+        custom_fixes_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
+        custom_fixes_group.installEventFilter(self)
+        self.groupbox_doc_links["custom_fixes_group"] = "fix"
+        custom_fixes_layout = QVBoxLayout()
+
+        self.enable_custom_fixes = QCheckBox("Enable Custom Fixes")
+        self.enable_custom_fixes.setChecked(False)
+        self.enable_custom_fixes.setToolTip("Enable custom fix commands")
+        self.enable_custom_fixes.stateChanged.connect(self.toggle_custom_fixes)
+
+        self.custom_fixes_text = QTextEdit()
+        self.custom_fixes_text.setPlaceholderText("Enter custom fix commands here...")
+        self.custom_fixes_text.setMaximumHeight(100)
+        self.custom_fixes_text.setEnabled(False)
+        self.custom_fixes_text.setToolTip("Custom LAMMPS fix commands")
+
+        custom_fixes_layout.addWidget(self.enable_custom_fixes)
+        custom_fixes_layout.addWidget(self.custom_fixes_text)
+        custom_fixes_group.setLayout(custom_fixes_layout)
+        scroll_layout.addWidget(custom_fixes_group)
 
         scroll_layout.addStretch()
 
@@ -661,7 +696,7 @@ class LammpsScriptGenerator(QMainWindow):
                 index = self.units_combo.findText(units.lower())
                 if index >= 0:
                     self.units_combo.setCurrentIndex(index)
-                    self.update_timestep_display(units)
+                    self.update_units_display(units)
             
             # Update atom style combo if found
             if atom_style:
@@ -788,7 +823,7 @@ class LammpsScriptGenerator(QMainWindow):
             deformation_layout.addWidget(label)
             return
 
-        self.deformation_tab_widget = DeformationTab(self)
+        self.deformation_tab_widget = DeformationTab(self, self)
         deformation_layout.addWidget(self.deformation_tab_widget)
         
         # Connect signals
@@ -1126,7 +1161,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(stress_group)
         
         # Custom computes
-        custom_computes_group = QGroupBox("Custom Computes (LAMMPS compute Documentation)")
+        custom_computes_group = QGroupBox("Custom Computes")
         custom_computes_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
         custom_computes_group.installEventFilter(self)
         self.groupbox_doc_links["custom_computes_group"] = "compute"
@@ -1149,7 +1184,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(custom_computes_group)
         
         # Custom dumps
-        custom_dumps_group = QGroupBox("Custom Dumps (LAMMPS dump Documentation)")
+        custom_dumps_group = QGroupBox("Custom Dumps")
         custom_dumps_group.setStyleSheet("QGroupBox::title { color: blue; text-decoration: underline; }")
         custom_dumps_group.installEventFilter(self)
         self.groupbox_doc_links["custom_dumps_group"] = "dump"
@@ -1325,6 +1360,11 @@ class LammpsScriptGenerator(QMainWindow):
         """Toggle custom dumps settings based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         self.custom_dumps_text.setEnabled(enabled)
+
+    def toggle_custom_fixes(self, state):
+        """Toggle custom fixes settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.custom_fixes_text.setEnabled(enabled)
     
     def show_generated_files_dialog(self, result):
         """Show dialog with generated file structure"""
@@ -1616,7 +1656,9 @@ class LammpsScriptGenerator(QMainWindow):
                 "rmax": self.rmax.value(),
                 "enable_prob": self.enable_prob.isChecked(),
                 "prob_fraction": self.prob_fraction.value(),
-                "prob_seed": self.prob_seed.value()
+                "prob_seed": self.prob_seed.value(),
+                "enable_custom_fixes": self.enable_custom_fixes.isChecked(),
+                "custom_fixes": self.custom_fixes_text.toPlainText()
             },
             "output": {
                 "output_path": self.output_path_edit.text(),
@@ -1714,6 +1756,8 @@ class LammpsScriptGenerator(QMainWindow):
             self.enable_prob.setChecked(self.settings.value("fixes/enable_prob", False, type=bool))
             self.prob_fraction.setValue(self.settings.value("fixes/prob_fraction", 0.1, type=float))
             self.prob_seed.setValue(self.settings.value("fixes/prob_seed", 12345, type=int))
+            self.enable_custom_fixes.setChecked(self.settings.value("fixes/enable_custom_fixes", False, type=bool))
+            self.custom_fixes_text.setPlainText(self.settings.value("fixes/custom_fixes", ""))
             
             # Output settings
             self.output_path_edit.setText(self.settings.value("output/output_path", ""))
@@ -1828,7 +1872,35 @@ class LammpsScriptGenerator(QMainWindow):
             if not os.path.exists(system_path):
                 QMessageBox.critical(self, "Error", f"System path does not exist: {system_path}")
                 return
-            
+
+            # Check if output path is not empty and ask user for action
+            output_path = config["output"]["output_path"]
+            if os.path.exists(output_path) and os.listdir(output_path):
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Icon.Warning)
+                msg_box.setText("The output directory is not empty.")
+                msg_box.setInformativeText("What would you like to do?")
+                delete_button = msg_box.addButton("Delete Contents", QMessageBox.ButtonRole.DestructiveRole)
+                overwrite_button = msg_box.addButton("Overwrite", QMessageBox.ButtonRole.AcceptRole)
+                abort_button = msg_box.addButton("Abort", QMessageBox.ButtonRole.RejectRole)
+                msg_box.setDefaultButton(overwrite_button)
+
+                msg_box.exec()
+
+                if msg_box.clickedButton() == delete_button:
+                    try:
+                        for filename in os.listdir(output_path):
+                            file_path = os.path.join(output_path, filename)
+                            if os.path.isfile(file_path) or os.path.islink(file_path):
+                                os.unlink(file_path)
+                            elif os.path.isdir(file_path):
+                                shutil.rmtree(file_path)
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error", f"Failed to delete directory contents: {e}")
+                        return
+                elif msg_box.clickedButton() == abort_button:
+                    return
+
             # Generate scripts
             if ScriptGen:
                 try:
@@ -1947,6 +2019,8 @@ class LammpsScriptGenerator(QMainWindow):
                 self.enable_prob.setChecked(fixes.get("enable_prob", False))
                 self.prob_fraction.setValue(fixes.get("prob_fraction", 0.1))
                 self.prob_seed.setValue(fixes.get("prob_seed", 12345))
+                self.enable_custom_fixes.setChecked(fixes.get("enable_custom_fixes", False))
+                self.custom_fixes_text.setPlainText(fixes.get("custom_fixes", ""))
 
             # Output configuration
             if "output" in config:
