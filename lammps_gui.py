@@ -433,6 +433,12 @@ class LammpsScriptGenerator(QMainWindow):
         self.initial_velocity_seed.setEnabled(enabled)
         self.damping_factor.setEnabled(enabled)
         
+    def toggle_bond_breakage_settings(self, state):
+        """Toggle bond breakage parameter fields based on checkbox state"""
+        enabled = state == Qt.Checked
+        self.break_distance.setEnabled(enabled)
+        self.break_force.setEnabled(enabled)
+        
     def update_system_type(self):
         """Update system type display based on selected path"""
         path = self.system_path_edit.text()
@@ -443,6 +449,8 @@ class LammpsScriptGenerator(QMainWindow):
         if os.path.isfile(path):
             if path.endswith('.data'):
                 self.system_type_label.setText("System Type: Single file")
+                # Auto-detect units and atom style from .data file
+                self.auto_detect_from_data_file(path)
             else:
                 self.system_type_label.setText("System Type: Single file (not .data)")
         elif os.path.isdir(path):
@@ -451,27 +459,81 @@ class LammpsScriptGenerator(QMainWindow):
             count = len(data_files)
             if count > 0:
                 self.system_type_label.setText(f"System Type: Multiple files ({count} .data files found)")
+                # Auto-detect units and atom style from first .data file
+                self.auto_detect_from_data_file(data_files[0])
             else:
                 self.system_type_label.setText("System Type: Directory (no .data files found)")
         else:
             self.system_type_label.setText("System Type: Path does not exist")
+    
+    def auto_detect_from_data_file(self, data_file):
+        """Auto-detect units and atom style from .data file"""
+        try:
+            units = self.read_units_from_data_file(data_file)
+            atom_style = self.read_atom_style_from_data_file(data_file)
+            
+            # Update units combo if found
+            if units:
+                index = self.units_combo.findText(units.lower())
+                if index >= 0:
+                    self.units_combo.setCurrentIndex(index)
+                    self.update_timestep_display(units)
+            
+            # Update atom style combo if found
+            if atom_style:
+                index = self.atom_style_combo.findText(atom_style.lower())
+                if index >= 0:
+                    self.atom_style_combo.setCurrentIndex(index)
+                    
+        except Exception as e:
+            print(f"Error auto-detecting from data file: {e}")
+    
+    def read_units_from_data_file(self, data_file):
+        """Read units from LAMMPS data file"""
+        try:
+            with open(data_file, 'r') as f:
+                for line in f:
+                    if line.strip().startswith("units"):
+                        # Extract units value (format: units <value>)
+                        parts = line.split()
+                        if len(parts) > 1:
+                            units = parts[1].strip()
+                            return units
+        except Exception as e:
+            print(f"Error reading units from data file: {e}")
+        return None
+    
+    def read_atom_style_from_data_file(self, data_file):
+        """Read atom style from LAMMPS data file"""
+        try:
+            with open(data_file, 'r') as f:
+                for line in f:
+                    if line.strip().startswith("atom_style"):
+                        # Extract atom style value (format: atom_style <value>)
+                        parts = line.split()
+                        if len(parts) > 1:
+                            atom_style = parts[1].strip()
+                            return atom_style
+        except Exception as e:
+            print(f"Error reading atom style from data file: {e}")
+        return None
             
     def update_timestep_display(self, units):
         """Update timestep unit display based on selected units"""
-        # Default timestep units from LAMMPS documentation
-        default_timestep_units = {
-            "lj": "lj",
+        # Timestep units from LAMMPS documentation as specified by user
+        timestep_units = {
+            "lj": "τ",
             "real": "fs", 
             "metal": "ps", 
             "si": "s",
             "cgs": "s",
             "electron": "fs",
-            "micro": "μs",
+            "micro": "µs",
             "nano": "ns"
         }
         
-        default_unit = default_timestep_units.get(units, "ps")
-        self.timestep_display.setText(f"Timestep unit: {default_unit}")
+        unit = timestep_units.get(units.lower(), "ps")
+        self.timestep_display.setText(f"Timestep unit: {unit}")
         
         # Update the actual timestep value (keep default values)
         if units == "lj":
@@ -511,25 +573,54 @@ class LammpsScriptGenerator(QMainWindow):
         input_group = QGroupBox("Deformation Input Mode")
         input_layout = QVBoxLayout()
         
-        self.use_strain_rate = QRadioButton("Use Strain Rate")
-        self.use_engineering_strain = QRadioButton("Use Engineering Strain")
-        self.use_strain_rate.setChecked(True)
+        # Add explanation label
+        explanation_label = QLabel("Select which parameter to calculate automatically:")
+        explanation_label.setWordWrap(True)
+        input_layout.addWidget(explanation_label)
         
-        self.use_strain_rate.setToolTip("Use strain rate (traditional approach)")
-        self.use_engineering_strain.setToolTip("Use target engineering strain")
+        # Radio buttons for calculation mode
+        calc_mode_layout = QHBoxLayout()
         
-        input_layout.addWidget(self.use_strain_rate)
-        input_layout.addWidget(self.use_engineering_strain)
+        self.calc_strain_rate = QRadioButton("Calculate Strain Rate")
+        self.calc_engineering_strain = QRadioButton("Calculate Engineering Strain")
+        self.calc_steps = QRadioButton("Calculate Steps")
+        self.calc_engineering_strain.setChecked(True)  # Default to calculating engineering strain
+        
+        self.calc_strain_rate.setToolTip("Input Engineering Strain and Steps, calculate Strain Rate")
+        self.calc_engineering_strain.setToolTip("Input Strain Rate and Steps, calculate Engineering Strain")
+        self.calc_steps.setToolTip("Input Strain Rate and Engineering Strain, calculate Steps")
+        
+        calc_mode_layout.addWidget(self.calc_strain_rate)
+        calc_mode_layout.addWidget(self.calc_engineering_strain)
+        calc_mode_layout.addWidget(self.calc_steps)
+        
+        input_layout.addLayout(calc_mode_layout)
+        
+        # Add formula explanation
+        formula_label = QLabel("Formula: Strain Rate = Engineering Strain / Steps")
+        formula_label.setStyleSheet("font-style: italic; color: gray;")
+        formula_label.setAlignment(Qt.AlignCenter)
+        input_layout.addWidget(formula_label)
+        
         input_group.setLayout(input_layout)
         scroll_layout.addWidget(input_group)
         
         # Connect signals
-        self.use_strain_rate.toggled.connect(self.update_deformation_table_headers)
-        self.use_engineering_strain.toggled.connect(self.update_deformation_table_headers)
+        self.calc_strain_rate.toggled.connect(self.update_deformation_table_headers)
+        self.calc_engineering_strain.toggled.connect(self.update_deformation_table_headers)
+        self.calc_steps.toggled.connect(self.update_deformation_table_headers)
         
         # Deformation studies table
         studies_group = QGroupBox("Deformation Studies")
         studies_layout = QVBoxLayout()
+        
+        # Add documentation link for fix deform
+        fix_deform_label = QLabel("Deformation Methods Documentation:")
+        fix_deform_label.setStyleSheet("color: blue; text-decoration: underline; font-size: 10px;")
+        fix_deform_label.setCursor(QCursor(Qt.PointingHandCursor))
+        fix_deform_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_deform")
+        fix_deform_label.setToolTip("Click to open LAMMPS fix deform documentation")
+        studies_layout.addWidget(fix_deform_label)
         
         self.studies_table = QTableWidget()
         self.update_deformation_table_headers()
@@ -537,10 +628,13 @@ class LammpsScriptGenerator(QMainWindow):
         self.studies_table.setMaximumHeight(300)
         self.studies_table.setToolTip("Table of deformation studies to process")
         
+        # Connect cellChanged signal for auto-calculation
+        self.studies_table.cellChanged.connect(self.on_table_cell_changed)
+        
         # Add sample data
         self.studies_table.setRowCount(2)
-        self.add_sample_study_data(0, "study1", "fix_deform", "0.001", "x", "final", "10000", "100")
-        self.add_sample_study_data(1, "study2", "wall_movement", "0.01", "y", "positive", "20000", "200")
+        self.add_sample_study_data(0, "study1", "fix_deform", "0.001", "0.1", "100", "x", "final", "100")
+        self.add_sample_study_data(1, "study2", "wall_movement", "0.0001", "0.2", "2000", "y", "positive", "200")
         
         studies_buttons_layout = QHBoxLayout()
         
@@ -599,22 +693,139 @@ class LammpsScriptGenerator(QMainWindow):
         wall_settings_group.setLayout(wall_settings_layout)
         scroll_layout.addWidget(wall_settings_group)
         
+        # Bond breakage settings
+        bond_breakage_group = QGroupBox("Bond Breakage Settings")
+        bond_breakage_layout = QVBoxLayout()
+        
+        self.enable_bond_breakage = QCheckBox("Enable Bond Breakage")
+        self.enable_bond_breakage.setToolTip("Enable bond breakage during deformation simulation")
+        self.enable_bond_breakage.stateChanged.connect(self.toggle_bond_breakage_settings)
+        
+        bond_breakage_form_layout = QFormLayout()
+        
+        self.break_distance = QDoubleSpinBox()
+        self.break_distance.setRange(0.1, 10.0)
+        self.break_distance.setValue(1.5)
+        self.break_distance.setSingleStep(0.1)
+        self.break_distance.setDecimals(2)
+        self.break_distance.setEnabled(False)
+        self.break_distance.setToolTip("Distance at which bonds will break (in simulation units)")
+        
+        self.break_force = QDoubleSpinBox()
+        self.break_force.setRange(0.1, 1000.0)
+        self.break_force.setValue(50.0)
+        self.break_force.setSingleStep(1.0)
+        self.break_force.setDecimals(1)
+        self.break_force.setEnabled(False)
+        self.break_force.setToolTip("Force threshold for bond breakage (in simulation units)")
+        
+        bond_breakage_label = QLabel("Bond Breakage:")
+        bond_breakage_label.setStyleSheet("color: blue; text-decoration: underline;")
+        bond_breakage_label.setCursor(QCursor(Qt.PointingHandCursor))
+        bond_breakage_label.mousePressEvent = lambda e: self.open_lammps_doc("fix_bond_break")
+        bond_breakage_label.setToolTip("Click to open LAMMPS fix bond/break documentation")
+        
+        bond_breakage_form_layout.addRow("Break Distance:", self.break_distance)
+        bond_breakage_form_layout.addRow("Break Force:", self.break_force)
+        
+        bond_breakage_layout.addWidget(self.enable_bond_breakage)
+        bond_breakage_layout.addLayout(bond_breakage_form_layout)
+        bond_breakage_group.setLayout(bond_breakage_layout)
+        scroll_layout.addWidget(bond_breakage_group)
+        
         # Add stretch to push everything up
         scroll_layout.addStretch()
         
     def update_deformation_table_headers(self):
-        """Update table headers based on input mode"""
-        use_rate = self.use_strain_rate.isChecked()
+        """Update table headers and column states based on calculation mode"""
+        # Always show all three columns
+        headers = ["Name", "Method", "Strain Rate", "Engineering Strain", "Steps", "Axis", "Style", "Thermo Freq"]
         
-        if use_rate:
-            headers = ["Name", "Method", "Rate", "Axis", "Style", "Steps", "Thermo Freq"]
-        else:
-            headers = ["Name", "Method", "Max Strain", "Axis", "Style", "Steps", "Thermo Freq"]
-            
         self.studies_table.setColumnCount(len(headers))
         self.studies_table.setHorizontalHeaderLabels(headers)
         
-    def add_sample_study_data(self, row, name, method, rate_strain, axis, style_dir, steps, thermo_freq):
+        # Determine which column should be read-only based on calculation mode
+        if self.calc_strain_rate.isChecked():
+            readonly_col = 2  # Strain Rate column
+        elif self.calc_engineering_strain.isChecked():
+            readonly_col = 3  # Engineering Strain column
+        else:  # calc_steps.isChecked()
+            readonly_col = 4  # Steps column
+        
+        # Update all rows to reflect the read-only column
+        for row in range(self.studies_table.rowCount()):
+            self.update_row_readonly_state(row, readonly_col)
+    
+    def update_row_readonly_state(self, row, readonly_col):
+        """Update the read-only state of columns in a specific row"""
+        # Strain Rate column (index 2)
+        strain_rate_item = self.studies_table.item(row, 2)
+        if strain_rate_item:
+            if readonly_col == 2:
+                strain_rate_item.setFlags(strain_rate_item.flags() & ~Qt.ItemIsEditable)
+                strain_rate_item.setForeground(QColor(128, 128, 128))  # Grey text
+            else:
+                strain_rate_item.setFlags(strain_rate_item.flags() | Qt.ItemIsEditable)
+                strain_rate_item.setForeground(QColor(0, 0, 0))  # Black text
+        
+        # Engineering Strain column (index 3)
+        eng_strain_item = self.studies_table.item(row, 3)
+        if eng_strain_item:
+            if readonly_col == 3:
+                eng_strain_item.setFlags(eng_strain_item.flags() & ~Qt.ItemIsEditable)
+                eng_strain_item.setForeground(QColor(128, 128, 128))  # Grey text
+            else:
+                eng_strain_item.setFlags(eng_strain_item.flags() | Qt.ItemIsEditable)
+                eng_strain_item.setForeground(QColor(0, 0, 0))  # Black text
+        
+        # Steps column (index 4)
+        steps_item = self.studies_table.item(row, 4)
+        if steps_item:
+            if readonly_col == 4:
+                steps_item.setFlags(steps_item.flags() & ~Qt.ItemIsEditable)
+                steps_item.setForeground(QColor(128, 128, 128))  # Grey text
+            else:
+                steps_item.setFlags(steps_item.flags() | Qt.ItemIsEditable)
+                steps_item.setForeground(QColor(0, 0, 0))  # Black text
+    
+    def calculate_deformation_parameter(self, row, changed_col):
+        """Calculate the automatically determined parameter when values change"""
+        try:
+            # Get current values
+            strain_rate_item = self.studies_table.item(row, 2)
+            eng_strain_item = self.studies_table.item(row, 3)
+            steps_item = self.studies_table.item(row, 4)
+            
+            if not all([strain_rate_item, eng_strain_item, steps_item]):
+                return
+            
+            strain_rate = float(strain_rate_item.text())
+            eng_strain = float(eng_strain_item.text())
+            steps = int(steps_item.text())
+            
+            # Determine which parameter to calculate based on mode
+            if self.calc_strain_rate.isChecked():
+                # Calculate strain rate: strain_rate = engineering_strain / steps
+                if steps > 0:
+                    calculated_rate = eng_strain / steps
+                    strain_rate_item.setText(f"{calculated_rate:.6f}")
+            elif self.calc_engineering_strain.isChecked():
+                # Calculate engineering strain: engineering_strain = strain_rate * steps
+                calculated_strain = strain_rate * steps
+                eng_strain_item.setText(f"{calculated_strain:.6f}")
+            else:  # calc_steps.isChecked()
+                # Calculate steps: steps = engineering_strain / strain_rate
+                if strain_rate > 0:
+                    calculated_steps = int(round(eng_strain / strain_rate))
+                    if calculated_steps < 1:
+                        calculated_steps = 1
+                    steps_item.setText(str(calculated_steps))
+                    
+        except (ValueError, TypeError):
+            # Invalid input, ignore calculation
+            pass
+        
+    def add_sample_study_data(self, row, name, method, strain_rate, eng_strain, steps, axis, style_dir, thermo_freq):
         """Add sample study data to table with dropdowns for non-numeric fields"""
         # Name column (text)
         self.studies_table.setItem(row, 0, QTableWidgetItem(name))
@@ -626,29 +837,54 @@ class LammpsScriptGenerator(QMainWindow):
         method_combo.currentTextChanged.connect(lambda text, r=row: self.on_method_changed(r, text))
         self.studies_table.setCellWidget(row, 1, method_combo)
         
-        # Rate/Strain column (numeric - float)
-        rate_item = NumericTableWidgetItem(rate_strain, is_float=True, min_val=0.0, max_val=10.0)
-        self.studies_table.setItem(row, 2, rate_item)
+        # Strain Rate column (numeric - float)
+        strain_rate_item = NumericTableWidgetItem(strain_rate, is_float=True, min_val=0.0, max_val=10.0)
+        strain_rate_item.setData(Qt.UserRole, "strain_rate")
+        self.studies_table.setItem(row, 2, strain_rate_item)
+        
+        # Engineering Strain column (numeric - float)
+        eng_strain_item = NumericTableWidgetItem(eng_strain, is_float=True, min_val=0.0, max_val=10.0)
+        eng_strain_item.setData(Qt.UserRole, "eng_strain")
+        self.studies_table.setItem(row, 3, eng_strain_item)
+        
+        # Steps column (numeric - integer)
+        steps_item = NumericTableWidgetItem(steps, is_float=False, min_val=1, max_val=1000000)
+        steps_item.setData(Qt.UserRole, "steps")
+        self.studies_table.setItem(row, 4, steps_item)
         
         # Axis column (dropdown)
         axis_combo = QComboBox()
         axis_combo.addItems(["x", "y", "z"])
         axis_combo.setCurrentText(axis)
-        self.studies_table.setCellWidget(row, 3, axis_combo)
+        self.studies_table.setCellWidget(row, 5, axis_combo)
         
         # Style column (dropdown - context-aware based on method)
         style_combo = QComboBox()
         self.update_style_options(style_combo, method)
         style_combo.setCurrentText(style_dir)
-        self.studies_table.setCellWidget(row, 4, style_combo)
-        
-        # Steps column (numeric - integer)
-        steps_item = NumericTableWidgetItem(steps, is_float=False, min_val=1, max_val=1000000)
-        self.studies_table.setItem(row, 5, steps_item)
+        self.studies_table.setCellWidget(row, 6, style_combo)
         
         # Thermo Freq column (numeric - integer)
         thermo_item = NumericTableWidgetItem(thermo_freq, is_float=False, min_val=1, max_val=10000)
-        self.studies_table.setItem(row, 6, thermo_item)
+        self.studies_table.setItem(row, 7, thermo_item)
+        
+        # Update read-only state for this row
+        if self.calc_strain_rate.isChecked():
+            readonly_col = 2
+        elif self.calc_engineering_strain.isChecked():
+            readonly_col = 3
+        else:
+            readonly_col = 4
+        self.update_row_readonly_state(row, readonly_col)
+        
+        # Perform initial calculation
+        self.calculate_deformation_parameter(row, -1)
+    
+    def on_table_cell_changed(self, row, column):
+        """Handle table cell changes and trigger auto-calculation for deformation parameters"""
+        # Only handle changes in strain rate (2), engineering strain (3), or steps (4) columns
+        if column in [2, 3, 4]:
+            self.calculate_deformation_parameter(row, column)
         
     def update_style_options(self, style_combo, method):
         """Update style dropdown options based on method"""
@@ -664,7 +900,7 @@ class LammpsScriptGenerator(QMainWindow):
             
     def on_method_changed(self, row, new_method):
         """Handle method change and update style options"""
-        style_combo = self.studies_table.cellWidget(row, 4)
+        style_combo = self.studies_table.cellWidget(row, 6)
         if style_combo:
             current_style = style_combo.currentText()
             self.update_style_options(style_combo, new_method)
@@ -685,24 +921,26 @@ class LammpsScriptGenerator(QMainWindow):
             # Get values from previous row
             name_item = self.studies_table.item(row_count - 1, 0)
             method_combo = self.studies_table.cellWidget(row_count - 1, 1)
-            rate_item = self.studies_table.item(row_count - 1, 2)
-            axis_combo = self.studies_table.cellWidget(row_count - 1, 3)
-            style_combo = self.studies_table.cellWidget(row_count - 1, 4)
-            steps_item = self.studies_table.item(row_count - 1, 5)
-            thermo_item = self.studies_table.item(row_count - 1, 6)
+            strain_rate_item = self.studies_table.item(row_count - 1, 2)
+            eng_strain_item = self.studies_table.item(row_count - 1, 3)
+            steps_item = self.studies_table.item(row_count - 1, 4)
+            axis_combo = self.studies_table.cellWidget(row_count - 1, 5)
+            style_combo = self.studies_table.cellWidget(row_count - 1, 6)
+            thermo_item = self.studies_table.item(row_count - 1, 7)
             
             name = name_item.text() if name_item else f"study{row_count + 1}"
             method = method_combo.currentText() if method_combo else "fix_deform"
-            rate = rate_item.text() if rate_item else "0.001"
+            strain_rate = strain_rate_item.text() if strain_rate_item else "0.001"
+            eng_strain = eng_strain_item.text() if eng_strain_item else "0.1"
+            steps = steps_item.text() if steps_item else "100"
             axis = axis_combo.currentText() if axis_combo else "x"
             style = style_combo.currentText() if style_combo else "final"
-            steps = steps_item.text() if steps_item else "10000"
             thermo = thermo_item.text() if thermo_item else "100"
             
-            self.add_sample_study_data(row_count, name, method, rate, axis, style, steps, thermo)
+            self.add_sample_study_data(row_count, name, method, strain_rate, eng_strain, steps, axis, style, thermo)
         else:
             # Set default values
-            self.add_sample_study_data(row_count, f"study{row_count + 1}", "fix_deform", "0.001", "x", "final", "10000", "100")
+            self.add_sample_study_data(row_count, f"study{row_count + 1}", "fix_deform", "0.001", "0.1", "100", "x", "final", "100")
         
     def remove_deformation_study(self):
         """Remove selected deformation study from the table"""
@@ -747,15 +985,7 @@ class LammpsScriptGenerator(QMainWindow):
         output_path_layout.addWidget(self.output_path_edit)
         output_path_layout.addWidget(self.output_path_browse)
         
-        self.model_name = QLineEdit()
-        self.model_name.setPlaceholderText("Enter model name")
-        self.model_name.setToolTip("Name for the model (used for output filenames)")
-        
-        # Add to widget references for focus jumping
-        self.widget_references['model_name'] = self.model_name
-        
         path_layout.addRow("Output Path:", output_path_layout)
-        path_layout.addRow("Model Name:", self.model_name)
         path_group.setLayout(path_layout)
         scroll_layout.addWidget(path_group)
         
@@ -947,6 +1177,30 @@ class LammpsScriptGenerator(QMainWindow):
         self.cluster_mail.setPlaceholderText("your.email@example.com")
         self.cluster_mail.setToolTip("Email address for job notifications")
         
+        # Add missing cluster options
+        self.cluster_cpus_per_task = QSpinBox()
+        self.cluster_cpus_per_task.setRange(1, 64)
+        self.cluster_cpus_per_task.setValue(1)
+        self.cluster_cpus_per_task.setToolTip("Number of CPUs per task")
+        
+        self.cluster_export = QComboBox()
+        self.cluster_export.addItems(["NONE", "ALL"])
+        self.cluster_export.setCurrentText("NONE")
+        self.cluster_export.setToolTip("Environment variables export setting")
+        
+        self.cluster_output = QLineEdit()
+        self.cluster_output.setText("/dev/null")
+        self.cluster_output.setToolTip("Output file path for job stdout")
+        
+        self.cluster_error = QLineEdit()
+        self.cluster_error.setText("/dev/null")
+        self.cluster_error.setToolTip("Error file path for job stderr")
+        
+        self.cluster_mail_type = QComboBox()
+        self.cluster_mail_type.addItems(["NONE", "BEGIN", "END", "FAIL", "REQUEUE", "ALL", "STAGE_OUT", "TIME_LIMIT", "ARRAY_TASKS"])
+        self.cluster_mail_type.setCurrentText("ALL")
+        self.cluster_mail_type.setToolTip("Email notification types")
+        
         # Add to widget references for focus jumping
         self.widget_references['cluster_mail'] = self.cluster_mail
         
@@ -959,8 +1213,13 @@ class LammpsScriptGenerator(QMainWindow):
         cluster_form_layout.addRow("Partition:", self.cluster_partition)
         cluster_form_layout.addRow("Nodes:", self.cluster_nodes)
         cluster_form_layout.addRow("Tasks:", self.cluster_ntasks)
+        cluster_form_layout.addRow("CPUs per Task:", self.cluster_cpus_per_task)
         cluster_form_layout.addRow("Time Limit:", self.cluster_time)
+        cluster_form_layout.addRow("Export:", self.cluster_export)
+        cluster_form_layout.addRow("Output:", self.cluster_output)
+        cluster_form_layout.addRow("Error:", self.cluster_error)
         cluster_form_layout.addRow("Email:", self.cluster_mail)
+        cluster_form_layout.addRow("Mail Type:", self.cluster_mail_type)
         self.cluster_group.setLayout(cluster_form_layout)
         self.cluster_group.setEnabled(False)
         scroll_layout.addWidget(self.cluster_group)
@@ -976,8 +1235,13 @@ class LammpsScriptGenerator(QMainWindow):
         """Toggle execution mode controls"""
         if mode == 0:  # Local
             self.cluster_group.setEnabled(False)
+            self.sequential_execution.setEnabled(True)
+            self.sequential_execution.setToolTip("When enabled, simulations will run one after another to avoid resource conflicts.\n\nWhen disabled, simulations may run in parallel (if supported by the execution environment), but this requires careful resource management to avoid overloading the system.")
         else:  # Cluster
             self.cluster_group.setEnabled(True)
+            self.sequential_execution.setEnabled(False)
+            self.sequential_execution.setChecked(False)
+            self.sequential_execution.setToolTip("Sequential execution is only available for local runs. On clusters, jobs are managed by the scheduler.")
             
     def browse_system_path(self):
         """Browse for system path (file or directory)"""
@@ -1112,7 +1376,6 @@ class LammpsScriptGenerator(QMainWindow):
         # Output configuration
         output_config = config.get("output", {})
         self.output_path_edit.setText(output_config.get("output_path", ""))
-        self.model_name.setText(output_config.get("model_name", ""))
         
         self.enable_trajectory.setChecked(output_config.get("enable_trajectory", True))
         self.traj_format.setCurrentText(output_config.get("traj_format", "lammpstrj"))
@@ -1140,8 +1403,13 @@ class LammpsScriptGenerator(QMainWindow):
         self.cluster_partition.setCurrentText(cluster_config.get("cluster_partition", "singlenode"))
         self.cluster_nodes.setValue(cluster_config.get("cluster_nodes", 1))
         self.cluster_ntasks.setValue(cluster_config.get("cluster_ntasks", 72))
+        self.cluster_cpus_per_task.setValue(cluster_config.get("cluster_cpus_per_task", 1))
         self.cluster_time.setText(cluster_config.get("cluster_time", "24:00:00"))
+        self.cluster_export.setCurrentText(cluster_config.get("cluster_export", "NONE"))
+        self.cluster_output.setText(cluster_config.get("cluster_output", "/dev/null"))
+        self.cluster_error.setText(cluster_config.get("cluster_error", "/dev/null"))
         self.cluster_mail.setText(cluster_config.get("cluster_mail", ""))
+        self.cluster_mail_type.setCurrentText(cluster_config.get("cluster_mail_type", "ALL"))
         
         # Multi-study configuration
         multistudy_config = config.get("multistudy", {})
@@ -1156,10 +1424,11 @@ class LammpsScriptGenerator(QMainWindow):
                 i, 
                 study.get("name", f"study{i+1}"),
                 study.get("method", "fix_deform"),
-                str(study.get("rate_strain", 0.001)),
+                str(study.get("strain_rate", 0.001)),
+                str(study.get("engineering_strain", 0.1)),
+                str(study.get("steps", 100)),
                 study.get("axis", "x"),
                 study.get("style_dir", "final"),
-                str(study.get("steps", 10000)),
                 str(study.get("thermo_freq", 100))
             )
             
@@ -1207,11 +1476,32 @@ class LammpsScriptGenerator(QMainWindow):
                     if widget:
                         widget.setFocus()
                         # Switch to the appropriate tab
-                        if validation_result["field"] in ["system_path", "model_name", "output_path"]:
+                        if validation_result["field"] in ["system_path", "output_path"]:
                             self.tab_widget.setCurrentIndex(0)  # System tab
                         elif validation_result["field"] in ["cluster_mail"]:
                             self.tab_widget.setCurrentIndex(3)  # Cluster tab
                 return
+            
+            # Check if output path exists and is not empty
+            output_path = config.get("output", {}).get("output_path", "")
+            if not output_path:
+                # If no output path specified, use the system path directory
+                system_path = config.get("system", {}).get("system_path", "")
+                if system_path:
+                    output_path = os.path.dirname(system_path) if os.path.isfile(system_path) else system_path
+            
+            if output_path and os.path.exists(output_path):
+                # Check if directory is not empty
+                if os.path.isdir(output_path) and os.listdir(output_path):
+                    reply = QMessageBox.question(
+                        self, 
+                        "Directory Not Empty",
+                        f"The directory '{output_path}' is not empty. Files may be overwritten. Do you want to continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    if reply == QMessageBox.No:
+                        return
                 
             # Create script generator
             generator = ScriptGen(config)
@@ -1263,7 +1553,6 @@ class LammpsScriptGenerator(QMainWindow):
         # Output configuration
         config["output"] = {
             "output_path": self.output_path_edit.text(),
-            "model_name": self.model_name.text(),
             "enable_trajectory": self.enable_trajectory.isChecked(),
             "traj_format": self.traj_format.currentText(),
             "trj_output_items": self.trj_output_items.toPlainText(),
@@ -1282,13 +1571,20 @@ class LammpsScriptGenerator(QMainWindow):
             "cluster_partition": self.cluster_partition.currentText(),
             "cluster_nodes": self.cluster_nodes.value(),
             "cluster_ntasks": self.cluster_ntasks.value(),
+            "cluster_cpus_per_task": self.cluster_cpus_per_task.value(),
             "cluster_time": self.cluster_time.text(),
-            "cluster_mail": self.cluster_mail.text()
+            "cluster_export": self.cluster_export.currentText(),
+            "cluster_output": self.cluster_output.text(),
+            "cluster_error": self.cluster_error.text(),
+            "cluster_mail": self.cluster_mail.text(),
+            "cluster_mail_type": self.cluster_mail_type.currentText()
         }
         
         # Multi-study configuration
         config["multistudy"] = {
-            "use_strain_rate": self.use_strain_rate.isChecked(),
+            "calculation_mode": "strain_rate" if self.calc_strain_rate.isChecked() else 
+                              "engineering_strain" if self.calc_engineering_strain.isChecked() else 
+                              "steps",
             "enable_multi_system": self.enable_multi_system.isChecked(),
             "sequential_execution": self.sequential_execution.isChecked(),
             "deform_studies": []
@@ -1298,21 +1594,23 @@ class LammpsScriptGenerator(QMainWindow):
         for row in range(self.studies_table.rowCount()):
             name_item = self.studies_table.item(row, 0)
             method_combo = self.studies_table.cellWidget(row, 1)
-            rate_strain_item = self.studies_table.item(row, 2)
-            axis_combo = self.studies_table.cellWidget(row, 3)
-            style_combo = self.studies_table.cellWidget(row, 4)
-            steps_item = self.studies_table.item(row, 5)
-            thermo_item = self.studies_table.item(row, 6)
+            strain_rate_item = self.studies_table.item(row, 2)
+            eng_strain_item = self.studies_table.item(row, 3)
+            steps_item = self.studies_table.item(row, 4)
+            axis_combo = self.studies_table.cellWidget(row, 5)
+            style_combo = self.studies_table.cellWidget(row, 6)
+            thermo_item = self.studies_table.item(row, 7)
             
-            if all([name_item, method_combo, rate_strain_item, axis_combo, style_combo, steps_item, thermo_item]):
+            if all([name_item, method_combo, strain_rate_item, eng_strain_item, steps_item, axis_combo, style_combo, thermo_item]):
                 try:
                     study = {
                         "name": name_item.text(),
                         "method": method_combo.currentText(),
-                        "rate_strain": float(rate_strain_item.text()),
+                        "strain_rate": float(strain_rate_item.text()),
+                        "engineering_strain": float(eng_strain_item.text()),
+                        "steps": int(steps_item.text()),
                         "axis": axis_combo.currentText(),
                         "style_dir": style_combo.currentText(),
-                        "steps": int(steps_item.text()),
                         "thermo_freq": int(thermo_item.text())
                     }
                     config["multistudy"]["deform_studies"].append(study)
@@ -1354,11 +1652,6 @@ class LammpsScriptGenerator(QMainWindow):
         if output_path and not os.path.exists(os.path.dirname(output_path)):
             return {"valid": False, "message": f"Output path does not exist: {output_path}", "field": "output_path"}
             
-        # Check model name
-        model_name = config.get("output", {}).get("model_name", "")
-        if not model_name:
-            return {"valid": False, "message": "Please specify a model name.", "field": "model_name"}
-            
         # Check cluster email if cluster execution is enabled
         if config.get("cluster", {}).get("execution_mode") == "cluster":
             email = config.get("cluster", {}).get("cluster_mail", "")
@@ -1368,47 +1661,41 @@ class LammpsScriptGenerator(QMainWindow):
         return {"valid": True}
         
     def show_generated_scripts(self, files, generator, config):
-        """Show generated scripts and execution commands"""
+        """Show the path where files were generated"""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Generated Scripts")
-        dialog.setMinimumSize(600, 400)
+        dialog.setWindowTitle("Files Generated")
+        dialog.setMinimumSize(400, 200)
         
         layout = QVBoxLayout()
         
-        # Files list
-        files_label = QLabel("Generated Files:")
-        layout.addWidget(files_label)
+        # Find the root directory path from the generated files
+        root_path = ""
+        if files:
+            # Get the directory of the first file and go up to find the root simulation folder
+            first_file = files[0]
+            root_path = os.path.dirname(first_file)
+            # If we're in a subfolder, go up to find the root
+            while root_path and not any(f.startswith(root_path) for f in files if f != first_file):
+                parent_path = os.path.dirname(root_path)
+                if parent_path == root_path:  # Reached the root
+                    break
+                root_path = parent_path
         
-        files_text = QTextEdit()
-        files_text.setPlainText("\n".join(files))
-        files_text.setReadOnly(True)
-        layout.addWidget(files_text)
+        # Path information
+        path_label = QLabel("Files generated at:")
+        path_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(path_label)
         
-        # Execution commands
-        commands_label = QLabel("Execution Commands:")
-        layout.addWidget(commands_label)
+        path_text = QTextEdit()
+        path_text.setPlainText(root_path if root_path else "Unknown location")
+        path_text.setReadOnly(True)
+        path_text.setMaximumHeight(60)
+        layout.addWidget(path_text)
         
-        commands_text = QTextEdit()
-        commands = []
-        
-        # Check execution mode
-        is_cluster_execution = config.get("cluster", {}).get("execution_mode") == "cluster"
-        
-        for file_path in files:
-            if file_path.endswith(".in"):
-                # Only show lmp command for local execution
-                if not is_cluster_execution:
-                    commands.append(f"lmp -in {file_path}")
-            elif file_path.endswith(".job"):
-                # For cluster execution, only show sbatch command
-                commands.append(f"sbatch {file_path}")
-            elif file_path.endswith(".sh"):
-                # For shell scripts, show bash command
-                commands.append(f"bash {file_path}")
-                
-        commands_text.setPlainText("\n".join(commands))
-        commands_text.setReadOnly(True)
-        layout.addWidget(commands_text)
+        # Additional info
+        info_label = QLabel("All simulation files, scripts, and settings have been generated in the above location.")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
         
         # Close button
         close_button = QPushButton("Close")
@@ -1473,7 +1760,6 @@ class LammpsScriptGenerator(QMainWindow):
             
             # Load output settings
             self.output_path_edit.setText(self.settings.value("output_path", ""))
-            self.model_name.setText(self.settings.value("model_name", ""))
             
             self.enable_trajectory.setChecked(self.settings.value("enable_trajectory", True, type=bool))
             self.traj_format.setCurrentText(self.settings.value("traj_format", "lammpstrj"))
@@ -1494,11 +1780,22 @@ class LammpsScriptGenerator(QMainWindow):
             self.cluster_partition.setCurrentText(self.settings.value("cluster_partition", "singlenode"))
             self.cluster_nodes.setValue(int(self.settings.value("cluster_nodes", 1)))
             self.cluster_ntasks.setValue(int(self.settings.value("cluster_ntasks", 72)))
+            self.cluster_cpus_per_task.setValue(int(self.settings.value("cluster_cpus_per_task", 1)))
             self.cluster_time.setText(self.settings.value("cluster_time", "24:00:00"))
+            self.cluster_export.setCurrentText(self.settings.value("cluster_export", "NONE"))
+            self.cluster_output.setText(self.settings.value("cluster_output", "/dev/null"))
+            self.cluster_error.setText(self.settings.value("cluster_error", "/dev/null"))
             self.cluster_mail.setText(self.settings.value("cluster_mail", ""))
+            self.cluster_mail_type.setCurrentText(self.settings.value("cluster_mail_type", "ALL"))
             
             # Load multistudy settings
-            self.use_strain_rate.setChecked(self.settings.value("use_strain_rate", True, type=bool))
+            calculation_mode = self.settings.value("calculation_mode", "engineering_strain")
+            if calculation_mode == "strain_rate":
+                self.calc_strain_rate.setChecked(True)
+            elif calculation_mode == "engineering_strain":
+                self.calc_engineering_strain.setChecked(True)
+            else:  # "steps"
+                self.calc_steps.setChecked(True)
             self.enable_multi_system.setChecked(self.settings.value("enable_multi_system", False, type=bool))
             self.sequential_execution.setChecked(self.settings.value("sequential_execution", True, type=bool))
             
@@ -1548,7 +1845,6 @@ class LammpsScriptGenerator(QMainWindow):
             
             # Save output settings
             self.settings.setValue("output_path", self.output_path_edit.text())
-            self.settings.setValue("model_name", self.model_name.text())
             self.settings.setValue("enable_trajectory", self.enable_trajectory.isChecked())
             self.settings.setValue("traj_format", self.traj_format.currentText())
             self.settings.setValue("trj_output_items", self.trj_output_items.toPlainText())
@@ -1561,11 +1857,19 @@ class LammpsScriptGenerator(QMainWindow):
             self.settings.setValue("cluster_partition", self.cluster_partition.currentText())
             self.settings.setValue("cluster_nodes", self.cluster_nodes.value())
             self.settings.setValue("cluster_ntasks", self.cluster_ntasks.value())
+            self.settings.setValue("cluster_cpus_per_task", self.cluster_cpus_per_task.value())
             self.settings.setValue("cluster_time", self.cluster_time.text())
+            self.settings.setValue("cluster_export", self.cluster_export.currentText())
+            self.settings.setValue("cluster_output", self.cluster_output.text())
+            self.settings.setValue("cluster_error", self.cluster_error.text())
             self.settings.setValue("cluster_mail", self.cluster_mail.text())
+            self.settings.setValue("cluster_mail_type", self.cluster_mail_type.currentText())
             
             # Save multistudy settings
-            self.settings.setValue("use_strain_rate", self.use_strain_rate.isChecked())
+            calculation_mode = "strain_rate" if self.calc_strain_rate.isChecked() else \
+                             "engineering_strain" if self.calc_engineering_strain.isChecked() else \
+                             "steps"
+            self.settings.setValue("calculation_mode", calculation_mode)
             self.settings.setValue("enable_multi_system", self.enable_multi_system.isChecked())
             self.settings.setValue("sequential_execution", self.sequential_execution.isChecked())
             

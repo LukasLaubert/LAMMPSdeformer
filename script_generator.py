@@ -61,17 +61,17 @@ class LammpsScriptGenerator:
             root_simulation_dir = output_path
             os.makedirs(root_simulation_dir, exist_ok=True)
             
-            # Create dataFilesFolder and copy all data files there
-            data_files_folder = os.path.join(root_simulation_dir, "dataFilesFolder")
+            # Create input_files folder and copy all data files there
+            data_files_folder = os.path.join(root_simulation_dir, "input_files")
             os.makedirs(data_files_folder, exist_ok=True)
             
-            # Copy all data files to dataFilesFolder
+            # Copy all data files to input_files
             data_file_dest_paths = {}
             for i, system_file in enumerate(system_files):
                 system_name = Path(system_file).stem
                 data_file_dest = os.path.join(data_files_folder, f"{system_name}.data")
                 shutil.copy2(system_file, data_file_dest)
-                data_file_dest_paths[system_file] = os.path.join("dataFilesFolder", f"{system_name}.data")
+                data_file_dest_paths[system_file] = os.path.join("input_files", f"{system_name}.data")
                 
                 # Copy potential file if used
                 system_config = self.config.get("system", {})
@@ -103,9 +103,14 @@ class LammpsScriptGenerator:
                 for system_file in system_files:
                     system_name = Path(system_file).stem
                     
-                    # Create system-specific folder within study folder
-                    system_folder = os.path.join(study_folder, system_name)
-                    os.makedirs(system_folder, exist_ok=True)
+                    # Determine folder structure based on system type
+                    if is_multi_system:
+                        # For multiple systems: create system-specific folder within study folder
+                        system_folder = os.path.join(study_folder, system_name)
+                        os.makedirs(system_folder, exist_ok=True)
+                    else:
+                        # For single system: use study folder directly
+                        system_folder = study_folder
                     
                     # Generate script for this study-system combination
                     model_name = f"{system_name}_{study_name}"
@@ -119,24 +124,54 @@ class LammpsScriptGenerator:
                     if not result["success"]:
                         return result
                     
-                    # Generate job file if cluster execution is enabled
-                    if self.config.get("cluster", {}).get("execution_mode") == "cluster":
-                        job_result = self.generate_job_file(
-                            system_file, model_name, result["script_file"], root_simulation_dir, study_name, system_name
-                        )
-                        if not job_result["success"]:
-                            return job_result
+                    # Don't generate individual job files anymore - we'll create one master job file
             
-            # Generate execution script for multi-system
-            if is_multi_system and self.config.get("multistudy", {}).get("sequential_execution", True):
-                exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies)
+            # Generate execution script based on execution mode
+            execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
+            if execution_mode == "local" and self.config.get("multistudy", {}).get("sequential_execution", True):
+                # Sequential execution only for local runs
+                exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
                 if not exec_script_result["success"]:
                     return exec_script_result
+            elif execution_mode == "cluster":
+                # For cluster runs, generate a master submission script
+                cluster_script_result = self.generate_cluster_submission_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
+                if not cluster_script_result["success"]:
+                    return cluster_script_result
+            
+            # Save settings to JSON file
+            settings_result = self.save_settings_to_json(root_simulation_dir)
+            if not settings_result["success"]:
+                return settings_result
             
             return {"success": True, "message": "All scripts generated successfully.", "files": self.generated_files}
             
         except Exception as e:
             return {"success": False, "message": f"Error generating scripts: {str(e)}"}
+        
+    def save_settings_to_json(self, root_simulation_dir):
+        """Save all settings to a JSON file in the root folder"""
+        try:
+            settings_file = os.path.join(root_simulation_dir, "lammps_settings.json")
+            
+            # Create a copy of the config to avoid modifying the original
+            settings_to_save = self.config.copy()
+            
+            # Remove any sensitive or temporary data if needed
+            if "system" in settings_to_save and "system_path" in settings_to_save["system"]:
+                # Keep the system path as it's needed for restoration
+                pass
+            
+            # Write settings to JSON file
+            with open(settings_file, 'w') as f:
+                json.dump(settings_to_save, f, indent=2)
+            
+            self.generated_files.append(settings_file)
+            
+            return {"success": True, "message": f"Settings saved to: {settings_file}"}
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error saving settings: {str(e)}"}
         
     def check_units_consistency(self, system_files):
         """Check if all data files have the same units"""
@@ -315,11 +350,18 @@ class LammpsScriptGenerator:
                     "#------------------------",
                     f"# Define wall atoms (outer {wall_thickness}% of box in {axis} direction)",
                     f"variable wall_thickness equal {wall_thickness/100.0}",
-                    f"variable box_{axis} equal lz",  # This should be the actual box dimension
-                    f"variable wall_pos equal v_wall_thickness*v_box_{axis}",
-                    f"group wall_atoms region block INF INF INF INF INF INF EDGE EDGE EDGE",
+                    f"# Get box dimensions for {axis} axis",
+                    f"variable box_{axis} equal bound_{axis}",
+                    f"variable wall_size equal v_wall_thickness*v_box_{axis}",
+                    "# Define wall regions for both sides",
+                    f"region wall_{axis}_pos block INF INF INF INF INF INF ${{v_box_{axis}}}-v_wall_size EDGE EDGE EDGE EDGE EDGE EDGE",
+                    f"region wall_{axis}_neg block INF INF INF INF INF INF 0.0 v_wall_size EDGE EDGE EDGE EDGE EDGE EDGE",
+                    "# Create wall atom groups",
+                    f"group wall_atoms_{axis}_pos region wall_{axis}_pos",
+                    f"group wall_atoms_{axis}_neg region wall_{axis}_neg",
+                    f"group wall_atoms union wall_atoms_{axis}_pos wall_atoms_{axis}_neg",
                     f"group mobile_atoms subtract all wall_atoms",
-                    "# Exclude wall atoms from integration",
+                    "# Exclude wall atoms from standard integration",
                     "fix integrate mobile_atoms nve",
                     ""
                 ])
@@ -345,22 +387,56 @@ class LammpsScriptGenerator:
                     
                     # Handle different wall directions
                     direction = deform_params.get('direction', 'positive')
+                    velocity = deform_params.get('velocity', 0.01)
+                    
                     if direction == 'symmetric':
-                        # Create two walls moving in opposite directions
+                        # Move both walls in opposite directions
                         script_lines.extend([
                             "# Symmetric wall movement - both walls moving",
-                            f"fix wall_pos all wall/reflect {deform_params['axis']} EDGE {deform_params['velocity']}",
-                            f"fix wall_neg all wall/reflect {deform_params['axis']} 0.0 {-deform_params['velocity']}",
+                            f"fix move_wall_pos wall_atoms_{axis}_pos move linear {velocity} 0.0 0.0",
+                            f"fix move_wall_neg wall_atoms_{axis}_neg move linear {-velocity} 0.0 0.0",
                             ""
                         ])
-                    else:
-                        # Single wall movement
-                        edge = "EDGE" if direction == 'positive' else "0.0"
-                        script_lines.extend([
-                            "# Single wall movement",
-                            f"fix wall_move all wall/reflect {deform_params['axis']} {edge} {deform_params['velocity']}",
-                            ""
-                        ])
+                    elif direction == 'positive':
+                        # Move only positive wall
+                        if axis == 'x':
+                            script_lines.extend([
+                                "# Positive wall movement",
+                                f"fix move_wall_pos wall_atoms_{axis}_pos move linear {velocity} 0.0 0.0",
+                                ""
+                            ])
+                        elif axis == 'y':
+                            script_lines.extend([
+                                "# Positive wall movement",
+                                f"fix move_wall_pos wall_atoms_{axis}_pos move linear 0.0 {velocity} 0.0",
+                                ""
+                            ])
+                        else:  # z axis
+                            script_lines.extend([
+                                "# Positive wall movement",
+                                f"fix move_wall_pos wall_atoms_{axis}_pos move linear 0.0 0.0 {velocity}",
+                                ""
+                            ])
+                    else:  # negative direction
+                        # Move only negative wall
+                        if axis == 'x':
+                            script_lines.extend([
+                                "# Negative wall movement",
+                                f"fix move_wall_neg wall_atoms_{axis}_neg move linear {-velocity} 0.0 0.0",
+                                ""
+                            ])
+                        elif axis == 'y':
+                            script_lines.extend([
+                                "# Negative wall movement",
+                                f"fix move_wall_neg wall_atoms_{axis}_neg move linear 0.0 {-velocity} 0.0",
+                                ""
+                            ])
+                        else:  # z axis
+                            script_lines.extend([
+                                "# Negative wall movement",
+                                f"fix move_wall_neg wall_atoms_{axis}_neg move linear 0.0 0.0 {-velocity}",
+                                ""
+                            ])
             else:
                 script_lines.extend([
                     "#------------------------",
@@ -484,31 +560,28 @@ class LammpsScriptGenerator:
                 }
                     
         elif method == "wall_movement":
-            if use_strain_rate:
-                # Use wall velocity directly
-                return {
-                    'velocity': rate_strain,
-                    'axis': axis,
-                    'direction': style_dir
-                }
-            else:
-                # Use engineering strain - calculate equivalent velocity
-                # For wall movement: velocity = (strain * box_length) / time
-                # We need to estimate box length - this is simplified
-                estimated_box_length = 100.0  # Default estimate
-                timestep = system_config.get("timestep", 0.001)
-                time = steps * timestep
-                
-                if time > 0:
-                    velocity = (rate_strain * estimated_box_length) / time
-                else:
-                    velocity = 0.01
-                    
-                return {
-                    'velocity': velocity,
-                    'axis': axis,
-                    'direction': style_dir
-                }
+            # Get the new parameter structure
+            strain_rate = deform_study.get("strain_rate", 0.001)
+            engineering_strain = deform_study.get("engineering_strain", 0.1)
+            steps = deform_study.get("steps", 100)
+            axis = deform_study.get("axis", "x")
+            direction = deform_study.get("style_dir", "positive")
+            
+            # Calculate wall velocity based on strain rate
+            # For wall movement: velocity = (strain_rate * box_length) 
+            # We'll use a reasonable box length estimate, but this could be improved
+            # by reading actual box dimensions from the data file
+            estimated_box_length = 100.0  # Default estimate in Angstroms
+            timestep = system_config.get("timestep", 0.001)
+            
+            # Calculate velocity in distance/timestep units
+            velocity = strain_rate * estimated_box_length * timestep
+            
+            return {
+                'velocity': velocity,
+                'axis': axis,
+                'direction': direction
+            }
         
         return None
         
@@ -521,14 +594,25 @@ class LammpsScriptGenerator:
             partition = cluster_config.get("cluster_partition", "singlenode")
             nodes = cluster_config.get("cluster_nodes", 1)
             ntasks = cluster_config.get("cluster_ntasks", 72)
+            cpus_per_task = cluster_config.get("cluster_cpus_per_task", 1)
             time_limit = cluster_config.get("cluster_time", "24:00:00")
+            export_setting = cluster_config.get("cluster_export", "NONE")
+            output_file = cluster_config.get("cluster_output", "/dev/null")
+            error_file = cluster_config.get("cluster_error", "/dev/null")
             email = cluster_config.get("cluster_mail", "")
+            mail_type = cluster_config.get("cluster_mail_type", "ALL")
             
-            # Generate job filename in root simulation directory
-            job_filename = os.path.join(root_simulation_dir, f"{model_name}.job")
-            
-            # Calculate relative path to script file
-            script_relative_path = os.path.join(study_name, system_name, f"{model_name}.in")
+            # Determine job file location based on system type
+            if system_name:
+                # Multi-system: job file goes in study/system/ directory
+                job_filename = os.path.join(root_simulation_dir, study_name, system_name, f"{model_name}.job")
+                # Change to simulation directory
+                sim_directory = f"{study_name}/{system_name}"
+            else:
+                # Single-system: job file goes in study/ directory
+                job_filename = os.path.join(root_simulation_dir, study_name, f"{model_name}.job")
+                # Change to simulation directory
+                sim_directory = study_name
             
             # Generate job file content
             job_lines = [
@@ -536,14 +620,19 @@ class LammpsScriptGenerator:
                 f"#SBATCH --job-name={model_name}",
                 f"#SBATCH --partition={partition}",
                 f"#SBATCH --nodes={nodes}",
-                f"#SBATCH --ntasks={ntasks}",
+                f"#SBATCH --ntasks-per-node={ntasks}",
+                f"#SBATCH --cpus-per-task={cpus_per_task}",
                 f"#SBATCH --time={time_limit}",
+                f"#SBATCH --export={export_setting}",
+                f"#SBATCH --output={output_file}",
+                f"#SBATCH --error={error_file}"
             ]
             
+            # Add email settings if provided
             if email:
                 job_lines.extend([
-                    f"#SBATCH --mail-type=ALL",
                     f"#SBATCH --mail-user={email}",
+                    f"#SBATCH --mail-type={mail_type}"
                 ])
             
             job_lines.extend([
@@ -551,11 +640,11 @@ class LammpsScriptGenerator:
                 "# Load modules",
                 "module load lammps",
                 "",
-                "# Change to the correct directory",
-                f"cd {root_simulation_dir}",
+                "# Change to the simulation directory (relative to job submission location)",
+                f"cd {sim_directory}",
                 "",
                 "# Run LAMMPS",
-                f"srun lmp -in {script_relative_path}",
+                f"srun lmp -in {model_name}.in",
                 ""
             ])
             
@@ -570,7 +659,7 @@ class LammpsScriptGenerator:
         except Exception as e:
             return {"success": False, "message": f"Error generating job file: {str(e)}"}
         
-    def generate_execution_script(self, root_simulation_dir, system_files, deform_studies):
+    def generate_execution_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
         """Generate execution script for sequential multi-system processing"""
         try:
             exec_script_path = os.path.join(root_simulation_dir, "run_all.sh")
@@ -593,25 +682,32 @@ class LammpsScriptGenerator:
                     system_name = Path(system_file).stem
                     model_name = f"{system_name}_{study_name}"
                     
-                    # Calculate relative path to script file
-                    script_relative_path = os.path.join(study_name, system_name, f"{model_name}.in")
+                    # Determine paths based on system type
+                    if is_multi_system:
+                        # Multi-system: script is in study/system/ directory
+                        script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
+                        job_relative_path = f"{study_name}/{system_name}/{model_name}.job"
+                        sim_directory = f"{study_name}/{system_name}"
+                    else:
+                        # Single-system: script is in study/ directory
+                        script_relative_path = f"{study_name}/{model_name}.in"
+                        job_relative_path = f"{study_name}/{model_name}.job"
+                        sim_directory = study_name
                     
                     if execution_mode == "local":
-                        # Local execution
+                        # Local execution - change to simulation directory and run
                         script_lines.extend([
                             f"echo \"Running simulation: {model_name}\"",
-                            f"cd {root_simulation_dir}",
-                            f"lmp -in {script_relative_path}",
+                            f"cd {sim_directory}",
+                            f"lmp -in {model_name}.in",
                             "echo \"Completed: {model_name}\"",
                             ""
                         ])
                     else:
-                        # Cluster execution
-                        job_filename = os.path.join(root_simulation_dir, f"{model_name}.job")
+                        # Cluster execution - submit job file from root directory
                         script_lines.extend([
                             f"echo \"Submitting job: {model_name}\"",
-                            f"cd {root_simulation_dir}",
-                            f"sbatch {job_filename}",
+                            f"sbatch {job_relative_path}",
                             "echo \"Job submitted: {model_name}\"",
                             ""
                         ])
@@ -634,6 +730,100 @@ class LammpsScriptGenerator:
             
         except Exception as e:
             return {"success": False, "message": f"Error generating execution script: {str(e)}"}
+    
+    def generate_cluster_submission_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
+        """Generate single master cluster job file that runs all LAMMPS simulations"""
+        try:
+            master_job_path = os.path.join(root_simulation_dir, "lammps_simulation.job")
+            
+            # Get cluster settings
+            cluster_config = self.config.get("cluster", {})
+            partition = cluster_config.get("cluster_partition", "singlenode")
+            nodes = cluster_config.get("cluster_nodes", 1)
+            ntasks = cluster_config.get("cluster_ntasks", 72)
+            cpus_per_task = cluster_config.get("cluster_cpus_per_task", 1)
+            time_limit = cluster_config.get("cluster_time", "24:00:00")
+            export_setting = cluster_config.get("cluster_export", "NONE")
+            output_file = cluster_config.get("cluster_output", "lammps_output_%j.txt")
+            error_file = cluster_config.get("cluster_error", "lammps_error_%j.txt")
+            email = cluster_config.get("cluster_mail", "")
+            mail_type = cluster_config.get("cluster_mail_type", "ALL")
+            
+            # Generate job file content
+            job_lines = [
+                "#!/bin/bash",
+                f"#SBATCH --job-name=lammps_multi_simulation",
+                f"#SBATCH --partition={partition}",
+                f"#SBATCH --nodes={nodes}",
+                f"#SBATCH --ntasks-per-node={ntasks}",
+                f"#SBATCH --cpus-per-task={cpus_per_task}",
+                f"#SBATCH --time={time_limit}",
+                f"#SBATCH --export={export_setting}",
+                f"#SBATCH --output={output_file}",
+                f"#SBATCH --error={error_file}"
+            ]
+            
+            # Add email settings if provided
+            if email:
+                job_lines.extend([
+                    f"#SBATCH --mail-user={email}",
+                    f"#SBATCH --mail-type={mail_type}"
+                ])
+            
+            job_lines.extend([
+                "",
+                "# Load modules",
+                "module load lammps",
+                "",
+                "# Run all LAMMPS simulations",
+                "echo \"Starting LAMMPS simulations...\"",
+                ""
+            ])
+            
+            # Add commands for each simulation
+            for study in deform_studies:
+                study_name = study.get("name", "study")
+                
+                for system_file in system_files:
+                    system_name = Path(system_file).stem
+                    model_name = f"{system_name}_{study_name}"
+                    
+                    # Determine input file path relative to root directory
+                    if is_multi_system:
+                        # Multi-system: input file is in study/system/ directory
+                        input_relative_path = f"{study_name}/{system_name}/{model_name}.in"
+                    else:
+                        # Single-system: input file is in study/ directory
+                        input_relative_path = f"{study_name}/{model_name}.in"
+                    
+                    # Create output directory for this simulation
+                    output_dir = f"{study_name}_{system_name}_output"
+                    
+                    job_lines.extend([
+                        f"echo \"Running simulation: {model_name}\"",
+                        f"mkdir -p {output_dir}",
+                        f"cd {output_dir}",
+                        f"srun lmp -in ../{input_relative_path}",
+                        f"cd ..",
+                        f"echo \"Completed simulation: {model_name}\"",
+                        ""
+                    ])
+            
+            job_lines.extend([
+                "echo \"All LAMMPS simulations completed!\"",
+                ""
+            ])
+            
+            # Write master job file
+            with open(master_job_path, 'w') as f:
+                f.write("\n".join(job_lines))
+            
+            self.generated_files.append(master_job_path)
+            
+            return {"success": True, "message": f"Master job file generated: {master_job_path}"}
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error generating master job file: {str(e)}"}
         
     def read_units_from_data_file(self, data_file):
         """Read units from LAMMPS data file"""
