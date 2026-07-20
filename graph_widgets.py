@@ -322,6 +322,63 @@ class InsertSineDialog(QDialog):
             'scheme': self.scheme.currentText()
         }
 
+class AmplitudeEditDialog(QDialog):
+    def __init__(self, y_center, amplitude, min_strain, max_strain, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Amplitude and Peak Value")
+        self._y_center = y_center
+        self._min_strain = min_strain
+        self._max_strain = max_strain
+        
+        # Calculate initial peak value
+        self._amplitude = amplitude
+        self._peak_value = y_center + amplitude
+        
+        layout = QFormLayout(self)
+        
+        self.amplitude_box = QDoubleSpinBox()
+        self.amplitude_box.setRange(0.0, max(abs(min_strain), abs(max_strain)))
+        self.amplitude_box.setDecimals(6)
+        self.amplitude_box.setValue(amplitude)
+        self.amplitude_box.setSingleStep(0.01)
+        
+        self.peak_box = QDoubleSpinBox()
+        self.peak_box.setRange(min_strain, max_strain)
+        self.peak_box.setDecimals(6)
+        self.peak_box.setValue(self._peak_value)
+        self.peak_box.setSingleStep(0.01)
+        
+        layout.addRow("Amplitude:", self.amplitude_box)
+        layout.addRow("Peak Value:", self.peak_box)
+        
+        # Connect value changes to automatically update the other
+        self.amplitude_box.valueChanged.connect(self._amplitude_changed)
+        self.peak_box.valueChanged.connect(self._peak_changed)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+    
+    def _amplitude_changed(self, value):
+        self.peak_box.blockSignals(True)  # Prevent circular updates
+        new_peak = self._y_center + value
+        self.peak_box.setValue(new_peak)
+        self._peak_value = new_peak
+        self._amplitude = value
+        self.peak_box.blockSignals(False)
+    
+    def _peak_changed(self, value):
+        self.amplitude_box.blockSignals(True)  # Prevent circular updates
+        new_amplitude = abs(value - self._y_center)
+        self.amplitude_box.setValue(new_amplitude)
+        self._amplitude = new_amplitude
+        self._peak_value = value
+        self.amplitude_box.blockSignals(False)
+    
+    def get_amplitude(self):
+        return self._amplitude
+
 class SinePropertiesDialog(QDialog):
     def __init__(self, current_params, parent=None):
         super().__init__(parent)
@@ -388,6 +445,9 @@ class GraphWidget(QWidget):
         new_points_data[0].setX(0)
         if len(new_points_data) > 1:
             new_points_data[-1].setX(float(self._max_steps))
+        # Round all x values to nearest integer
+        for i in range(len(new_points_data)):
+            new_points_data[i].setX(round(new_points_data[i].x()))
         self.points_norm = [self._data_to_norm(p) for p in new_points_data]
         self.update(); self.dataChanged.emit()
     def set_timestep(self, s): self._timestep = s; self.update(); self.dataChanged.emit()
@@ -750,6 +810,7 @@ class GraphWidget(QWidget):
             return "zero"
         else:
             return "other"
+
     def _get_sine_parameters(self, p1_d, p2_d, segment_info):
         num_cycles = segment_info['num_cycles']
         scheme = segment_info['scheme']
@@ -783,16 +844,54 @@ class GraphWidget(QWidget):
 
         return amplitude, y_center, phi_start
 
+
+    def _get_sine_parameters_with_stored_amp(self, p1_d, p2_d, segment_info, segment_index):
+        """Get sine parameters, using stored amplitude if available (for user-modified amplitudes)"""
+        amplitude, y_center, phi_start = self._get_sine_parameters(p1_d, p2_d, segment_info)
+        
+        # Use stored amplitude if available (for user-modified amplitude)
+        stored_amplitude = self.segments[segment_index].get('amplitude')
+        if stored_amplitude is not None:
+            # For even multiple alternating schemes and integer full period pulsating schemes,
+            # the original _get_sine_parameters calculation may need to be preserved to maintain the mathematically correct shape
+            # But for user-modified amplitude, we still want to use the stored value
+            num_cycles = segment_info['num_cycles']
+            scheme = segment_info['scheme']
+            is_even_multiple_alternating = (num_cycles * 4) % 2 == 0 and "Alternating" in scheme
+            is_integer_full_period_pulsating = (num_cycles * 4) % 4 == 0 and "Pulsating" in scheme
+            
+            if is_even_multiple_alternating:
+                # For even multiple alternating schemes, both endpoints should have the same y-value (horizontal line)
+                y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as the horizontal line
+                amplitude = stored_amplitude
+            elif is_integer_full_period_pulsating:
+                # For integer full period pulsating schemes, we still need to use the original calculation
+                # but with the new stored amplitude. The start point should remain at the same y-value as originally
+                # Recalculate the proper y_center based on the original formula using stored amplitude
+                phi_start = -math.pi / 2 if "tensile" in scheme else math.pi / 2
+                y_center = p1_d.y() - stored_amplitude * math.sin(phi_start)  # Original formula with new amplitude
+                amplitude = stored_amplitude
+            else:
+                # For non-special cases, just use the stored amplitude
+                amplitude = stored_amplitude
+        
+        return amplitude, y_center, phi_start
+
     def _draw_sine_segment(self, painter, segment_index, p1_w, p2_w, segment_info):
         p1_d = self._norm_to_data(self.points_norm[segment_index])
         p2_d = self._norm_to_data(self.points_norm[segment_index+1])
 
-        amplitude, y_center, phi_start = self._get_sine_parameters(p1_d, p2_d, segment_info)
+        amplitude, y_center, phi_start = self._get_sine_parameters_with_stored_amp(p1_d, p2_d, segment_info, segment_index)
 
         if amplitude is None:
             painter.setPen(QPen(Qt.GlobalColor.red, 2)); painter.drawLine(p1_w, p2_w)
             return
 
+        # Draw a light grey line between the handles to show the base connection
+        # This line represents the direct connection between start and end points
+        painter.setPen(QPen(QColor("#D3D3D3"), 1, Qt.PenStyle.SolidLine))
+        painter.drawLine(p1_w, p2_w)
+        
         # 1. Draw the sine wave
         points_to_draw = []
         num_points = int(p2_w.x() - p1_w.x()) * 2
@@ -808,6 +907,7 @@ class GraphWidget(QWidget):
             y_d = y_center + amplitude * math.sin(k * (x_d - p1_d.x()) + phi_start)
             points_to_draw.append(self._norm_to_widget(self._data_to_norm(QPointF(x_d, y_d))))
 
+        # Draw the sine wave in the normal style color
         painter.setPen(QPen(self.STYLE_LINE, 2))
         painter.drawPolyline(QPolygonF(points_to_draw))
 
@@ -888,8 +988,8 @@ class GraphWidget(QWidget):
             peak_trough_pos_w = self._norm_to_widget(self._data_to_norm(peak_trough_pos_d))
 
             # Store this for mouse events - only for even multiples of quarter periods
-            if (num_cycles * 4) % 2 == 0:
-                self._sine_amplitude_handles[segment_index] = peak_trough_pos_w
+            # Always store the amplitude handle position for display
+            self._sine_amplitude_handles[segment_index] = peak_trough_pos_w
 
             # Draw the handle (e.g., a diamond shape)
             painter.setPen(QPen(self.STYLE_HANDLE, 2))
@@ -902,17 +1002,89 @@ class GraphWidget(QWidget):
             ])
             painter.drawPolygon(poly)
             
-            # Draw amplitude value label
+            # Draw amplitude value label - using actual stored amplitude if available
             fm = QFontMetrics(QFont("Arial", 10))
-            amplitude_text = f"{peak_trough_y_d:.3f}"
+            # Use the stored amplitude value if available, otherwise calculate from the drawn position
+            stored_amplitude = self.segments[segment_index].get('amplitude')
+            if stored_amplitude is not None:
+                # Calculate the actual Y-value that the amplitude handle represents based on the stored amplitude
+                # This is where the handle is drawn on the screen: y_center + A*sin(angle_at_handle)
+                # Calculate the angle at the point where the amplitude handle is drawn
+                k_for_calc = segment_info['num_cycles'] * 2 * math.pi / x_range_d if x_range_d != 0 else 0
+                angle_at_handle = k_for_calc * (peak_trough_x - p1_d.x()) + phi_start
+                y_at_handle = y_center + stored_amplitude * math.sin(angle_at_handle)
+                
+                amplitude_text = f"{y_at_handle:.3f}"
+            else:
+                amplitude_text = f"{peak_trough_y_d:.3f}"  # Fallback to drawn position
+            
             amplitude_rect = QRectF(fm.boundingRect(amplitude_text).adjusted(-4,-2,4,2))
-            amplitude_rect.moveCenter(QPointF(peak_trough_pos_w.x(), peak_trough_pos_w.y() - 20))
+            amplitude_rect.moveCenter(QPointF(peak_trough_pos_w.x() + 35, peak_trough_pos_w.y()))
             painter.setPen(QPen(STYLE_TEXT_PRIMARY, 1))
             painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
             painter.drawText(amplitude_rect, Qt.AlignmentFlag.AlignCenter, amplitude_text)
+            
+            # Add amplitude label to clickable regions for both even multiple alternating schemes and integer full period pulsating schemes
+            is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
+            is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
+            if is_even_multiple_alternating or is_integer_full_period_pulsating:
+                self._clickable_regions.append((amplitude_rect, "amplitude_label", segment_index))
+
+            # Only draw the second amplitude handle if we have 5 or more quarter periods (to avoid coincidence at 4 quarters)
+            num_quarters = segment_info['num_cycles'] * 4
+            if num_quarters >= 5:
+                second_peak_trough_x = peak_trough_x + 2 * quarter_period  # One full period after the first
+                
+                # Condition: Draw if the next peak/trough is also within the segment bounds.
+                if second_peak_trough_x <= p2_d.x() + 1e-9:
+                    # Calculate the Y position for the second handle
+                    second_peak_trough_y_d = y_center + amplitude * math.sin(k * (second_peak_trough_x - p1_d.x()) + phi_start)
+                    second_peak_trough_pos_d = QPointF(second_peak_trough_x, second_peak_trough_y_d)
+                    second_peak_trough_pos_w = self._norm_to_widget(self._data_to_norm(second_peak_trough_pos_d))
+                    
+                    # Draw the second handle (e.g., a diamond shape)
+                    painter.setPen(QPen(self.STYLE_HANDLE, 2))
+                    painter.setBrush(QBrush(QColor("white")))
+                    second_poly = QPolygonF([
+                        second_peak_trough_pos_w + QPointF(0, -HANDLE_RADIUS),
+                        second_peak_trough_pos_w + QPointF(HANDLE_RADIUS, 0),
+                        second_peak_trough_pos_w + QPointF(0, HANDLE_RADIUS),
+                        second_peak_trough_pos_w + QPointF(-HANDLE_RADIUS, 0),
+                    ])
+                    painter.drawPolygon(second_poly)
+                    
+                    # Draw the second amplitude value label - using actual stored amplitude if available
+                    stored_amplitude = self.segments[segment_index].get('amplitude')
+                    if stored_amplitude is not None:
+                        # Calculate the actual Y-value that the second amplitude handle represents based on the stored amplitude
+                        # This is where the handle is drawn on the screen: y_center + A*sin(angle_at_second_handle)
+                        # Calculate the angle at the point where the second amplitude handle is drawn
+                        k_for_calc = segment_info['num_cycles'] * 2 * math.pi / x_range_d if x_range_d != 0 else 0
+                        angle_at_second_handle = k_for_calc * (second_peak_trough_x - p1_d.x()) + phi_start
+                        y_at_second_handle = y_center + stored_amplitude * math.sin(angle_at_second_handle)
+                        
+                        second_amplitude_text = f"{y_at_second_handle:.3f}"
+                    else:
+                        second_amplitude_text = f"{second_peak_trough_y_d:.3f}"  # Fallback to drawn position
+                    
+                    second_amplitude_rect = QRectF(fm.boundingRect(second_amplitude_text).adjusted(-4,-2,4,2))
+                    second_amplitude_rect.moveCenter(QPointF(second_peak_trough_pos_w.x() + 35, second_peak_trough_pos_w.y()))
+                    painter.setPen(QPen(STYLE_TEXT_PRIMARY, 1))
+                    painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+                    painter.drawText(second_amplitude_rect, Qt.AlignmentFlag.AlignCenter, second_amplitude_text)
+                    
+                    # Add second amplitude label to clickable regions for both even multiple alternating and integer full period pulsating schemes
+                    is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
+                    is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
+                    if is_even_multiple_alternating or is_integer_full_period_pulsating:
+                        self._clickable_regions.append((second_amplitude_rect, "amplitude_label", segment_index))
 
     def get_y_unit(self):
         return "ΔT" if self.mode == 'Temperature' else "ε"
+    
+    def count_sine_segments(self):
+        """Count the number of sine segments in the graph"""
+        return sum(1 for segment in self.segments if segment.get('type') == 'sine')
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos_widget = event.position()
@@ -948,11 +1120,20 @@ class GraphWidget(QWidget):
             
             if self._dragged_handle_index is None:
                 self._dragged_amplitude_handle_index = self._get_amplitude_handle_at(self._drag_start_pos_widget)
-                # Only allow amplitude handle dragging for even multiples of quarter periods
+                # Allow amplitude handle dragging for even multiples of quarter periods in alternating modes
+                # and also for integer multiples of full periods in pulsating modes
                 if self._dragged_amplitude_handle_index is not None:
                     segment_info = self.segments[self._dragged_amplitude_handle_index]
-                    if (segment_info['num_cycles'] * 4) % 2 != 0:  # Odd multiple
-                        self._dragged_amplitude_handle_index = None  # Don't allow dragging for odd multiples
+                    num_cycles = segment_info['num_cycles']
+                    scheme = segment_info['scheme']
+                    
+                    # Allow dragging for even multiples (every 2 quarter periods) in alternating modes
+                    # and for integer full periods (every 4 quarter periods) in pulsating modes
+                    is_even_multiple_alternating = (num_cycles * 4) % 2 == 0 and "Alternating" in scheme
+                    is_integer_full_period_pulsating = (num_cycles * 4) % 4 == 0 and "Pulsating" in scheme
+                    
+                    if not (is_even_multiple_alternating or is_integer_full_period_pulsating):
+                        self._dragged_amplitude_handle_index = None  # Don't allow dragging
                 if self._dragged_amplitude_handle_index is None:
                     self._dragged_segment_index = self._get_segment_at(self._drag_start_pos_widget)
                     if self._dragged_segment_index is not None:
@@ -994,79 +1175,240 @@ class GraphWidget(QWidget):
         self._hovered_handle_index = self._get_handle_at(pos)
         self._hovered_amplitude_handle_index = self._get_amplitude_handle_at(pos)
         self._hovered_segment_index = self._get_segment_at(pos) if self._hovered_handle_index is None and self._hovered_amplitude_handle_index is None else None
+
+        # --- Cursor Logic ---
+        cursor_set = False
+        if self._hovered_amplitude_handle_index is not None or self._dragged_amplitude_handle_index is not None:
+            seg_idx = self._hovered_amplitude_handle_index if self._hovered_amplitude_handle_index is not None else self._dragged_amplitude_handle_index
+            if seg_idx is not None and seg_idx < len(self.segments):
+                segment_info = self.segments[seg_idx]
+                # Allow amplitude handle dragging for even multiples in alternating schemes OR integer full periods in pulsating schemes
+                is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
+                is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
+                is_draggable = is_even_multiple_alternating or is_integer_full_period_pulsating
+                if is_draggable:
+                    self.setCursor(Qt.CursorShape.SizeVerCursor)
+                    cursor_set = True
         
-        if self._hovered_handle_index is not None or self._dragged_handle_index is not None or self._hovered_amplitude_handle_index is not None or self._dragged_amplitude_handle_index is not None:
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
-        elif self._hovered_segment_index is not None or self._dragged_segment_index is not None: 
-            self.setCursor(Qt.CursorShape.SizeAllCursor)
-        else: 
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-
+        if not cursor_set:
+            if self._hovered_handle_index is not None or self._dragged_handle_index is not None:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            elif self._hovered_segment_index is not None or self._dragged_segment_index is not None:
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        
         if not (event.buttons() & Qt.MouseButton.LeftButton): return
+        
+        constrained_pos = pos
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            if self._drag_axis_lock is None: delta = pos - self._drag_start_pos_widget; self._drag_axis_lock = 'y' if abs(delta.y()) > abs(delta.x()) else 'x'
+            if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
+            else: constrained_pos.setX(self._drag_start_pos_widget.x())
 
+        # --- Amplitude Handle Drag Logic ---
         if self._dragged_amplitude_handle_index is not None:
             seg_idx = self._dragged_amplitude_handle_index
+            segment_info = self.segments[seg_idx]
             
-            # Constrain to vertical movement
-            new_pos_w = event.position()
-            new_pos_w.setX(self._drag_start_pos_widget.x())
+            # Allow dragging for even multiples in alternating schemes or integer full periods in pulsating schemes
+            is_even_multiple_alternating = (segment_info['num_cycles'] * 4) % 2 == 0 and "Alternating" in segment_info['scheme']
+            is_integer_full_period_pulsating = (segment_info['num_cycles'] * 4) % 4 == 0 and "Pulsating" in segment_info['scheme']
+            
+            is_draggable = is_even_multiple_alternating or is_integer_full_period_pulsating
+            if not is_draggable: return
 
-            # Convert widget position to data coordinates
-            new_pos_norm = self._widget_to_norm(new_pos_w)
-            new_pos_data = self._norm_to_data(new_pos_norm)
+            new_pos_w = event.position()
+            new_pos_w.setX(self._drag_start_pos_widget.x()) # Constrain to vertical
+            new_pos_data_y = self._norm_to_data(self._widget_to_norm(new_pos_w)).y()
 
             p1_d = self._norm_to_data(self.points_norm[seg_idx])
             p2_d = self._norm_to_data(self.points_norm[seg_idx+1])
-            segment_info = self.segments[seg_idx]
             
-            _, y_center, phi_start = self._get_sine_parameters(p1_d, p2_d, segment_info)
-
+            # Calculate y_center appropriately for the scheme type
+            # For alternating schemes: y_center is the horizontal line (average of endpoints)  
+            # For pulsating schemes: y_center is calculated as per original sine formula
             num_cycles = segment_info['num_cycles']
-            x_range_d = p2_d.x() - p1_d.x()
-            k = num_cycles * 2 * math.pi / x_range_d if x_range_d != 0 else 0
-            x_offset = x_range_d / (4 * num_cycles)
+            scheme = segment_info['scheme']
             
-            sin_val_at_peak = math.sin(k * x_offset + phi_start)
-
-            if abs(sin_val_at_peak) > 1e-9:
-                new_amplitude = (new_pos_data.y() - y_center) / sin_val_at_peak
-            else: # should not happen
-                return
-
-            end_angle = num_cycles * 2 * math.pi + phi_start
-            new_y2 = y_center + new_amplitude * math.sin(end_angle)
+            if "Alternating" in scheme:
+                # For alternating schemes, both endpoints should have the same y-value for even multiples (horizontal line)
+                is_even_multiple = (segment_info['num_cycles'] * 4) % 2 == 0
+                if is_even_multiple:
+                    y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as horizontal line
+                else:
+                    # For non-even multiple alternating schemes
+                    orig_amp, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                    y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
+            elif "Pulsating" in scheme:
+                # For pulsating schemes, both endpoints should have the same y-value for integer full periods (horizontal line)
+                is_integer_full_period = (segment_info['num_cycles'] * 4) % 4 == 0
+                if is_integer_full_period:
+                    # For integer full period pulsating schemes, both endpoints have the same y-value (horizontal line)
+                    y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as horizontal line
+                else:
+                    # For non-integer full period pulsating schemes, calculate y_center from the starting point and phase
+                    phi_start = -math.pi / 2 if "tensile" in scheme.lower() else math.pi / 2
+                    # Use the stored amplitude if available, otherwise calculate from original parameters
+                    stored_amplitude = self.segments[seg_idx].get('amplitude')
+                    if stored_amplitude is not None:
+                        # Use stored amplitude for calculation
+                        y_center = p1_d.y() - stored_amplitude * math.sin(phi_start)
+                    else:
+                        # Calculate original y_center using original _get_sine_parameters method
+                        orig_amp, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                        if orig_y_center is not None:
+                            y_center = orig_y_center
+                        else:
+                            # Fallback to average if original calculation fails
+                            y_center = (p1_d.y() + p2_d.y()) / 2
+            else:
+                # For other schemes, calculate y_center using original method
+                orig_amp, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
             
-            p2_d.setY(new_y2)
-            self.points_norm[seg_idx + 1] = self._data_to_norm(p2_d)
+            # Determine if we have enough quarter periods for potentially 2 handles
+            # For alternating schemes: show second handle at >3 quarter periods (even multiple cases)
+            # For pulsating schemes: show second handle at >4 quarter periods (to avoid coincidence with endpoint at 4 quarters)
+            num_quarters = segment_info['num_cycles'] * 4
+            is_alternating_scheme = "Alternating" in segment_info['scheme']
+            is_pulsating_scheme = "Pulsating" in segment_info['scheme']
             
-            # For even multiples, ensure the right handle has same y as left handle
-            if (num_cycles * 4) % 2 == 0:
-                p1_d.setY(p2_d.y())  # Set left handle to same height as right
-                self.points_norm[seg_idx] = self._data_to_norm(p1_d)
+            if is_alternating_scheme:
+                # For alternating schemes, 4+ quarter periods (even multiples) allow for second handle
+                has_two_handles = num_quarters > 3
+            elif is_pulsating_scheme:
+                # For pulsating schemes, avoid second handle at 4 quarters since it would coincide with endpoint
+                has_two_handles = num_quarters > 4
+            else:
+                # For other schemes
+                has_two_handles = num_quarters > 3
             
-            self.update()
-            self.dataChanged.emit()
-            return # Done with amplitude handle drag
-        
+            # Determine the type of pulsating scheme (tensile or compressive)
+            is_pulsating_scheme = "Pulsating" in segment_info['scheme']
+            is_pulsating_compressive = is_pulsating_scheme and "compressive" in segment_info['scheme'].lower()
+            
+            if has_two_handles:
+                # With two handles, both peak and trough need to be within boundaries
+                # So calculate amplitude with constraints on both sides
+                raw_amplitude = abs(new_pos_data_y - y_center)
+                
+                # Apply proper boundary constraints: ensure the entire sine wave stays within bounds
+                # For the sine wave y = y_center + A*sin(...), the range is [y_center - A, y_center + A]
+                # So we need: y_center - A >= min_strain AND y_center + A <= max_strain
+                # Which gives us: A <= y_center - min_strain AND A <= max_strain - y_center
+                max_amplitude_for_min_bound = y_center - self._min_strain
+                max_amplitude_for_max_bound = self._max_strain - y_center
+                
+                # The valid amplitude is constrained by both bounds
+                max_valid_amplitude = min(max_amplitude_for_min_bound, max_amplitude_for_max_bound)
+                max_valid_amplitude = max(0, max_valid_amplitude)  # Ensure non-negative
+                
+                # Apply the boundary constraint to the amplitude
+                new_amplitude = min(raw_amplitude, max_valid_amplitude)
+            else:
+                # With one handle, constrain only the relevant side based on current handle position
+                # For pulsating schemes, we need to consider if this is a tensile or compressive start
+                if is_pulsating_scheme and is_pulsating_compressive:
+                    # For pulsating compressive, the amplitude handle typically represents the trough (minimum)
+                    # So when dragging, the amplitude should be calculated from how far below the center line it is
+                    if new_pos_data_y < y_center:
+                        # Currently a trough handle below center, constrain lower boundary only
+                        clamped_pos_data_y = max(self._min_strain, new_pos_data_y)
+                        new_amplitude = abs(clamped_pos_data_y - y_center)
+                    else:
+                        # Currently a peak handle above center, constrain upper boundary only
+                        clamped_pos_data_y = min(self._max_strain, new_pos_data_y)
+                        new_amplitude = abs(clamped_pos_data_y - y_center)
+                else:
+                    # For alternating schemes and pulsating tensile, handle as before
+                    if new_pos_data_y > y_center:
+                        # Currently a peak handle above center, constrain upper boundary only
+                        clamped_pos_data_y = min(self._max_strain, new_pos_data_y)
+                        new_amplitude = abs(clamped_pos_data_y - y_center)
+                    else:
+                        # Currently a trough handle below center, constrain lower boundary only
+                        clamped_pos_data_y = max(self._min_strain, new_pos_data_y)
+                        new_amplitude = abs(clamped_pos_data_y - y_center)
+            
+            # For even multiple alternating schemes and integer full period pulsating schemes, 
+            # the horizontal line constraint is maintained elsewhere
+            if is_even_multiple_alternating or is_integer_full_period_pulsating:
+                # The horizontal constraint is maintained through the handle synchronization logic elsewhere, 
+                # not by changing endpoints here
+                pass  # Just store the amplitude value
+            else:
+                # For other schemes, store amplitude normally
+                pass  # Just store the amplitude value
+            
+            self.segments[seg_idx]['amplitude'] = new_amplitude
 
-        i = self._dragged_handle_index
-        if i is not None:
-            is_prev_sine = i > 0 and self.segments[i-1]['type'] == 'sine'
-            if is_prev_sine:
-                handle_type = self._get_sine_handle_type(i, i - 1)
-                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    if self._drag_axis_lock is None: delta = event.position() - self._drag_start_pos_widget; self._drag_axis_lock = 'y' if abs(delta.y()) > abs(delta.x()) else 'x'
-                if handle_type == 'zero' and self._drag_axis_lock == 'y':
-                    return # Disallow vertical drag
-
-        constrained_pos = event.position()
-        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            if self._drag_axis_lock is None: delta = pos - self._drag_start_pos_widget; self._drag_axis_lock = 'y' if abs(delta.y()) > abs(delta.x()) else 'x'
-            if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
-            else: constrained_pos.setX(self._drag_start_pos_widget.x())
-        if self._dragged_handle_index is not None:
+        # --- Main Handle Drag Logic ---
+        elif self._dragged_handle_index is not None:
             if self._dragged_handle_index == 0 and self.mode == 'Deformation':
                 return # Don't move the first handle in deformation mode
+
+            i = self._dragged_handle_index
+            
+            # --- Start: NEW PRE-PROCESSING logic for SINE handles ---
+            new_p_norm = self._widget_to_norm(constrained_pos)
+            y_delta_norm = new_p_norm.y() - self.points_norm[i].y()
+            is_y_drag = self._drag_axis_lock != 'x'
+
+            # Check if this handle is part of an even multiple quarter period sine segment in alternating mode
+            # or an integer multiple full period sine segment in pulsating mode
+            is_even_multiple_alternating = False
+            is_integer_full_period_pulsating = False
+            
+            if i > 0 and self.segments[i-1]['type'] == 'sine':
+                seg = self.segments[i-1]
+                # Even multiple: 2, 4, 6, 8... quarter periods means same y-values for endpoints (alternating schemes only)
+                is_even_multiple_alternating = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
+                # Integer full period: 1, 2, 3, 4... full periods means same y-values for endpoints (pulsating schemes only)
+                is_integer_full_period_pulsating = (seg['num_cycles'] * 4) % 4 == 0 and "Pulsating" in seg['scheme']
+                
+                should_lock_y_values = is_even_multiple_alternating or is_integer_full_period_pulsating
+                if should_lock_y_values:
+                    # For even multiples in alternating mode or integer full periods in pulsating mode, 
+                    # the line should remain horizontal
+                    # So we lock both handles to the same y-value
+                    self.points_norm[i-1].setY(new_p_norm.y())
+                    self.points_norm[i].setY(new_p_norm.y())
+            elif i < len(self.points_norm) - 1 and self.segments[i]['type'] == 'sine':
+                seg = self.segments[i]
+                # Even multiple: 2, 4, 6, 8... quarter periods means same y-values for endpoints (alternating schemes only)
+                is_even_multiple_alternating = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
+                # Integer full period: 1, 2, 3, 4... full periods means same y-values for endpoints (pulsating schemes only)
+                is_integer_full_period_pulsating = (seg['num_cycles'] * 4) % 4 == 0 and "Pulsating" in seg['scheme']
+                
+                should_lock_y_values = is_even_multiple_alternating or is_integer_full_period_pulsating
+                if should_lock_y_values:
+                    # For even multiples in alternating mode or integer full periods in pulsating mode, 
+                    # the line should remain horizontal
+                    # So we lock both handles to the same y-value
+                    self.points_norm[i].setY(new_p_norm.y())
+                    self.points_norm[i+1].setY(new_p_norm.y())
+            
+            # Only proceed with linked vertical drag if not in even multiple mode
+            if not (is_even_multiple_alternating or is_integer_full_period_pulsating):
+                # Linked vertical drag for special sine cases
+                if i > 0 and self.segments[i-1]['type'] == 'sine' and is_y_drag:
+                    seg = self.segments[i-1]
+                    if (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']:
+                        self.points_norm[i-1].setY(self.points_norm[i-1].y() + y_delta_norm)
+                if i < len(self.points_norm) - 1 and self.segments[i]['type'] == 'sine' and is_y_drag:
+                    seg = self.segments[i]
+                    if (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']:
+                        self.points_norm[i+1].setY(self.points_norm[i+1].y() + y_delta_norm)
+            
+            # Boundary clamping for the dragged handle itself (only if not in special multiple mode)
+            if not (is_even_multiple_alternating or is_integer_full_period_pulsating):
+                p_data_pre = self._norm_to_data(new_p_norm)
+                p_data_pre.setY(max(self._min_strain, min(self._max_strain, p_data_pre.y())))
+                new_p_norm = self._data_to_norm(p_data_pre)
+                # Update constrained_pos to reflect clamping for subsequent logic
+                constrained_pos = self._norm_to_widget(new_p_norm)
+            # --- End: NEW PRE-PROCESSING logic ---
 
             # Check if this handle's x or y positions are locked
             x_locked = self._dragged_handle_index in self._locked_x_ticks
@@ -1115,6 +1457,9 @@ class GraphWidget(QWidget):
             else:
                 p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
                 
+                # During dragging, enforce INTEGER time step values for x-coordinate
+                p_data.setX(round(p_data.x()))
+                
                 # Apply locking constraints
                 if x_locked:
                     # X position is locked, keep the original x value
@@ -1124,15 +1469,6 @@ class GraphWidget(QWidget):
                     # Y position is locked, keep the original y value
                     orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
                     p_data.setY(orig_data.y())
-                
-                # Check if this is a sine segment and whether it's an even multiple of quarter periods
-                # If dragging the left handle of a sine segment
-                is_left_handle_of_sine = (i > 0 and self.segments[i-1]['type'] == 'sine')
-                # If dragging the right handle of a sine segment  
-                is_right_handle_of_sine = (i < len(self.segments) and self.segments[i]['type'] == 'sine')
-                
-                final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
-                original_y = final_p_norm.y()  # Store original y to check if it changed
                 
                 # If adjacent segments are fixed, constrain movement along the fixed slope
                 movement_allowed = True
@@ -1194,30 +1530,6 @@ class GraphWidget(QWidget):
                     orig_p_norm = self._data_to_norm(orig_data)
                     final_p_norm = orig_p_norm
                 
-                # Check if this is part of a sine segment with even multiples of quarter periods
-                # Apply synchronization if applicable
-                sync_y = None
-                sync_segment_idx = None
-                
-                if is_left_handle_of_sine:
-                    # Check if it's the left handle of a sine segment
-                    segment_idx = i - 1
-                    if self.segments[segment_idx]['type'] == 'sine':
-                        num_cycles = self.segments[segment_idx]['num_cycles']
-                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
-                            # Store the new y value to sync to the right handle
-                            sync_y = final_p_norm.y()
-                            sync_segment_idx = segment_idx
-                elif is_right_handle_of_sine:
-                    # Check if it's the right handle of a sine segment
-                    segment_idx = i
-                    if self.segments[segment_idx]['type'] == 'sine':
-                        num_cycles = self.segments[segment_idx]['num_cycles']
-                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
-                            # Store the new y value to sync to the left handle
-                            sync_y = final_p_norm.y()
-                            sync_segment_idx = segment_idx
-                
                 # If y is locked or if a slope is fixed, prevent moving past neighboring points
                 neighbor_hit = False
                 if (y_locked or prev_segment_fixed or next_segment_fixed) and self._dragged_handle_index > 0 and self._dragged_handle_index < len(self.points_norm) - 1:
@@ -1248,15 +1560,6 @@ class GraphWidget(QWidget):
             self.points_norm[self._dragged_handle_index] = final_p_norm
             self._sort_points()
             self._dragged_handle_index = self.points_norm.index(final_p_norm)
-            
-            # Apply synchronization after setting the current handle
-            if sync_y is not None and sync_segment_idx is not None:
-                if is_left_handle_of_sine:
-                    # Left handle changed, update right handle for even multiples
-                    self.points_norm[sync_segment_idx + 1].setY(sync_y)
-                elif is_right_handle_of_sine:
-                    # Right handle changed, update left handle for even multiples
-                    self.points_norm[sync_segment_idx].setY(sync_y)
         elif self._dragged_segment_index is not None:
             i = self._dragged_segment_index
             
@@ -1296,6 +1599,10 @@ class GraphWidget(QWidget):
                 # Start with unconstrained new positions
                 new_p1_data = QPointF(original_p1_data.x() + delta_x, original_p1_data.y() + delta_y)
                 new_p2_data = QPointF(original_p2_data.x() + delta_x, original_p2_data.y() + delta_y)
+                
+                # During dragging, enforce INTEGER time step values for x-coordinates
+                new_p1_data.setX(round(new_p1_data.x()))
+                new_p2_data.setX(round(new_p2_data.x()))
                 
                 # Clamp y values to min/max strain
                 new_p1_data.setY(max(self._min_strain, min(self._max_strain, new_p1_data.y())))
@@ -1363,319 +1670,33 @@ class GraphWidget(QWidget):
                 else:
                     target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
                     p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
-                    # Clamp y values to min/max strain
-                    p1_new_data.setY(max(self._min_strain, min(self._max_strain, p1_new_data.y())))
+                    # During dragging, enforce INTEGER time step values for x-coordinate
+                    p1_new_data.setX(round(p1_new_data.x()))
                     p1_new_norm = self._data_to_norm(p1_new_data)
+                    
+                    # --- Start: NEW logic for boundary clamping for SINE segments ---
                     p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
-                    # Also clamp the second point
                     p2_new_data = self._norm_to_data(p2_new_norm)
-                    p2_new_data.setY(max(self._min_strain, min(self._max_strain, p2_new_data.y())))
-                    p2_new_norm = self._data_to_norm(p2_new_data)
-                    p_prev = self.points_norm[i-1] if i > 0 else None
-                    p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
-                    if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
-                        self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
-        self.update()
-        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            if self._drag_axis_lock is None: delta = pos - self._drag_start_pos_widget; self._drag_axis_lock = 'y' if abs(delta.y()) > abs(delta.x()) else 'x'
-            if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
-            else: constrained_pos.setX(self._drag_start_pos_widget.x())
-        if self._dragged_handle_index is not None:
-            if self._dragged_handle_index == 0 and self.mode == 'Deformation':
-                return # Don't move the first handle in deformation mode
+                    min_y_data = min(p1_new_data.y(), p2_new_data.y())
+                    max_y_data = max(p1_new_data.y(), p2_new_data.y())
+                    
+                    if self.segments[i]['type'] == 'sine':
+                        # Use the improved method that handles stored amplitude appropriately
+                        amp, y_center, _ = self._get_sine_parameters_with_stored_amp(p1_new_data, p2_new_data, self.segments[i], i)
+                        
+                        if amp is not None:
+                            min_y_data = min(min_y_data, y_center - abs(amp))
+                            max_y_data = max(max_y_data, y_center + abs(amp))
 
-            # Check if this handle's x or y positions are locked
-            x_locked = self._dragged_handle_index in self._locked_x_ticks
-            y_locked = self._dragged_handle_index in self._locked_y_labels
-            
-            # Check if adjacent segments are fixed, which would constrain movement
-            prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
-            next_segment_fixed = self._dragged_handle_index in self._fixed_segments if self._dragged_handle_index < len(self.points_norm) - 1 else False
-            
-            # If both x and y are locked, or if y is locked and both adjacent segments are fixed, cannot move this handle at all
-            if (x_locked and y_locked) or (y_locked and prev_segment_fixed and next_segment_fixed):
-                return
-                
-            # Cannot move handle if it's at the first or last position and has a fixed segment
-            if (self._dragged_handle_index == 0 and next_segment_fixed) or (self._dragged_handle_index == len(self.points_norm) - 1 and prev_segment_fixed):
-                return
-                
-            if self._dragged_handle_index == 0:
-                if self.mode == 'Deformation':
-                    # First point x is always locked in deformation mode
-                    if not y_locked:  # Only allow y movement if not locked
-                        constrained_pos.setX(self._drag_start_pos_widget.x())
-                        # Ensure the first point stays at x=0
-                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                        p_data.setX(0)  # Force x to be 0 for the first point
-                        # Clamp y to min/max strain values
-                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
-                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
-                        final_p_norm.setX(0)  # Ensure normalized x is also 0
-                    else:
-                        # Y is locked, don't move at all
-                        return
-                else: # Temperature mode, only allow y-drag and ensure x stays at 0
-                    if not y_locked:  # Only allow y movement if not locked
-                        constrained_pos.setX(self._drag_start_pos_widget.x())
-                        # Ensure the first point stays at x=0
-                        p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                        p_data.setX(0)  # Force x to be 0 for the first point
-                        # Clamp y to min/max strain values
-                        p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
-                        final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
-                        final_p_norm.setX(0)  # Ensure normalized x is also 0
-                    else:
-                        # Y is locked, don't move at all
-                        return
-            else:
-                p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
-                
-                # Apply locking constraints
-                if x_locked:
-                    # X position is locked, keep the original x value
-                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    p_data.setX(orig_data.x())
-                if y_locked:
-                    # Y position is locked, keep the original y value
-                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    p_data.setY(orig_data.y())
-                
-                # If adjacent segments are fixed, constrain movement along the fixed slope
-                movement_allowed = True
-                if prev_segment_fixed and not next_segment_fixed:
-                    # Only previous segment is fixed, constrain movement along its slope
-                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
-                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    # Calculate slope of fixed segment
-                    if current_point.x() != prev_point.x():
-                        slope = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x())
-                        # Constrain y position based on x position and slope (unless y is locked)
-                        if not y_locked:
-                            calculated_y = prev_point.y() + slope * (p_data.x() - prev_point.x())
-                            # Check if we've hit min or max y
-                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
-                                movement_allowed = False
-                            # Clamp to min/max strain values
-                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
-                elif not prev_segment_fixed and next_segment_fixed:
-                    # Only next segment is fixed, constrain movement along its slope
-                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
-                    # Calculate slope of fixed segment
-                    if next_point.x() != current_point.x():
-                        slope = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x())
-                        # Constrain y position based on x position and slope (unless y is locked)
-                        if not y_locked:
-                            calculated_y = current_point.y() + slope * (p_data.x() - current_point.x())
-                            # Check if we've hit min or max y
-                            if calculated_y < self._min_strain or calculated_y > self._max_strain:
-                                movement_allowed = False
-                            # Clamp to min/max strain values
-                            p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
-                elif prev_segment_fixed and next_segment_fixed:
-                    # Both segments are fixed, constrain to the average slope
-                    prev_point = self._norm_to_data(self.points_norm[self._dragged_handle_index - 1])
-                    current_point = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    next_point = self._norm_to_data(self.points_norm[self._dragged_handle_index + 1])
-                    # Calculate slopes of both fixed segments
-                    slope1 = (current_point.y() - prev_point.y()) / (current_point.x() - prev_point.x()) if current_point.x() != prev_point.x() else 0
-                    slope2 = (next_point.y() - current_point.y()) / (next_point.x() - current_point.x()) if next_point.x() != current_point.x() else 0
-                    # Use average slope for constraint
-                    avg_slope = (slope1 + slope2) / 2
-                    # Constrain y position based on x position and average slope (unless y is locked)
-                    if not y_locked:
-                        # We'll use the position relative to the previous point
-                        calculated_y = prev_point.y() + avg_slope * (p_data.x() - prev_point.x())
-                        # Check if we've hit min or max y
-                        if calculated_y < self._min_strain or calculated_y > self._max_strain:
-                            movement_allowed = False
-                        # Clamp to min/max strain values
-                        p_data.setY(max(self._min_strain, min(self._max_strain, calculated_y)))
-                    
-                final_p_norm = self._data_to_norm(p_data)  # Don't snap while dragging
-                
-                # Check if this is a sine segment and whether it's an even multiple of quarter periods
-                # If dragging the left handle of a sine segment
-                is_left_handle_of_sine = (i > 0 and self.segments[i-1]['type'] == 'sine')
-                # If dragging the right handle of a sine segment  
-                is_right_handle_of_sine = (i < len(self.segments) and self.segments[i]['type'] == 'sine')
-                
-                # If we've hit min or max y while following a fixed slope, stop all movement
-                if not movement_allowed:
-                    orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                    orig_p_norm = self._data_to_norm(orig_data)
-                    final_p_norm = orig_p_norm
-                
-                # Check if this is part of a sine segment with even multiples of quarter periods
-                # Apply synchronization if applicable
-                sync_y = None
-                sync_segment_idx = None
-                
-                if is_left_handle_of_sine:
-                    # Check if it's the left handle of a sine segment
-                    segment_idx = i - 1
-                    if self.segments[segment_idx]['type'] == 'sine':
-                        num_cycles = self.segments[segment_idx]['num_cycles']
-                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
-                            # Store the new y value to sync to the right handle
-                            sync_y = final_p_norm.y()
-                            sync_segment_idx = segment_idx
-                elif is_right_handle_of_sine:
-                    # Check if it's the right handle of a sine segment
-                    segment_idx = i
-                    if self.segments[segment_idx]['type'] == 'sine':
-                        num_cycles = self.segments[segment_idx]['num_cycles']
-                        if (num_cycles * 4) % 2 == 0:  # even multiple of quarter periods
-                            # Store the new y value to sync to the left handle
-                            sync_y = final_p_norm.y()
-                            sync_segment_idx = segment_idx
-                
-                # If y is locked or if a slope is fixed, prevent moving past neighboring points
-                neighbor_hit = False
-                if (y_locked or prev_segment_fixed or next_segment_fixed) and self._dragged_handle_index > 0 and self._dragged_handle_index < len(self.points_norm) - 1:
-                    # Get neighboring points in normalized coordinates
-                    prev_point_norm = self.points_norm[self._dragged_handle_index - 1]
-                    next_point_norm = self.points_norm[self._dragged_handle_index + 1]
-                    
-                    # Check if we're trying to move past neighbors
-                    if final_p_norm.x() <= prev_point_norm.x() or final_p_norm.x() >= next_point_norm.x():
-                        neighbor_hit = True
-                        # Stop all movement when hitting a neighbor
-                        orig_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                        orig_p_norm = self._data_to_norm(orig_data)
-                        final_p_norm = orig_p_norm
-                    else:
-                        # Constrain x position to stay between neighbors
-                        final_p_norm.setX(max(prev_point_norm.x(), min(next_point_norm.x(), final_p_norm.x())))
-                
-            if self._dragged_handle_index == len(self.points_norm) - 1:
-                # Last point x is always locked to max_steps
-                final_p_norm.setX(1.0)
-                # Also clamp y to min/max strain values
-                p_data = self._norm_to_data(final_p_norm)
-                p_data.setY(max(self._min_strain, min(self._max_strain, p_data.y())))
-                final_p_norm = self._data_to_norm(p_data)
-                final_p_norm.setX(1.0)  # Ensure x stays locked
-                
-            self.points_norm[self._dragged_handle_index] = final_p_norm
-            self._sort_points()
-            self._dragged_handle_index = self.points_norm.index(final_p_norm)
-            
-            # Apply synchronization after setting the current handle
-            if sync_y is not None and sync_segment_idx is not None:
-                if is_left_handle_of_sine:
-                    # Left handle changed, update right handle for even multiples
-                    self.points_norm[sync_segment_idx + 1].setY(sync_y)
-                elif is_right_handle_of_sine:
-                    # Right handle changed, update left handle for even multiples
-                    self.points_norm[sync_segment_idx].setY(sync_y)
-        elif self._dragged_segment_index is not None:
-            i = self._dragged_segment_index
-            
-            # Check if this segment is fixed
-            is_segment_fixed = self._dragged_segment_index in self._fixed_segments
-            
-            # Check if adjacent segments are fixed
-            prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
-            next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
-            
-            # If this segment is fixed, check if it can be moved
-            if is_segment_fixed:
-                # Cannot move fixed segment if any adjacent segment is also fixed
-                if prev_segment_fixed or next_segment_fixed:
-                    return
-                # Otherwise, fixed segment can be moved (no adjacent fixed segments)
-            
-            # If adjacent segments are fixed, we need to preserve their slopes while allowing movement
-            # BUT we must preserve the slope of the dragged segment itself
-            if prev_segment_fixed or next_segment_fixed:
-                # Get original positions
-                original_p1_data = self._norm_to_data(self.points_norm[i])
-                original_p2_data = self._norm_to_data(self.points_norm[i+1])
-                
-                # Calculate the original slope and length of the dragged segment
-                original_delta_x = original_p2_data.x() - original_p1_data.x()
-                original_delta_y = original_p2_data.y() - original_p1_data.y()
-                
-                # Calculate the new position based on mouse movement
-                target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
-                target_p1_data = self._norm_to_data(self._widget_to_norm(target_p1_w))
-                
-                # Calculate the offset (delta) from original position
-                delta_x = target_p1_data.x() - original_p1_data.x()
-                delta_y = target_p1_data.y() - original_p1_data.y()
-                
-                # Start with unconstrained new positions
-                new_p1_data = QPointF(original_p1_data.x() + delta_x, original_p1_data.y() + delta_y)
-                new_p2_data = QPointF(original_p2_data.x() + delta_x, original_p2_data.y() + delta_y)
-                
-                # Clamp y values to min/max strain
-                new_p1_data.setY(max(self._min_strain, min(self._max_strain, new_p1_data.y())))
-                new_p2_data.setY(max(self._min_strain, min(self._max_strain, new_p2_data.y())))
-                
-                # Handle constraints based on which neighbors are fixed
-                # IMPORTANT: We preserve the ORIGINAL slope of the dragged segment, not calculate new slopes
-                if prev_segment_fixed and next_segment_fixed:
-                    # Both neighbors fixed - this case should have been caught earlier, but handle gracefully
-                    # Preserve both neighbor slopes by adjusting the connecting points
-                    if i > 1:
-                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
-                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
-                        if prev_point_data.x() != prev_prev_point_data.x():
-                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
-                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
-                    if i + 2 < len(self.points_norm):
-                        next_point_data = self._norm_to_data(self.points_norm[i+1])
-                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
-                        if next_next_point_data.x() != next_point_data.x():
-                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
-                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
-                    # Preserve the original slope of the dragged segment
-                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
-                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
-                elif prev_segment_fixed:
-                    # Previous neighbor fixed - preserve its slope
-                    if i > 1:
-                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
-                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
-                        if prev_point_data.x() != prev_prev_point_data.x():
-                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
-                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
-                    # Preserve the original slope of the dragged segment by maintaining delta
-                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
-                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
-                elif next_segment_fixed:
-                    # Next neighbor fixed - preserve its slope
-                    if i + 2 < len(self.points_norm):
-                        next_point_data = self._norm_to_data(self.points_norm[i+1])
-                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
-                        if next_next_point_data.x() != next_point_data.x():
-                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
-                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
-                    # Preserve the original slope of the dragged segment by maintaining delta
-                    new_p1_data.setX(new_p2_data.x() - original_delta_x)
-                    new_p1_data.setY(new_p2_data.y() - original_delta_y)
-                
-                # Convert to normalized coordinates
-                new_p1_norm = self._data_to_norm(new_p1_data)
-                new_p2_norm = self._data_to_norm(new_p2_data)
-                
-                # Check bounds constraints
-                p_prev = self.points_norm[i-1] if i > 0 else None
-                p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
-                if (p_prev is None or new_p1_norm.x() >= p_prev.x()) and (p_next is None or new_p2_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [new_p1_norm, new_p2_norm]):
-                    self.points_norm[i] = new_p1_norm
-                    self.points_norm[i+1] = new_p2_norm
-            else:
-                # Normal segment dragging when no adjacent segments are fixed
-                if i == 0:
-                    p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
-                    p1_new_norm.setX(0)  # Ensure first point stays at x=0
-                    self.points_norm[i] = p1_new_norm
-                else:
-                    target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
-                    p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
+                    y_offset_data = 0
+                    if max_y_data > self._max_strain:
+                        y_offset_data = max_y_data - self._max_strain
+                    if min_y_data < self._min_strain:
+                        y_offset_data = min_y_data - self._min_strain
+                    # Clamp new data before proceeding
+                    p1_new_data.setY(p1_new_data.y() - y_offset_data)
+                    # --- End: NEW logic ---
+
                     # Clamp y values to min/max strain
                     p1_new_data.setY(max(self._min_strain, min(self._max_strain, p1_new_data.y())))
                     p1_new_norm = self._data_to_norm(p1_new_data)
@@ -1691,35 +1712,54 @@ class GraphWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event): 
-        # Apply snapping when mouse is released
+        # When mouse is released, preserve the exact position from dragging
+        # During dragging, x-coordinates are rounded to integers, so the final position will be integer
+        # The user wants values to change during dragging (with integer time steps in x direction)
+        # but after release, no changes should happen anymore
         if self._dragged_handle_index is not None:
-            # Check if adjacent segments are fixed
+            # Check if adjacent segments are fixed 
             prev_segment_fixed = (self._dragged_handle_index - 1) in self._fixed_segments if self._dragged_handle_index > 0 else False
             next_segment_fixed = self._dragged_handle_index in self._fixed_segments if self._dragged_handle_index < len(self.points_norm) - 1 else False
             
             # Check if this handle's y position is locked
             y_locked = self._dragged_handle_index in self._locked_y_labels
             
-            # Apply grid snapping when releasing, EXCEPT when adjacent slope is fixed
-            # Grid snapping should ONLY NOT be applied when a node is moved while adjacent slope is fixed
-            if not (prev_segment_fixed or next_segment_fixed):
-                # Snap the dragged handle to the grid
-                p_data = self._norm_to_data(self.points_norm[self._dragged_handle_index])
-                snapped_p_data = self._snap_data_point(p_data)
-                snapped_p_norm = self._data_to_norm(snapped_p_data)
-            else:
-                # Preserve exact position when adjacent slope is fixed
-                snapped_p_norm = self.points_norm[self._dragged_handle_index]
+            # Check if this handle is part of an even multiple sine segment in alternating mode
+            is_even_multiple = False
+            if self._dragged_handle_index > 0 and self.segments[self._dragged_handle_index-1]['type'] == 'sine':
+                seg = self.segments[self._dragged_handle_index-1]
+                if (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']:
+                    is_even_multiple = True
+            elif self._dragged_handle_index < len(self.points_norm) - 1 and self.segments[self._dragged_handle_index]['type'] == 'sine':
+                seg = self.segments[self._dragged_handle_index]
+                if (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']:
+                    is_even_multiple = True
+            
+            # Preserve exact position when releasing, which should already have integer x-coordinates
+            # Only apply constraints like fixed position at boundaries, but don't apply grid snapping
+            preserved_p_norm = self.points_norm[self._dragged_handle_index]
             
             # Ensure first point stays at x=0
             if self._dragged_handle_index == 0:
-                snapped_p_norm.setX(0)
+                preserved_p_norm.setX(0)
                 
             # Ensure last point stays at max x
             if self._dragged_handle_index == len(self.points_norm) - 1:
-                snapped_p_norm.setX(1.0)
+                preserved_p_norm.setX(1.0)
                 
-            self.points_norm[self._dragged_handle_index] = snapped_p_norm
+            # If in even multiple alternating mode, ensure both handles stay at same y-value
+            if is_even_multiple:
+                if self._dragged_handle_index > 0 and self.segments[self._dragged_handle_index-1]['type'] == 'sine':
+                    # Left segment is sine with even multiple alternating mode
+                    self.points_norm[self._dragged_handle_index-1].setY(preserved_p_norm.y())
+                    self.points_norm[self._dragged_handle_index].setY(preserved_p_norm.y())
+                elif self._dragged_handle_index < len(self.points_norm) - 1 and self.segments[self._dragged_handle_index]['type'] == 'sine':
+                    # Right segment is sine with even multiple alternating mode
+                    self.points_norm[self._dragged_handle_index].setY(preserved_p_norm.y())
+                    self.points_norm[self._dragged_handle_index+1].setY(preserved_p_norm.y())
+            else:
+                self.points_norm[self._dragged_handle_index] = preserved_p_norm
+                
             self._sort_points()
             
         elif self._dragged_segment_index is not None:
@@ -1730,41 +1770,26 @@ class GraphWidget(QWidget):
             next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
             
             if i < len(self.points_norm) - 1:
-                # Apply grid snapping when releasing
-                # If adjacent segments are fixed, we preserve exact positions to maintain slopes
+                # Preserve exact positions when releasing - no additional snapping
                 if prev_segment_fixed or next_segment_fixed:
                     # Preserve exact positions when adjacent segments are fixed
                     # to maintain their slopes
-                    pass  # Don't snap, keep exact positions
+                    pass  # Keep exact positions
                 else:
-                    # Normal snapping behavior
-                    if i not in self._fixed_segments:
-                        p1_data = self._norm_to_data(self.points_norm[i])
-                        p2_data = self._norm_to_data(self.points_norm[i+1])
-                        
-                        # Snap both points
-                        snapped_p1_data = self._snap_data_point(p1_data)
-                        snapped_p2_data = self._snap_data_point(p2_data)
-                        
-                        # Convert back to normalized coordinates
-                        snapped_p1_norm = self._data_to_norm(snapped_p1_data)
-                        snapped_p2_norm = self._data_to_norm(snapped_p2_data)
-                    else:
-                        # Preserve exact positions when segment is fixed
-                        snapped_p1_norm = self.points_norm[i]
-                        snapped_p2_norm = self.points_norm[i+1]
+                    # Keep exact positions from dragging
+                    pass  # Keep exact positions
+                
+                # Ensure first point stays at x=0 if it's the first segment
+                if i == 0:
+                    self.points_norm[i].setX(0)
                     
-                    # Ensure first point stays at x=0 if it's the first segment
-                    if i == 0:
-                        snapped_p1_norm.setX(0)
-                        
-                    self.points_norm[i] = snapped_p1_norm
-                    self.points_norm[i+1] = snapped_p2_norm
                 self._sort_points()
         
         # Ensure the first point stays at x=0 for both modes
         if len(self.points_norm) > 0:
             self.points_norm[0].setX(0)
+            
+        # Clear all dragging state to ensure no further changes happen after release
         self._dragged_handle_index, self._dragged_segment_index, self._drag_start_pos_widget, self._drag_axis_lock, self._dragged_amplitude_handle_index = None, None, None, None, None
         self.dataChanged.emit()
     def mouseDoubleClickEvent(self, event):
@@ -1869,8 +1894,9 @@ class GraphWidget(QWidget):
                     'scheme': scheme
                 }
 
-                # If it's an even quarter-period, ensure the right handle has the same y-value as the left handle
-                if (num_cycles * 4) % 2 == 0:
+                # If it's an even quarter-period in alternating mode, ensure both handles have the same y-value (horizontal line)
+                is_alternating_mode = "Alternating" in scheme
+                if (num_cycles * 4) % 2 == 0 and is_alternating_mode:
                     p1_y_norm = self.points_norm[seg_idx].y()
                     self.points_norm[seg_idx + 1].setY(p1_y_norm)
 
@@ -1888,11 +1914,12 @@ class GraphWidget(QWidget):
                 'scheme': new_params['scheme']
             }
 
-            # Recalculate the end-point y-value
+            # Recalculate the end-point y-value using the current stored amplitude if available
             p1_d = self._norm_to_data(self.points_norm[seg_idx])
             p2_d = self._norm_to_data(self.points_norm[seg_idx + 1])
             
-            amplitude, y_center, phi_start = self._get_sine_parameters(p1_d, p2_d, self.segments[seg_idx])
+            # Use the stored amplitude if available, otherwise calculate from endpoints
+            amplitude, y_center, phi_start = self._get_sine_parameters_with_stored_amp(p1_d, p2_d, self.segments[seg_idx], seg_idx)
             if amplitude is not None:
                 num_cycles = new_params['num_cycles']
                 end_angle = num_cycles * 2 * math.pi + phi_start
@@ -1900,6 +1927,11 @@ class GraphWidget(QWidget):
 
                 p2_d.setY(new_y2)
                 self.points_norm[seg_idx + 1] = self._data_to_norm(p2_d)
+
+            # If it's an even quarter-period in alternating mode, ensure both handles have the same y-value (horizontal line)
+            if (num_cycles * 4) % 2 == 0 and "Alternating" in new_params['scheme']:
+                p1_y_norm = self.points_norm[seg_idx].y()
+                self.points_norm[seg_idx + 1].setY(p1_y_norm)
 
             self.update()
             self.dataChanged.emit()
@@ -1928,7 +1960,92 @@ class GraphWidget(QWidget):
                     p1_data.setX(0)
                 self.points_norm[index] = self._data_to_norm(p1_data)
                 self.points_norm[index+1] = self._data_to_norm(p2_data)
-        self.points_norm[index] = self._data_to_norm(p_data); self._sort_points(); self.update(); self.dataChanged.emit()
+        elif type == "amplitude_label":
+            # Handle amplitude label editing for sine segments
+            if index < len(self.segments) and self.segments[index]['type'] == 'sine':
+                # Get the current amplitude, y_center, and determine the new y-value for peak/trough
+                p1_d = self._norm_to_data(self.points_norm[index])
+                p2_d = self._norm_to_data(self.points_norm[index+1])
+                
+                segment_info = self.segments[index]
+                
+                # Calculate y_center appropriately for the scheme type
+                # For alternating schemes: y_center is the horizontal line (average of endpoints)  
+                # For pulsating schemes: y_center is calculated as per original sine formula
+                scheme = segment_info['scheme']
+                
+                if "Alternating" in scheme:
+                    # For alternating schemes with even multiple period lengths (integer full periods), both endpoints should have the same y-value (horizontal line)
+                    is_even_multiple = (segment_info['num_cycles'] * 4) % 2 == 0
+                    if is_even_multiple:
+                        y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as the horizontal line
+                    else:
+                        # For odd multiples, calculate from original formula
+                        orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                        y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
+                elif "Pulsating" in scheme:
+                    # For pulsating schemes with integer full periods, both endpoints should have the same y-value (horizontal line)
+                    is_integer_full_period = (segment_info['num_cycles'] * 4) % 4 == 0
+                    if is_integer_full_period:
+                        y_center = (p1_d.y() + p2_d.y()) / 2  # Use average as the horizontal line
+                    else:
+                        # For non-integer full periods, calculate from original formula
+                        orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                        y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
+                else:
+                    # For other schemes, calculate from original formula
+                    orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                    y_center = orig_y_center if orig_y_center is not None else (p1_d.y() + p2_d.y()) / 2
+                
+                # Get or calculate current amplitude
+                current_amplitude = self.segments[index].get('amplitude', 0.0)
+                # If no stored amplitude, calculate from original parameters
+                if current_amplitude == 0.0:
+                    orig_amplitude, orig_y_center, orig_phi = self._get_sine_parameters(p1_d, p2_d, segment_info)
+                    current_amplitude = orig_amplitude if orig_amplitude is not None else 0.0
+                
+                # Create and show the amplitude edit dialog
+                dialog = AmplitudeEditDialog(y_center, current_amplitude, self._min_strain, self._max_strain, self)
+                if dialog.exec():
+                    new_amplitude = dialog.get_amplitude()
+                    
+                    # Update the segment's amplitude
+                    self.segments[index]['amplitude'] = new_amplitude
+                    
+                    # Update the drawing
+                    self.update()
+                    self.dataChanged.emit()
+        
+        self.points_norm[index] = self._data_to_norm(p_data)
+        
+        # Check if this handle is part of an even multiple sine segment in alternating mode
+        # or an integer full period sine segment in pulsating mode
+        # If so, synchronize the other handle
+        if type == "y_val":  # Only synchronize for y-value changes
+            # Check left segment (index > 0)
+            if index > 0:
+                left_segment_idx = index - 1
+                if left_segment_idx < len(self.segments) and self.segments[left_segment_idx]['type'] == 'sine':
+                    num_cycles = self.segments[left_segment_idx]['num_cycles']
+                    scheme = self.segments[left_segment_idx]['scheme']
+                    is_even_multiple_alternating = (num_cycles * 4) % 2 == 0 and "Alternating" in scheme
+                    is_integer_full_period_pulsating = (num_cycles * 4) % 4 == 0 and "Pulsating" in scheme
+                    if is_even_multiple_alternating or is_integer_full_period_pulsating:
+                        # This is the right handle of the sine segment, update the left handle to match y
+                        self.points_norm[left_segment_idx].setY(self._data_to_norm(p_data).y())
+            # Check right segment (index < len(self.segments))
+            if index < len(self.segments):
+                right_segment_idx = index
+                if self.segments[right_segment_idx]['type'] == 'sine':
+                    num_cycles = self.segments[right_segment_idx]['num_cycles']
+                    scheme = self.segments[right_segment_idx]['scheme']
+                    is_even_multiple_alternating = (num_cycles * 4) % 2 == 0 and "Alternating" in scheme
+                    is_integer_full_period_pulsating = (num_cycles * 4) % 4 == 0 and "Pulsating" in scheme
+                    if is_even_multiple_alternating or is_integer_full_period_pulsating:
+                        # This is the left handle of the sine segment, update the right handle to match y
+                        self.points_norm[right_segment_idx + 1].setY(self._data_to_norm(p_data).y())
+        
+        self._sort_points(); self.update(); self.dataChanged.emit()
     def _show_set_coords_dialog(self, index):
         p_data = self._norm_to_data(self.points_norm[index])
         dialog = CoordinateDialog(index, p_data.x(), p_data.y(), self._max_steps, self._min_strain, self._max_strain, self)
@@ -1941,6 +2058,32 @@ class GraphWidget(QWidget):
             if index == len(self.points_norm) - 1:
                 new_p_data.setX(float(self._max_steps))
             self.points_norm[index] = self._data_to_norm(new_p_data)
+            
+            # Check if this handle is part of a sine segment with even multiple in alternating mode
+            # If so, synchronize the other handle
+            # Check left segment (index > 0)
+            if index > 0:
+                left_segment_idx = index - 1
+                if left_segment_idx < len(self.segments) and self.segments[left_segment_idx]['type'] == 'sine':
+                    num_cycles = self.segments[left_segment_idx]['num_cycles']
+                    scheme = self.segments[left_segment_idx]['scheme']
+                    is_even_multiple = (num_cycles * 4) % 2 == 0
+                    is_alternating_mode = "Alternating" in scheme
+                    if is_even_multiple and is_alternating_mode:
+                        # This is the right handle of the sine segment, update the left handle to match y
+                        self.points_norm[left_segment_idx].setY(self._data_to_norm(new_p_data).y())
+            # Check right segment (index < len(self.segments))
+            if index < len(self.segments):
+                right_segment_idx = index
+                if self.segments[right_segment_idx]['type'] == 'sine':
+                    num_cycles = self.segments[right_segment_idx]['num_cycles']
+                    scheme = self.segments[right_segment_idx]['scheme']
+                    is_even_multiple = (num_cycles * 4) % 2 == 0
+                    is_alternating_mode = "Alternating" in scheme
+                    if is_even_multiple and is_alternating_mode:
+                        # This is the left handle of the sine segment, update the right handle to match y
+                        self.points_norm[right_segment_idx + 1].setY(self._data_to_norm(new_p_data).y())
+            
             self._sort_points()
             self.update()
             self.dataChanged.emit()
@@ -2213,12 +2356,18 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.lineEdit().editingFinished.connect(self._min_strain_cleared)
         self.max_strain_spinbox.lineEdit().editingFinished.connect(self._max_strain_cleared)
 
-        self.graph_widget.dataChanged.connect(self.dataChanged); self.reset_button.clicked.connect(self.graph_widget.reset_graph); self.generate_button.clicked.connect(self._show_preset_dialog)
+        self.graph_widget.dataChanged.connect(self.dataChanged)
+        self.graph_widget.dataChanged.connect(self._update_deform_scenario_visibility)
+        self.reset_button.clicked.connect(self.graph_widget.reset_graph)
+        self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
         self._save_state_for_undo()
         
         # Update bond breakage UI state to ensure fields are enabled/disabled correctly on startup
         self._update_bond_breakage_ui_state()
+        
+        # Update deform scenario visibility on startup
+        self._update_deform_scenario_visibility()
 
     def _min_strain_cleared(self):
         if self.min_strain_spinbox.lineEdit().text() == "":
@@ -2464,6 +2613,28 @@ class StudyWidget(QWidget):
 
         self.dataChanged.emit()
 
+    def _update_deform_scenario_visibility(self):
+        """Update the visibility of the Deform Scenario label and field based on mode and sine segments"""
+        # Only proceed if we're in deformation mode
+        if self.mode == 'Deformation':
+            # Count sine segments in the graph
+            sine_count = self.graph_widget.count_sine_segments()
+            
+            # If there's at least one sine segment, hide the Deform Scenario controls and set to symmetric
+            if sine_count > 0:
+                self.deform_scenario_label.setVisible(False)
+                self.deform_scenario_combo.setVisible(False)
+                # Set the deform scenario to symmetric as default when sine is present
+                self.deform_scenario_combo.setCurrentText("symmetric")
+            else:
+                # If there are 0 sine segments, show the Deform Scenario controls
+                self.deform_scenario_label.setVisible(True)
+                self.deform_scenario_combo.setVisible(True)
+        else:  # Temperature mode
+            # Always hide the Deform Scenario controls in temperature mode
+            self.deform_scenario_label.setVisible(False)
+            self.deform_scenario_combo.setVisible(False)
+
 
 
     def get_state(self):
@@ -2708,8 +2879,10 @@ class StudyWidget(QWidget):
         self.temp_spinbox.setVisible(not is_temp_mode)
         self.deform_axis_label.setVisible(not is_temp_mode)
         self.deform_axis_combo.setVisible(not is_temp_mode)
-        self.deform_scenario_label.setVisible(not is_temp_mode)
-        self.deform_scenario_combo.setVisible(not is_temp_mode)
+        
+        # Update the visibility of the Deform Scenario controls based on the new mode
+        # This is handled in _update_deform_scenario_visibility
+        self._update_deform_scenario_visibility()
 
         self.graph_widget.set_mode(mode)
         self._update_graph_controls()
@@ -3113,8 +3286,7 @@ class DeformationTab(QWidget):
                         sine_segments_data.append({'index': j, 'p1': p1, 'p2': p2, 'info': segment_info})
 
             if linear_segments_data:
-                all_summaries.append("Linear Segments")
-                header = f"{ 'Segment':<10} | {'Time Step':<18} | {'Time':<18} | {y_header:<18} | {f'Slope ({y_unit}/step)':<20} | {f'Rate ({y_unit}/t)':<20}"
+                header = f"{ 'Lin Seg':<10} | {'Time Step':<18} | {'Time':<18} | {y_header:<18} | {f'Slope ({y_unit}/step)':<20} | {f'Rate ({y_unit}/t)':<20}"
                 all_summaries.append(header)
                 all_summaries.append("-" * len(header))
                 for data in linear_segments_data:
@@ -3126,14 +3298,15 @@ class DeformationTab(QWidget):
 
             if sine_segments_data:
                 if linear_segments_data: all_summaries.append("")
-                all_summaries.append("Sinusoidal Segments")
-                header = f"{ 'Segment':<10} | {'Time Step':<18} | {'Scheme':<28} | {'Cycles':<8} | {'Amplitude':<12} | {'Period':<12} | {'Midpoint Slope':<20} | {'Midpoint Rate':<20}"
+                header = f"{ 'Sine Seg':<10} | {'Time Step':<18} | {'Phase shift':<11} | {'Cycles':<8} | {'Amplitude':<12} | {'Period':<12} | {'Midpoint Slope':<14} | {'Midpoint Rate':<15}"
                 all_summaries.append(header)
                 all_summaries.append("-" * len(header))
                 for data in sine_segments_data:
                     j, p1, p2, info = data['index'], data['p1'], data['p2'], data['info']
-                    amplitude, y_center, phi_start = study_widget.graph_widget._get_sine_parameters(p1, p2, info)
+                    # Use the centralized method that handles stored amplitude appropriately
+                    amplitude, y_center, phi_start = study_widget.graph_widget._get_sine_parameters_with_stored_amp(p1, p2, info, j)
                     amplitude = 0 if amplitude is None else amplitude
+                    
                     num_cycles = info['num_cycles']
                     period = (p2.x() - p1.x()) / num_cycles if num_cycles > 0 else 0
 
@@ -3156,8 +3329,9 @@ class DeformationTab(QWidget):
                         midpoint_slope = amplitude * k * math.cos(k * first_zero_x_offset + phi_start)
                     
                     midpoint_rate = midpoint_slope / timestep if timestep > 0 else float('inf')
+                    center_step_phase_shift = p1.x() + (x_range_d) * (-phi_start / (2*math.pi)) # phase shift in time steps of a sine oscillating around y = 0
 
-                    all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {info['scheme']:<28} | {num_cycles:<8.2f} | {f'{abs(amplitude):.4f}':<12} | {f'{period:.0f}':<12} | {f'{midpoint_slope:.4e}':<20} | {f'{midpoint_rate:.4e}':<20}")
+                    all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'{center_step_phase_shift:.2f}':<11} | {num_cycles:<8.2f} | {f'{abs(amplitude):.4f}':<12} | {f'{period:.0f}':<12} | {f'{midpoint_slope:.4e}':<14} | {f'{midpoint_rate:.4e}':<15}")
 
             if idx < len(active_studies) - 1: all_summaries.append("")
 
