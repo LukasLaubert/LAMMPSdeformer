@@ -724,8 +724,8 @@ class LammpsScriptGenerator:
                     ""
                 ])
             
-            # Write execution script
-            with open(exec_script_path, 'w') as f:
+            # Write execution script with UNIX line endings
+            with open(exec_script_path, 'w', newline='\n') as f:
                 f.write("\n".join(script_lines))
             
             # Make shell script executable for Linux/Mac
@@ -782,36 +782,30 @@ class LammpsScriptGenerator:
             job_lines.extend([
                 "",
                 "# Get input file path from first argument",
-                "INPUT_FILE=$1",
-                "if [ -z \"$INPUT_FILE\" ]; then",
+                "input=$1",
+                "if [ -z \"$input\" ]; then",
                 "    echo 'Error: No input file specified'",
                 "    exit 1",
                 "fi",
                 "",
-                "# Extract study and system names from input file path",
-                "STUDY_NAME=$(dirname $(dirname \"$INPUT_FILE\"))",
-                "SYSTEM_NAME=$(basename $(dirname \"$INPUT_FILE\"))",
-                "MODEL_NAME=$(basename \"$INPUT_FILE\" .in)",
+                "# Extract model name from input file",
+                "MODEL_NAME=$(basename \"$input\" .in)",
                 "",
                 "echo 'Running LAMMPS simulation: $MODEL_NAME'",
-                "echo 'Input file: $INPUT_FILE'",
-                "echo 'Study: $STUDY_NAME, System: $SYSTEM_NAME'",
-                "",
-                "# Navigate to the study/system directory",
-                "cd \"$STUDY_NAME/$SYSTEM_NAME\"",
+                "echo 'Input file: $input'",
                 "",
                 "# Load modules",
                 "module load lammps",
                 "",
-                "# Run LAMMPS with the specified input file (from root directory)",
-                "srun lmp -in \"../../$INPUT_FILE\"",
+                "# Run LAMMPS with input file",
+                "srun lmp -in \"$input\"",
                 "",
                 "echo 'Completed simulation: $MODEL_NAME'",
                 ""
             ])
             
-            # Write master job file
-            with open(master_job_path, 'w') as f:
+            # Write master job file with UNIX line endings
+            with open(master_job_path, 'w', newline='\n') as f:
                 f.write("\n".join(job_lines))
             
             os.chmod(master_job_path, 0o755)
@@ -838,12 +832,15 @@ class LammpsScriptGenerator:
                     system_name = Path(system_file).stem
                     model_name = f"{system_name}_{study_name}"
                     
-                    # Determine input file path
-                    input_file_path = f"{study_name}/{system_name}/{model_name}.in"
+                    # Determine input file path and directory
+                    input_file_path = f"{model_name}.in"
+                    sim_directory = f"{study_name}/{system_name}"
                     
                     script_lines.extend([
                         f"echo 'Submitting job for simulation: {model_name}'",
-                        f"sbatch --export=INPUT_FILE='{input_file_path}' lammps_simulation.job",
+                        f"cd {sim_directory}",
+                        f"sbatch {input_file_path} lammps_simulation.job",
+                        f"cd ../../",
                         f"echo 'Job submitted for: {model_name}'",
                         ""
                     ])
@@ -854,8 +851,8 @@ class LammpsScriptGenerator:
                 ""
             ])
             
-            # Write cluster submission script
-            with open(cluster_script_path, 'w') as f:
+            # Write cluster submission script with UNIX line endings
+            with open(cluster_script_path, 'w', newline='\n') as f:
                 f.write("\n".join(script_lines))
             
             os.chmod(cluster_script_path, 0o755)

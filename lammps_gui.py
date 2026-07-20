@@ -582,8 +582,22 @@ class LammpsScriptGenerator(QMainWindow):
         """Read units from LAMMPS data file"""
         try:
             with open(data_file, 'r') as f:
+                # Read the first line which typically contains the units information
+                first_line = f.readline().strip()
+                
+                # Check for units in the first line format: "LAMMPS data file ... units = <unit_type>"
+                if "units =" in first_line:
+                    # Extract units value after "units ="
+                    parts = first_line.split("units =")
+                    if len(parts) > 1:
+                        units = parts[1].strip()
+                        # Remove any trailing commas or other characters
+                        units = units.split(',')[0].strip()
+                        return units
+                
+                # If not found in first line, check other lines for different formats
+                f.seek(0)  # Reset to beginning of file
                 for line in f:
-                    # Check for units in various formats
                     line = line.strip()
                     if line.startswith("units") or line.startswith("units ="):
                         # Extract units value (formats: units <value> or units = <value>)
@@ -593,6 +607,7 @@ class LammpsScriptGenerator(QMainWindow):
                             parts = line.split(None, 1)
                         if len(parts) > 1:
                             units = parts[1].strip()
+                            units = units.split(',')[0].strip()
                             return units
         except Exception as e:
             print(f"Error reading units from data file: {e}")
@@ -602,8 +617,21 @@ class LammpsScriptGenerator(QMainWindow):
         """Read atom style from LAMMPS data file"""
         try:
             with open(data_file, 'r') as f:
+                # Look for the "Atoms # <atom_style>" line in the file
                 for line in f:
-                    # Check for atom style in various formats
+                    line = line.strip()
+                    if line.startswith("Atoms") and "#" in line:
+                        # Format: "Atoms # <atom_style>"
+                        parts = line.split("#")
+                        if len(parts) > 1:
+                            atom_style_part = parts[1].strip()
+                            # The atom style is the rest of the line after #
+                            atom_style = atom_style_part
+                            return atom_style
+                
+                # If not found in Atoms line, check for atom_style lines
+                f.seek(0)  # Reset to beginning of file
+                for line in f:
                     line = line.strip()
                     if line.startswith("atom_style") or line.startswith("atom_style ="):
                         # Extract atom style value (formats: atom_style <value> or atom_style = <value>)
@@ -614,17 +642,6 @@ class LammpsScriptGenerator(QMainWindow):
                         if len(parts) > 1:
                             atom_style = parts[1].strip()
                             return atom_style
-                    # Also check for "Atoms # atomstyle" format
-                    elif line.startswith("Atoms") and "#" in line:
-                        # Format: Atoms # atomstyle
-                        parts = line.split("#")
-                        if len(parts) > 1:
-                            atom_style_part = parts[1].strip()
-                            if atom_style_part.startswith("atomstyle"):
-                                style_parts = atom_style_part.split(None, 1)
-                                if len(style_parts) > 1:
-                                    atom_style = style_parts[1].strip()
-                                    return atom_style
         except Exception as e:
             print(f"Error reading atom style from data file: {e}")
         return None
