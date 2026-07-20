@@ -416,6 +416,16 @@ class LammpsScriptGenerator:
             points = deform_study.get("data_points", [])
             if len(points) > 1:
                 timestep = system_config.get("timestep", 0.001)
+                deform_axis = deform_study.get("deform_axis", "x")
+                
+                # Store initial box boundaries for symmetric deformation
+                script_lines.append(f"# Store initial box boundaries for symmetric engineering strain calculation")
+                script_lines.append(f"variable {deform_axis}lo0 equal $({deform_axis}lo)")
+                script_lines.append(f"variable {deform_axis}hi0 equal $({deform_axis}hi)")
+                script_lines.append(f"variable L0 equal $(l{deform_axis})")
+                script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0}}\"")
+                script_lines.append("")
+                
                 for i in range(len(points) - 1):
                     p1 = points[i]
                     p2 = points[i+1]
@@ -431,17 +441,24 @@ class LammpsScriptGenerator:
                     end_strain = p2[1]
                     strain_change = end_strain - start_strain
                     
-                    strain_rate = strain_change / (duration * timestep) if (duration * timestep) > 0 else 0
-                    deform_axis = deform_study.get("deform_axis", "x")
-
+                    # Calculate new boundaries based on engineering strain from initial state
+                    # For symmetric deformation: both boundaries move by (new_length - original_length)/2
+                    new_lo_var = f"{deform_axis}lo_target_{i+1}"
+                    new_hi_var = f"{deform_axis}hi_target_{i+1}"
+                    
                     script_lines.append(f"# --- Segment {i+1}: from step {start_step:.0f} to {end_step:.0f} ---")
-
-                    if abs(strain_rate) > 1e-12:
-                        script_lines.append(f"fix deform all deform 1 {deform_axis} erate {strain_rate} remap x")
+                    script_lines.append(f"# Target engineering strain: {end_strain:.6f}")
+                    script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_strain}) / 2\"")
+                    script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_strain}) / 2\"")
+                    script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
+                    
+                    if abs(strain_change) > 1e-12:
+                        # Use final keyword to deform from current boundaries to target boundaries
+                        script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box")
                     
                     script_lines.append(f"run {int(duration)}")
                     
-                    if abs(strain_rate) > 1e-12:
+                    if abs(strain_change) > 1e-12:
                         script_lines.append("unfix deform")
                     
                     script_lines.append("")

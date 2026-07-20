@@ -308,7 +308,7 @@ class StudyWidget(QWidget):
         layout.setContentsMargins(5,5,5,5)
         controls_layout = QHBoxLayout()
         self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
-        self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-1e9, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3); self.min_strain_spinbox.setKeyboardTracking(False)
+        self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-0.999999, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3); self.min_strain_spinbox.setKeyboardTracking(False)
         self.max_strain_spinbox = QDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(-1e9, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setDecimals(3); self.max_strain_spinbox.setKeyboardTracking(False)
 
         self.undo_button = QPushButton("↩"); self.redo_button = QPushButton("↪")
@@ -461,10 +461,17 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
 
+        # Ensure min_strain is not positive
         if min_strain > 0:
             min_strain = -min_strain
             self.min_strain_spinbox.setValue(min_strain)
         
+        # Ensure min_strain is greater than -1 (cannot be -1 or less)
+        if min_strain <= -1:
+            min_strain = -0.999
+            self.min_strain_spinbox.setValue(min_strain)
+
+        # Ensure max_strain is not negative
         if max_strain < 0:
             max_strain = -max_strain
             self.max_strain_spinbox.setValue(max_strain)
@@ -596,10 +603,17 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
 
+        # Ensure min_strain is not positive
         if min_strain > 0:
             min_strain = -min_strain
             self.min_strain_spinbox.setValue(min_strain)
         
+        # Ensure min_strain is greater than -1 (cannot be -1 or less)
+        if min_strain <= -1:
+            min_strain = -0.999
+            self.min_strain_spinbox.setValue(min_strain)
+
+        # Ensure max_strain is not negative
         if max_strain < 0:
             max_strain = -max_strain
             self.max_strain_spinbox.setValue(max_strain)
