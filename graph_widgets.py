@@ -1552,6 +1552,15 @@ class GraphWidget(QWidget):
                             # Currently a trough handle below center, constrain lower boundary only
                             clamped_pos_data_y = max(self._min_strain, new_pos_data_y)
                             new_amplitude = abs(clamped_pos_data_y - y_center)
+                    
+                    # --- NEW: Final safeguard check using _calculate_max_safe_amplitude ---
+                    # The logic above clamps the handle position, but the resulting amplitude might still cause
+                    # OTHER parts of the wave to exceed bounds (e.g. if the handle is not at the peak).
+                    # We reverse-check: is this amplitude safe for the current baseline?
+                    # Note: p1_d is the baseline starting Y.
+                    max_safe = self._calculate_max_safe_amplitude(scheme, num_cycles, p1_d.y())
+                    new_amplitude = min(new_amplitude, max_safe)
+                    # ----------------------------------------------------------------------
             
             # For even multiple alternating schemes and integer full period pulsating schemes, 
             # the horizontal line constraint is maintained elsewhere
@@ -1572,65 +1581,60 @@ class GraphWidget(QWidget):
 
             i = self._dragged_handle_index
             
-            # --- Start: NEW PRE-PROCESSING logic for SINE handles ---
-            new_p_norm = self._widget_to_norm(constrained_pos)
-            y_delta_norm = new_p_norm.y() - self.points_norm[i].y()
-            is_y_drag = self._drag_axis_lock != 'x'
-
-            # Check if this handle is part of an even multiple quarter period sine segment in alternating mode
-            # or an integer multiple full period sine segment in pulsating mode
-            is_even_multiple_alternating = False
-            is_integer_full_period_pulsating = False
+            # --- Determine Moving Handles ---
+            # Identify which handles move together (Locked vs Generic)
+            moving_indices = [i]
             
+            # Check for Locked Constraints (Even Alternating or Integer Pulsating)
+            # This logic determines if another handle is "ganged" to this one.
+            should_lock_y = False
+            
+            # Check Left Segment
+            # Check Left Segment
             if i > 0 and self.segments[i-1]['type'] == 'sine':
                 seg = self.segments[i-1]
-                # Even multiple: 2, 4, 6, 8... quarter periods means same y-values for endpoints (alternating schemes only)
-                is_even_multiple_alternating = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
-                # Integer full period: 1, 2, 3, 4... full periods means same y-values for endpoints (pulsating schemes only)
-                is_integer_full_period_pulsating = (seg['num_cycles'] * 4) % 4 == 0 and "Pulsating" in seg['scheme']
-                
-                should_lock_y_values = is_even_multiple_alternating or is_integer_full_period_pulsating
-                if should_lock_y_values:
-                    # For even multiples in alternating mode or integer full periods in pulsating mode, 
-                    # the line should remain horizontal
-                    # So we lock both handles to the same y-value
-                    self.points_norm[i-1].setY(new_p_norm.y())
-                    self.points_norm[i].setY(new_p_norm.y())
-            elif i < len(self.points_norm) - 1 and self.segments[i]['type'] == 'sine':
+                is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
+                # Pulsating is LOCKED only if start_y == end_y, which implies INTEGER cycles (1.0, 2.0).
+                # 0.5 cycles starts at y0, ends at peak. Not locked.
+                is_p_locked = abs(seg['num_cycles'] - round(seg['num_cycles'])) < 1e-9 and "Pulsating" in seg['scheme']
+                if is_even_alt or is_p_locked:
+                    moving_indices = [i-1, i]
+                    should_lock_y = True
+            
+            # Check Right Segment (only if not already locked by left)
+            if not should_lock_y and i < len(self.points_norm) - 1 and self.segments[i]['type'] == 'sine':
                 seg = self.segments[i]
-                # Even multiple: 2, 4, 6, 8... quarter periods means same y-values for endpoints (alternating schemes only)
-                is_even_multiple_alternating = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
-                # Integer full period: 1, 2, 3, 4... full periods means same y-values for endpoints (pulsating schemes only)
-                is_integer_full_period_pulsating = (seg['num_cycles'] * 4) % 4 == 0 and "Pulsating" in seg['scheme']
-                
-                should_lock_y_values = is_even_multiple_alternating or is_integer_full_period_pulsating
-                if should_lock_y_values:
-                    # For even multiples in alternating mode or integer full periods in pulsating mode, 
-                    # the line should remain horizontal
-                    # So we lock both handles to the same y-value
-                    self.points_norm[i].setY(new_p_norm.y())
-                    self.points_norm[i+1].setY(new_p_norm.y())
+                is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
+                is_p_locked = abs(seg['num_cycles'] - round(seg['num_cycles'])) < 1e-9 and "Pulsating" in seg['scheme']
+                if is_even_alt or is_p_locked:
+                    moving_indices = [i, i+1]
+                    should_lock_y = True
             
-            # Only proceed with linked vertical drag if not in even multiple mode
-            if not (is_even_multiple_alternating or is_integer_full_period_pulsating):
-                # Linked vertical drag for special sine cases
-                if i > 0 and self.segments[i-1]['type'] == 'sine' and is_y_drag:
-                    seg = self.segments[i-1]
-                    if (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']:
-                        self.points_norm[i-1].setY(self.points_norm[i-1].y() + y_delta_norm)
-                if i < len(self.points_norm) - 1 and self.segments[i]['type'] == 'sine' and is_y_drag:
-                    seg = self.segments[i]
-                    if (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']:
-                        self.points_norm[i+1].setY(self.points_norm[i+1].y() + y_delta_norm)
+            # Additional check: Linked vertical drag for Odd Alternating (Peak/Trough)
+            # The original code supported moving both handles if they meet at a peak/trough?
+            # User requirement check: "Fixing Sine Wave Dragging... Left Handle Bounce"
+            # The previous behavior for Odd Alternating was sometimes to move connected handles.
+            # But the user wants "Bounce Back" fixed and "clean logic".
+            # Let's stick to the core requirement: If handles are logically connected in a way that
+            # requires simultaneous movement (Locked), we move them.
+            # Note: Odd Alternating (e.g. 0.5 cycle) ends at Peak. y1 != y2.
+            # Usually dragging one does NOT drag the other.
             
-            # Boundary clamping for the dragged handle itself (only if not in special multiple mode)
-            if not (is_even_multiple_alternating or is_integer_full_period_pulsating):
-                p_data_pre = self._norm_to_data(new_p_norm)
-                p_data_pre.setY(max(self._min_strain, min(self._max_strain, p_data_pre.y())))
-                new_p_norm = self._data_to_norm(p_data_pre)
-                # Update constrained_pos to reflect clamping for subsequent logic
-                constrained_pos = self._norm_to_widget(new_p_norm)
-            # --- End: NEW PRE-PROCESSING logic ---
+            # --- Calculate Safe Y Range using Helper ---
+            min_y, max_y = self._get_safe_y_range_for_moving_handles(moving_indices)
+            
+            # --- Apply Clamping ---
+            new_p_norm = self._widget_to_norm(constrained_pos)
+            p_current_data = self._norm_to_data(new_p_norm)
+            clamped_y = max(min_y, min(max_y, p_current_data.y()))
+            
+            p_current_data.setY(clamped_y)
+            new_p_norm = self._data_to_norm(p_current_data)
+            constrained_pos = self._norm_to_widget(new_p_norm)
+            
+            # --- Update All Moving Handles ---
+            for idx in moving_indices:
+                self.points_norm[idx].setY(new_p_norm.y())
 
             # Check if this handle's x or y positions are locked
             x_locked = self._dragged_handle_index in self._locked_x_ticks
@@ -1782,6 +1786,59 @@ class GraphWidget(QWidget):
             self.points_norm[self._dragged_handle_index] = final_p_norm
             self._sort_points()
             self._dragged_handle_index = self.points_norm.index(final_p_norm)
+            
+            # --- Update Sine Amplitudes for Connected Segments ---
+            # If we moved a handle that is defined by endpoints (not an 'Even Alternating/Pulsating' where Amp is forced),
+            # we must update the stored amplitude to match the new physical reality of the endpoints.
+            # Otherwise, the wave will 'snap' back to old amplitude or look detached.
+            
+            # Helper to update segment amplitude and handle mirroring
+            def update_segment_amplitude(idx):
+                seg = self.segments[idx]
+                is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
+                is_full_puls = (seg['num_cycles'] * 4) % 4 == 0 and "Pulsating" in seg['scheme']
+                if not (is_even_alt or is_full_puls):
+                    # Re-calculate amplitude from new endpoints
+                    p1 = self._norm_to_data(self.points_norm[idx])
+                    p2 = self._norm_to_data(self.points_norm[idx+1])
+                    
+                    # 1. Calculate implied amplitude (signed)
+                    new_amp, _, _ = self._get_sine_parameters(p1, p2, seg)
+                    
+                    if new_amp is not None:
+                        # 2. Check for Mode Switching (Mirroring)
+                        # If amplitude is negative, it means the user dragged 'inverted' to the current scheme.
+                        # We should switch the scheme to match the visual intent.
+                        if new_amp < 0:
+                            current_scheme = seg['scheme']
+                            new_scheme = current_scheme
+                            
+                            if "Alternating" in current_scheme:
+                                if "tensile start" in current_scheme:
+                                    new_scheme = current_scheme.replace("tensile start", "compressive start")
+                                elif "compressive start" in current_scheme:
+                                    new_scheme = current_scheme.replace("compressive start", "tensile start")
+                            elif "Pulsating" in current_scheme:
+                                if "tensile" in current_scheme:
+                                    new_scheme = current_scheme.replace("tensile", "compressive")
+                                elif "compressive" in current_scheme:
+                                    new_scheme = current_scheme.replace("compressive", "tensile")
+                            
+                            if new_scheme != current_scheme:
+                                seg['scheme'] = new_scheme
+                                # Recalculate with new scheme to get positive amplitude
+                                new_amp, _, _ = self._get_sine_parameters(p1, p2, seg)
+                        
+                        # 3. Store positive amplitude
+                        seg['amplitude'] = abs(new_amp)
+
+            # Check segment to the left
+            if self._dragged_handle_index > 0 and self.segments[self._dragged_handle_index-1]['type'] == 'sine':
+                update_segment_amplitude(self._dragged_handle_index - 1)
+
+            # Check segment to the right
+            if self._dragged_handle_index < len(self.points_norm) - 1 and self.segments[self._dragged_handle_index]['type'] == 'sine':
+                update_segment_amplitude(self._dragged_handle_index)
         elif self._dragged_segment_index is not None:
             i = self._dragged_segment_index
             
@@ -1912,9 +1969,17 @@ class GraphWidget(QWidget):
                         # Use the improved method that handles stored amplitude appropriately
                         amp, y_center, _ = self._get_sine_parameters_with_stored_amp(p1_new_data, p2_new_data, self.segments[i], i)
                         
+                        # Use exact unit wave excursions for precise bounds checking
+                        min_ex, max_ex = self._get_unit_wave_excursions(self.segments[i]['scheme'], self.segments[i]['num_cycles'])
                         if amp is not None:
-                            min_y_data = min(min_y_data, y_center - abs(amp))
-                            max_y_data = max(max_y_data, y_center + abs(amp))
+                            # amp is magnitude
+                            # y_start = p1_new_data.y(). The wave is relative to this start point.
+                            # y_val = y_start + Amp * unit_val
+                            # So min_y = y_start + Amp * min_ex
+                            # max_y = y_start + Amp * max_ex
+                            
+                            min_y_data = p1_new_data.y() + abs(amp) * min_ex
+                            max_y_data = p1_new_data.y() + abs(amp) * max_ex
 
                     y_offset_data = 0
                     if max_y_data > self._max_strain:
@@ -2157,6 +2222,75 @@ class GraphWidget(QWidget):
         self.update()
         self.dataChanged.emit()
 
+    def _get_unit_wave_excursions(self, scheme, num_cycles):
+        """
+        Calculates the min and max values of a unit sine wave (amplitude=1) relative to its baseline.
+        Returns (min_excursion, max_excursion).
+        """
+        unit_amp = 1.0
+        phi_start = 0
+        y_center_offset = 0
+        
+        if "Alternating" in scheme:
+            if "compressive start" in scheme:
+                unit_amp = -1.0
+        elif "Pulsating tensile" in scheme:
+            y_center_offset = 1.0
+            phi_start = -math.pi / 2
+        elif "Pulsating compressive" in scheme:
+            y_center_offset = -1.0
+            phi_start = math.pi / 2
+
+        # 2. Find min/max values of the unit wave relative to baseline
+        limit_theta = num_cycles * 2 * math.pi
+        
+        # Check critical points: start, end, and local extrema
+        points_to_check = [0, limit_theta]
+        
+        k_start = math.ceil((phi_start - math.pi/2) / math.pi) - 2 
+        k_end = math.floor((limit_theta + phi_start - math.pi/2) / math.pi) + 2
+        
+        for k in range(int(k_start), int(k_end) + 1):
+            theta = (math.pi / 2) - phi_start + k * math.pi
+            if 0 <= theta <= limit_theta:
+                points_to_check.append(theta)
+                
+        vals = []
+        for theta in points_to_check:
+            val = y_center_offset + unit_amp * math.sin(theta + phi_start)
+            vals.append(val)
+            
+        return min(vals), max(vals)
+
+    def _calculate_max_safe_amplitude(self, scheme, num_cycles, y_baseline):
+        """
+        Calculates the maximum safe amplitude (magnitude) for a sine wave starting at y_baseline
+        so that it never exceeds self._min_strain or self._max_strain.
+        """
+        min_unit_excursion, max_unit_excursion = self._get_unit_wave_excursions(scheme, num_cycles)
+        
+        # 3. Calculate max safe amplitude
+        possible_amps = []
+        
+        # Upper bound constraint
+        if max_unit_excursion > 0:
+            a_limit = (self._max_strain - y_baseline) / max_unit_excursion
+            if a_limit >= 0: possible_amps.append(a_limit)
+        elif max_unit_excursion == 0:
+            pass 
+            
+        # Lower bound constraint
+        if min_unit_excursion < 0:
+            a_limit = (y_baseline - self._min_strain) / abs(min_unit_excursion)
+            if a_limit >= 0: possible_amps.append(a_limit)
+        elif min_unit_excursion == 0:
+            pass
+
+        if not possible_amps:
+            return 0.1 # Fallback
+            
+        return min(possible_amps)
+
     def _show_insert_sine_dialog(self, seg_idx):
         self._context_menu_segment_index = seg_idx
         dialog = InsertSineDialog(self)
@@ -2171,9 +2305,16 @@ class GraphWidget(QWidget):
                 num_cycles = params['num_cycles']
                 scheme = params['scheme']
 
+                # Calculate maximum safe amplitude to prevent exceeding bounds
+                max_safe_amp = self._calculate_max_safe_amplitude(scheme, num_cycles, p1_d.y())
+                
+                # Heuristic default amplitude
                 amplitude = min(abs(self._max_strain), abs(self._min_strain))
                 if amplitude == 0: amplitude = max(abs(self._max_strain), abs(self._min_strain))
                 if amplitude == 0: amplitude = 0.1
+                
+                # Clamp amplitude
+                amplitude = min(amplitude, max_safe_amp)
 
                 phi_start = 0
                 y_center_offset = 0
@@ -2229,17 +2370,55 @@ class GraphWidget(QWidget):
             p2_d = self._norm_to_data(self.points_norm[seg_idx + 1])
             
             # Use the stored amplitude if available, otherwise calculate from endpoints
-            amplitude, y_center, phi_start = self._get_sine_parameters_with_stored_amp(p1_d, p2_d, self.segments[seg_idx], seg_idx)
-            if amplitude is not None:
+            amplitude_to_use, y_center, phi_start = self._get_sine_parameters_with_stored_amp(p1_d, p2_d, self.segments[seg_idx], seg_idx)
+            
+            # --- START FIX: Ensure Amplitude Safety ---
+            # If the properties changed, the existing amplitude might now be unsafe.
+            # We recalculate the max safe amplitude for the NEW settings.
+            if amplitude_to_use is not None:
+                max_safe = self._calculate_max_safe_amplitude(new_params['scheme'], new_params['num_cycles'], p1_d.y())
+                # Clamp the amplitude
+                amplitude_to_use = min(abs(amplitude_to_use), max_safe)
+                
+                # Update the stored amplitude in the segment
+                self.segments[seg_idx]['amplitude'] = amplitude_to_use
+                
+                # Update phi_start for new scheme (needed for y2 calculation)
+                if "tensile" in new_params['scheme']: phi_start = -math.pi/2 if "Pulsating" in new_params['scheme'] else (-math.pi/2 if "tensile start" in new_params['scheme'] else math.pi/2)
+                elif "compressive" in new_params['scheme']: phi_start = math.pi/2 if "Pulsating" in new_params['scheme'] else (math.pi/2 if "compressive start" in new_params['scheme'] else -math.pi/2)
+                # Actually, easier to let _get_sine_parameters logic handle phi_start or derive it
+                # But here we are constructing y2.
+                # Let's just follow the logic in _get_sine_parameters roughly:
+                # Pulsating T: phi=-pi/2. Pulsating C: phi=pi/2.
+                # Alt T: phi=-pi/2 ?? No, Alt starts at 0.
+                if "Alternating" in new_params['scheme']:
+                    phi_start = 0
+                    if "compressive start" in new_params['scheme']:
+                        phi_start = math.pi # Standard Alternating logic often starts at 0 or pi
+                        # My _get_sine_parameters says: phi_start = pi if compressive, 0 if tensile.
+                elif "Pulsating" in new_params['scheme']:
+                     if "tensile" in new_params['scheme']: phi_start = -math.pi/2
+                     elif "compressive" in new_params['scheme']: phi_start = math.pi/2
+                
                 num_cycles = new_params['num_cycles']
                 end_angle = num_cycles * 2 * math.pi + phi_start
-                new_y2 = y_center + amplitude * math.sin(end_angle)
+                
+                if "Pulsating" in new_params['scheme']:
+                     # y2 = y1 + Amp * (sin(end) - sin(start))
+                     new_y2 = p1_d.y() + amplitude_to_use * (math.sin(end_angle) - math.sin(phi_start))
+                else: 
+                     # Alternating: y_center = y1. y2 = y1 + Amp * sin(end)
+                     new_y2 = p1_d.y() + amplitude_to_use * math.sin(end_angle)
 
+                # Clamp y2 to bounds just in case
+                new_y2 = max(self._min_strain, min(self._max_strain, new_y2))
+                
                 p2_d.setY(new_y2)
                 self.points_norm[seg_idx + 1] = self._data_to_norm(p2_d)
 
-            # If it's an even quarter-period in alternating mode, ensure both handles have the same y-value (horizontal line)
-            if (num_cycles * 4) % 2 == 0 and "Alternating" in new_params['scheme']:
+            # If it's an even quarter-period in alternating mode or INTEGER Pulsating, ensure both handles have the same y-value (horizontal line)
+            if ((num_cycles * 4) % 2 == 0 and "Alternating" in new_params['scheme']) or \
+               (abs(num_cycles - round(num_cycles)) < 1e-9 and "Pulsating" in new_params['scheme']):
                 p1_y_norm = self.points_norm[seg_idx].y()
                 self.points_norm[seg_idx + 1].setY(p1_y_norm)
 
@@ -2389,6 +2568,168 @@ class GraphWidget(QWidget):
 
             self.update()
             self.dataChanged.emit()
+
+    def _get_safe_y_range_for_moving_handles(self, moving_indices):
+        """
+        Calculates the safe [min_y, max_y] range for the handles in 'moving_indices' (assumed to move to same Y),
+        checking all connected sine segments to ensure no part of the wave exceeds global Min/Max strain.
+        """
+        global_min = self._min_strain
+        global_max = self._max_strain
+        
+        limit_min = global_min
+        limit_max = global_max
+        
+        # Identify all segments connected to the moving handles
+        # We need to check any segment where at least one endpoint is moving.
+        segments_to_check = set()
+        for idx in moving_indices:
+            if idx > 0: segments_to_check.add(idx - 1)
+            if idx < len(self.points_norm) - 1: segments_to_check.add(idx)
+            
+        for s_idx in segments_to_check:
+            if self.segments[s_idx]['type'] != 'sine':
+                continue
+                
+            seg = self.segments[s_idx]
+            
+            # Determine if this segment is "Locked" (Both endpoints moving) or "variable" (One moving)
+            p1_moving = s_idx in moving_indices
+            p2_moving = (s_idx + 1) in moving_indices
+            
+            if not p1_moving and not p2_moving:
+                continue # Should not happen given logic above
+                
+            # --- Case 1: Fixed Amplitude (Both Endpoints Moving) ---
+            # This happens for Even Alternating or Integer Pulsating in Locked Mode.
+            if p1_moving and p2_moving:
+                stored_amp = seg.get('amplitude', 0)
+                min_unit, max_unit = self._get_unit_wave_excursions(seg['scheme'], seg['num_cycles'])
+                
+                # For Alternating: Center moves with Y. Peak = Y + Amp*Unit.
+                # For Pulsating: Base moves with Y. Peak = Y + Amp*Unit.
+                # In both cases, the logic `Y + Amp*Unit` holds if `Unit` is relative to the moving reference (Center/Base).
+                
+                # Constraints:
+                # Y + Amp * MaxUnit <= GlobalMax  ->  Y <= GlobalMax - Amp * MaxUnit
+                # Y + Amp * MinUnit >= GlobalMin  ->  Y >= GlobalMin - Amp * MinUnit
+                
+                limit_max = min(limit_max, global_max - stored_amp * max_unit)
+                limit_min = max(limit_min, global_min - stored_amp * min_unit)
+
+            # --- Case 2: Variable Amplitude (One Endpoint Moving) ---
+            else:
+                # We need to solve the linear relation: Y_Excursion = A * Y_Handle + B
+                # 1. Get Sine Parameters
+                phi_start = 0
+                if "Alternating" in seg['scheme']:
+                    if "compressive" in seg['scheme']:
+                        phi_start = math.pi
+                    else:
+                        phi_start = 0
+                elif "Pulsating" in seg['scheme']:
+                    if "tensile" in seg['scheme']:
+                        phi_start = -math.pi / 2
+                    elif "compressive" in seg['scheme']:
+                        phi_start = math.pi / 2
+                
+                # Check for "start" variants if scheme strings are surprisingly different (fallback)
+                # (The checks above cover "Alternating (compressive start)" via "compressive" keyword)
+
+                
+                phi_end = phi_start + seg['num_cycles'] * 2 * math.pi
+                S_start = math.sin(phi_start)
+                S_end = math.sin(phi_end)
+                D = S_end - S_start
+                
+                is_alternating = "Alternating" in seg['scheme']
+                if not is_alternating and abs(D) < 1e-9:
+                    continue # Singularity, skip (should likely be locked)
+                if is_alternating and abs(S_end) < 1e-9:
+                    continue # Singularity
+                
+                denom = S_end if is_alternating else D
+                
+                # 2. Identify Fixed Point
+                if p1_moving: # Dragging p1 (Start)
+                    y_fixed = self._norm_to_data(self.points_norm[s_idx+1]).y()
+                    # We are solving for y1. y2 is fixed.
+                else: # Dragging p2 (End)
+                    y_fixed = self._norm_to_data(self.points_norm[s_idx]).y()
+                    # We are solving for y2. y1 is fixed.
+                
+                # 3. Iterate Critical Points (Peaks/Troughs) on Unit Wave
+                critical_S = [S_start, S_end]
+                k_start = math.ceil((phi_start - math.pi/2) / math.pi)
+                k_end = math.floor((phi_end - math.pi/2) / math.pi)
+                for k in range(k_start, k_end + 1):
+                    theta = math.pi/2 + k * math.pi
+                    if phi_start - 1e-9 <= theta <= phi_end + 1e-9:
+                        critical_S.append(math.sin(theta))
+                
+                for S in critical_S:
+                    # Calculate Linear Coeffs for: Y_Peak = Coeff * Y_Handle + Constant
+                    coeff = 0
+                    const = 0
+                    
+                    if is_alternating:
+                        # Amp = (y2 - y1) / S_end
+                        # Wave(t) = y1 + Amp * S(t) = y1 + (y2-y1)/S_end * S(t)
+                        factor = S / denom
+                        if p1_moving: # Find coeffs for y1
+                             # y(t) = y1 * (1 - factor) + y2 * factor
+                             coeff = 1 - factor
+                             const = y_fixed * factor
+                        else: # Find coeffs for y2
+                             # y(t) = y1 * (1 - factor) + y2 * factor
+                             coeff = factor
+                             const = y_fixed * (1 - factor)
+                    else: # Pulsating
+                        # Amp = (y2 - y1) / D
+                        # Wave(t) = y1 + Amp * (S(t) - S_start)
+                        factor = (S - S_start) / denom
+                        if p1_moving: # Find coeffs for y1
+                             # y(t) = y1 + (y2 - y1) * factor 
+                             #      = y1(1 - factor) + y2 * factor
+                             coeff = 1 - factor
+                             const = y_fixed * factor
+                        else: # Find coeffs for y2
+                             # y(t) = y1(1 - factor) + y2 * factor
+                             coeff = factor
+                             const = y_fixed * (1 - factor)
+                    
+                    # 4. Apply Constraints
+                    # Min <= Coeff * Y + Const <= Max
+                    
+                    # Upper Limit
+                    # Coeff * Y <= Max - Const
+                    rhs = global_max - const
+                    if coeff > 1e-9:
+                        limit_max = min(limit_max, rhs / coeff)
+                    elif coeff < -1e-9:
+                        limit_min = max(limit_min, rhs / coeff)
+                    elif const > global_max + 1e-5:
+                        # Impossible static constraint. Clamping not possible via handle.
+                        pass 
+                        
+                    # Lower Limit
+                    # Coeff * Y >= Min - Const
+                    rhs = global_min - const
+                    if coeff > 1e-9:
+                        limit_min = max(limit_min, rhs / coeff)
+                    elif coeff < -1e-9:
+                        limit_max = min(limit_max, rhs / coeff)
+                    elif const < global_min - 1e-5:
+                        pass
+
+        # Robustness Check
+        if limit_min > limit_max:
+            # Conflicts found (e.g. existing constraints violated).
+            # Clamp to global bounds as fallback.
+            limit_min = global_min
+            limit_max = global_max
+            
+        return limit_min, limit_max
 
 class StudyWidget(QWidget):
     dataChanged = pyqtSignal()
