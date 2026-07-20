@@ -92,8 +92,8 @@ class LammpsScriptGenerator:
             root_simulation_dir = output_path
             os.makedirs(root_simulation_dir, exist_ok=True)
             
-            # Create input_files folder and copy all data files there
-            data_files_folder = os.path.join(root_simulation_dir, "input_files")
+            # Create _input_files folder and copy all data files there
+            data_files_folder = os.path.join(root_simulation_dir, "_input_files")
             os.makedirs(data_files_folder, exist_ok=True)
             
             # Generate base settings file
@@ -101,13 +101,13 @@ class LammpsScriptGenerator:
             if not base_settings_result["success"]:
                 return base_settings_result
             
-            # Copy all data files to input_files
+            # Copy all data files to _input_files
             data_file_dest_paths = {}
             for i, system_file in enumerate(system_files):
                 system_name = Path(system_file).stem
                 data_file_dest = os.path.join(data_files_folder, f"{system_name}.data")
                 shutil.copy2(system_file, data_file_dest)
-                data_file_dest_paths[system_file] = (Path("input_files") / f"{system_name}.data").as_posix()
+                data_file_dest_paths[system_file] = (Path("_input_files") / f"{system_name}.data").as_posix()
                 
                 # Copy potential file if used
                 system_config = self.config.get("system", {})
@@ -290,7 +290,7 @@ class LammpsScriptGenerator:
                     potential_file = system_config.get("potential_file", "")
                     if potential_file:
                         potential_name = Path(potential_file).name
-                        potential_path = (Path("input_files") / potential_name).as_posix()
+                        potential_path = (Path("_input_files") / potential_name).as_posix()
                         script_lines.extend([
                             f"include ../../{potential_path}",
                             ""
@@ -317,7 +317,7 @@ class LammpsScriptGenerator:
                     potential_file = system_config.get("potential_file", "")
                     if potential_file:
                         potential_name = Path(potential_file).name
-                        potential_path = (Path("input_files") / potential_name).as_posix()
+                        potential_path = (Path("_input_files") / potential_name).as_posix()
                         script_lines.append(f"include ../../{potential_path}")
                 script_lines.append("")
             
@@ -498,11 +498,18 @@ class LammpsScriptGenerator:
                         
                         script_lines.append(f"run {int(duration)}")
                         
-                        if abs(y_change) > 1e-12:
-                            script_lines.append("unfix deform")
-                        
                         if ensemble in ["NVT", "NPT"]:
-                            script_lines.append(f"unfix {ensemble.lower()}")
+                            script_lines.append(f"unfix {ensemble.lower()}\n")
+
+                        # Write data after this segment if requested
+                        if output_config.get("write_data_option") == "After each deformation/temperature step":
+                            base_name = Path(data_file).stem
+                            write_data_filename = f"{base_name}_*.data"
+                            script_lines.extend([
+                                f"# Write data after segment {i+1}",
+                                f"write_data {write_data_filename}",
+                                ""
+                            ])
 
                     elif mode == "Temperature":
                         # Apply ensemble with temperature ramp
@@ -517,12 +524,23 @@ class LammpsScriptGenerator:
                         script_lines.append(f"run {int(duration)}")
 
                         if ensemble in ["NVT", "NPT"]:
-                            script_lines.append(f"unfix {ensemble.lower()}")
+                            script_lines.append(f"unfix {ensemble.lower()}\n")
+
+                        # Write data after this segment if requested
+                        if output_config.get("write_data_option") == "After each deformation/temperature step":
+                            base_name = Path(data_file).stem
+                            write_data_filename = f"{base_name}_*.data"
+                            script_lines.extend([
+                                f"# Write data after segment {i+1}",
+                                f"write_data {write_data_filename}",
+                                ""
+                            ])
 
                     script_lines.append("")
             
             # Add write_data at the end if enabled
-            if output_config.get("enable_write_data", False):
+            write_data_option = output_config.get("write_data_option", "Never")
+            if write_data_option == "At the end of the simulation":
                 # Extract the base name from the data_file and use wildcard for timestep
                 base_name = Path(data_file).stem
                 
@@ -553,7 +571,7 @@ class LammpsScriptGenerator:
             
             # Generate OS-specific script only
             if current_os in ['linux', 'darwin']:  # Linux or Mac
-                exec_script_path = os.path.join(root_simulation_dir, "run_local_all.sh")
+                exec_script_path = os.path.join(root_simulation_dir, "local_run_all.sh")
                 script_lines = [
                     "#!/bin/bash",
                     "# Sequential execution script for multiple LAMMPS simulations",
@@ -565,7 +583,7 @@ class LammpsScriptGenerator:
                 command_prefix = "gnome-terminal -- bash -c '"
                 command_suffix = "; exec bash'"  # Keep terminal open after command completes
             else:  # Windows
-                exec_script_path = os.path.join(root_simulation_dir, "run_local_all.bat")
+                exec_script_path = os.path.join(root_simulation_dir, "local_run_all.bat")
                 script_lines = [
                     "@echo off",
                     "REM Sequential execution script for multiple LAMMPS simulations",
@@ -781,7 +799,7 @@ class LammpsScriptGenerator:
             self.generated_files.append(master_job_path)
             
             # Generate cluster submission script (Linux only - clusters are always Linux)
-            cluster_script_path = os.path.join(root_simulation_dir, "run_cluster_jobs.sh")
+            cluster_script_path = os.path.join(root_simulation_dir, "cluster_run_jobs.sh")
             
             script_lines = [
                 "#!/bin/bash",
@@ -865,18 +883,58 @@ class LammpsScriptGenerator:
             
             # Neighbor settings
             neighbor_distance = system_config.get("neighbor_distance", 0.3)
+            enable_neighbor_distance = system_config.get("enable_neighbor_distance", True)
+            
             neigh_modify_every = system_config.get("neigh_modify_every", 1)
+            enable_neigh_modify_every = system_config.get("enable_neigh_modify_every", True)
+            
             neigh_modify_delay = system_config.get("neigh_modify_delay", 10)
-            neigh_modify_check = system_config.get("neigh_modify_check", True)
+            enable_neigh_modify_delay = system_config.get("enable_neigh_modify_delay", True)
+            
+            neigh_modify_check = system_config.get("neigh_modify_check", "yes")
+            enable_neigh_modify_check = system_config.get("enable_neigh_modify_check", True)
+            
+            neigh_modify_one = system_config.get("neigh_modify_one", 0)
+            enable_neigh_modify_one = system_config.get("enable_neigh_modify_one", False)
             
             base_settings_lines.extend([
                 "#------------------------",
                 "# Neighbor settings",
                 "#------------------------",
-                f"neighbor {neighbor_distance} bin",
-                f"neigh_modify every {neigh_modify_every} delay {neigh_modify_delay} {'check yes' if neigh_modify_check else 'check no'}",
-                ""
             ])
+            
+            # Add neighbor command if enabled
+            if enable_neighbor_distance:
+                base_settings_lines.extend([
+                    f"neighbor {neighbor_distance} bin",
+                ])
+            
+            # Build neigh_modify command based on enabled options
+            neigh_modify_parts = ["neigh_modify"]
+            any_neigh_modify_enabled = False
+            
+            if enable_neigh_modify_every:
+                neigh_modify_parts.append(f"every {neigh_modify_every}")
+                any_neigh_modify_enabled = True
+                
+            if enable_neigh_modify_delay:
+                neigh_modify_parts.append(f"delay {neigh_modify_delay}")
+                any_neigh_modify_enabled = True
+                
+            if enable_neigh_modify_check:
+                neigh_modify_parts.append(f"check {neigh_modify_check}")
+                any_neigh_modify_enabled = True
+                
+            if enable_neigh_modify_one:
+                neigh_modify_parts.append(f"one {neigh_modify_one}")
+                any_neigh_modify_enabled = True
+            
+            if any_neigh_modify_enabled:
+                base_settings_lines.extend([
+                    " ".join(neigh_modify_parts),
+                ])
+            
+            base_settings_lines.extend([""])
             
             # We can't include velocity creation here since it might vary per study
             # We'll handle initial velocity in the individual study files

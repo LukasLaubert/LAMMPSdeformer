@@ -261,8 +261,8 @@ class GraphWidget(QWidget):
             slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
             slope_text = f"{slope:.4e} {self.get_y_unit()}/step"
             rate_text = f"{rate:.4e} {self.get_y_unit()}/t"
-            slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w/2 + p2_w/2) - QPointF(0, 20))
-            rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w/2 + p2_w/2) - QPointF(0, 6))
+            slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 20))
+            rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w * 2/3 + p2_w * 1/3) - QPointF(0, 6))
             # Check if this segment is fixed and draw in red if so
             if i in self._fixed_segments:
                 painter.setPen(QColor("red"))

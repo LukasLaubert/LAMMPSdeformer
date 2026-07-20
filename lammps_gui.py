@@ -148,22 +148,48 @@ def create_info_icon_label(url, tooltip, color_name):
     return label
 
 class InfoGroupBox(QGroupBox):
-    def __init__(self, title, doc_link, parent=None, is_external=False, is_hpc=False):
+    def __init__(self, title, doc_link, parent=None, is_external=False, is_hpc=False, additional_docs=None):
         super().__init__(title, parent)
         self.doc_link = doc_link
         self.is_external = is_external
         self.is_hpc = is_hpc
+        self.additional_docs = additional_docs or []  # List of additional documentation links
 
+        # Use the main doc link for the URL and tooltip
         if is_external:
             url = QUrl(self.doc_link)
+            tooltip = f"Click to open {doc_link}"
         else:
             url = QUrl(f"https://docs.lammps.org/{self.doc_link}.html")
+            tooltip = f"Click to open LAMMPS {doc_link} documentation"
+
+        # If additional docs exist, update tooltip to indicate multiple docs
+        if self.additional_docs:
+            tooltip = f"Click to open LAMMPS documentation for {doc_link} and others"
 
         color = "green" if self.is_hpc else "blue"
-        tooltip = f"Click to open {doc_link}" if is_external else f"Click to open LAMMPS {doc_link} documentation"
         
         self.info_label = create_info_icon_label(url, tooltip, color)
         self.info_label.setParent(self)
+
+        # Override the mousePressEvent to open multiple links if they exist
+        if self.additional_docs:
+            def custom_mouse_press(event):
+                if event.button() == Qt.MouseButton.LeftButton:
+                    # Open all links (main + additional) - only once each
+                    # Open the primary link
+                    QDesktopServices.openUrl(self.info_label.url)
+                    # Open additional links
+                    for doc_link, is_ext in self.additional_docs:
+                        if is_ext:
+                            url = QUrl(doc_link)
+                        else:
+                            url = QUrl(f"https://docs.lammps.org/{doc_link}.html")
+                        QDesktopServices.openUrl(url)
+                # For other mouse button events or other handling without duplicate URL opening
+                QLabel.mousePressEvent(self.info_label, event)
+            
+            self.info_label.mousePressEvent = custom_mouse_press
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -228,7 +254,7 @@ class LammpsGui(QMainWindow):
         
         # Custom data file extensions
         self.data_file_extensions = [".data"]
-        self.potential_file_extensions = [".in", ".pot", ".potential"]
+        self.potential_file_extensions = ["*"]  # Allow any file extension for potential files
         
         # Create main widget and layout
         self.main_widget = QWidget()
@@ -563,47 +589,155 @@ class LammpsGui(QMainWindow):
         scroll_layout.addWidget(velocity_group)
         
         # Neighbor settings
-        neighbor_group = InfoGroupBox("Neighbor Settings", "neighbor")
-        neighbor_layout = QFormLayout()
+        neighbor_group = InfoGroupBox("Neighbor Settings", "neighbor", additional_docs=[("neigh_modify", False)])
         
+        # Create horizontal layout to hold both the neighbor and neigh_modify settings
+        neighbor_main_layout = QVBoxLayout()
+        
+        # Neighbor settings layout
+        main_neighbor_layout = QHBoxLayout()
+        
+        # Left column for neighbor distance
+        left_col_layout = QVBoxLayout()
+        left_col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # Align to top
+        
+        # Neighbor distance
+        neighbor_hbox_layout = QHBoxLayout()
+        self.enable_neighbor_distance = QCheckBox()
+        self.enable_neighbor_distance.setChecked(True)
+        self.enable_neighbor_distance.setToolTip("Enable neighbor distance setting")
+        
+        neighbor_distance_label = QLabel("Neighbor Distance:")
         self.neighbor_distance = QDoubleSpinBox()
         self.neighbor_distance.setRange(0, 100)
         self.neighbor_distance.setValue(0.3)
         self.neighbor_distance.setSingleStep(0.1)
         self.neighbor_distance.setToolTip("Cutoff distance for neighbor list building")
+        self.neighbor_distance.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
         
+        neighbor_hbox_layout.addWidget(self.enable_neighbor_distance)
+        neighbor_hbox_layout.addWidget(neighbor_distance_label)
+        neighbor_hbox_layout.addWidget(self.neighbor_distance)
+        
+        left_col_layout.addLayout(neighbor_hbox_layout)
+        
+        # Right column for neigh_modify settings
+        right_col_layout = QVBoxLayout()
+        right_col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # Align to top
+        
+        # Neigh modify every
+        neigh_modify_every_hbox_layout = QHBoxLayout()
+        self.enable_neigh_modify_every = QCheckBox()
+        self.enable_neigh_modify_every.setChecked(True)
+        self.enable_neigh_modify_every.setToolTip("Enable neigh_modify every setting")
+        
+        neigh_modify_every_label = QLabel("Neigh Modify Every:")
         self.neigh_modify_every = QSpinBox()
         self.neigh_modify_every.setRange(1, 1000)
         self.neigh_modify_every.setValue(1)
         self.neigh_modify_every.setToolTip("How often to rebuild neighbor list")
+        self.neigh_modify_every.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
         
+        neigh_modify_every_hbox_layout.addWidget(self.enable_neigh_modify_every)
+        neigh_modify_every_hbox_layout.addWidget(neigh_modify_every_label)
+        neigh_modify_every_hbox_layout.addWidget(self.neigh_modify_every)
+        
+        right_col_layout.addLayout(neigh_modify_every_hbox_layout)
+        
+        # Neigh modify delay
+        neigh_modify_delay_hbox_layout = QHBoxLayout()
+        self.enable_neigh_modify_delay = QCheckBox()
+        self.enable_neigh_modify_delay.setChecked(True)
+        self.enable_neigh_modify_delay.setToolTip("Enable neigh_modify delay setting")
+        
+        neigh_modify_delay_label = QLabel("Neigh Modify Delay:")
         self.neigh_modify_delay = QSpinBox()
         self.neigh_modify_delay.setRange(0, 1000)
         self.neigh_modify_delay.setValue(10)
         self.neigh_modify_delay.setToolTip("Delay between neighbor list builds")
+        self.neigh_modify_delay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
         
-        self.neigh_modify_check = QCheckBox("Enable neighbor checking")
-        self.neigh_modify_check.setChecked(True)
-        self.neigh_modify_check.setToolTip("Enable checking for neighbor list rebuilds")
+        neigh_modify_delay_hbox_layout.addWidget(self.enable_neigh_modify_delay)
+        neigh_modify_delay_hbox_layout.addWidget(neigh_modify_delay_label)
+        neigh_modify_delay_hbox_layout.addWidget(self.neigh_modify_delay)
         
-        neighbor_label = QLabel("Neighbor Settings:")
-        neighbor_label.setStyleSheet("color: blue; text-decoration: underline;")
-        try:
-            neighbor_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        except AttributeError:
-            pass
-        neighbor_label.mousePressEvent = lambda e: self.open_lammps_doc("neighbor")
-        neighbor_label.setToolTip("Click to open LAMMPS neighbor documentation")
+        right_col_layout.addLayout(neigh_modify_delay_hbox_layout)
         
-        neighbor_layout.addRow("Neighbor Distance:", self.neighbor_distance)
-        neighbor_layout.addRow("Neigh Modify Every:", self.neigh_modify_every)
-        neighbor_layout.addRow("Neigh Modify Delay:", self.neigh_modify_delay)
-        neighbor_layout.addRow(self.neigh_modify_check)
-        neighbor_group.setLayout(neighbor_layout)
+        # Neigh modify check
+        neigh_modify_check_hbox_layout = QHBoxLayout()
+        self.enable_neigh_modify_check = QCheckBox()
+        self.enable_neigh_modify_check.setChecked(True)
+        self.enable_neigh_modify_check.setToolTip("Enable neigh_modify check setting")
+        
+        neigh_modify_check_label = QLabel("Neigh Modify Check:")
+        self.neigh_modify_check_combo = QComboBox()
+        self.neigh_modify_check_combo.addItems(["yes", "no"])
+        self.neigh_modify_check_combo.setCurrentText("yes")
+        self.neigh_modify_check_combo.setToolTip("Enable checking for neighbor list rebuilds")
+        self.neigh_modify_check_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
+        
+        neigh_modify_check_hbox_layout.addWidget(self.enable_neigh_modify_check)
+        neigh_modify_check_hbox_layout.addWidget(neigh_modify_check_label)
+        neigh_modify_check_hbox_layout.addWidget(self.neigh_modify_check_combo)
+        
+        right_col_layout.addLayout(neigh_modify_check_hbox_layout)
+        
+        # Neigh modify one
+        neigh_modify_one_hbox_layout = QHBoxLayout()
+        self.enable_neigh_modify_one = QCheckBox()
+        self.enable_neigh_modify_one.setChecked(False)
+        self.enable_neigh_modify_one.setToolTip("Enable neigh_modify one setting")
+        
+        neigh_modify_one_label = QLabel("Neigh Modify One:")
+        self.neigh_modify_one = QSpinBox()
+        self.neigh_modify_one.setRange(0, 10000)
+        self.neigh_modify_one.setValue(0)
+        self.neigh_modify_one.setToolTip("Number for 'neigh_modify one' option")
+        self.neigh_modify_one.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # Make it expand
+        
+        neigh_modify_one_hbox_layout.addWidget(self.enable_neigh_modify_one)
+        neigh_modify_one_hbox_layout.addWidget(neigh_modify_one_label)
+        neigh_modify_one_hbox_layout.addWidget(self.neigh_modify_one)
+        
+        right_col_layout.addLayout(neigh_modify_one_hbox_layout)
+        
+        # Put the columns into the main layout
+        main_neighbor_layout.addLayout(left_col_layout)
+        main_neighbor_layout.addLayout(right_col_layout)
+        
+        # Add the horizontal layout to the main neighbor layout
+        neighbor_main_layout.addLayout(main_neighbor_layout)
+        
+        # Create layout for the documentation icons in the top right
+        top_right_layout = QHBoxLayout()
+        
+        # Create a container layout to position the icons at the top
+        container_layout = QVBoxLayout()
+        container_layout.addLayout(top_right_layout)
+        container_layout.addLayout(neighbor_main_layout)
+        
+        neighbor_group.setLayout(container_layout)
         scroll_layout.addWidget(neighbor_group)
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
+        
+        # Connect neighbor setting checkboxes to their corresponding fields for graying out
+        self.enable_neighbor_distance.stateChanged.connect(
+            lambda state: self.toggle_field_enabled(self.neighbor_distance, state)
+        )
+        self.enable_neigh_modify_every.stateChanged.connect(
+            lambda state: self.toggle_field_enabled(self.neigh_modify_every, state)
+        )
+        self.enable_neigh_modify_delay.stateChanged.connect(
+            lambda state: self.toggle_field_enabled(self.neigh_modify_delay, state)
+        )
+        self.enable_neigh_modify_check.stateChanged.connect(
+            lambda state: self.toggle_field_enabled(self.neigh_modify_check_combo, state)
+        )
+        self.enable_neigh_modify_one.stateChanged.connect(
+            lambda state: self.toggle_field_enabled(self.neigh_modify_one, state)
+        )
 
     def _add_chip(self, text, layout, remove_slot):
         chip = Chip(text)
@@ -1186,12 +1320,16 @@ class LammpsGui(QMainWindow):
         # Write data at end setting - moved to top position
         write_data_group = InfoGroupBox("Write Data", "write_data")
         write_data_layout = QVBoxLayout()
+
+        self.write_data_combo = QComboBox()
+        self.write_data_combo.addItems([
+            "Never",
+            "At the end of the simulation",
+            "After each deformation/temperature step"
+        ])
+        self.write_data_combo.setToolTip("Select when to write atom data.")
         
-        self.enable_write_data = QCheckBox("Write final atom data at end of stimulation")
-        self.enable_write_data.setChecked(False)
-        self.enable_write_data.setToolTip("Write the final state of the simulation (atom locations, velocities, bonds, ...) to a data file at the end")
-        
-        write_data_layout.addWidget(self.enable_write_data)
+        write_data_layout.addWidget(self.write_data_combo)
         write_data_group.setLayout(write_data_layout)
         scroll_layout.addWidget(write_data_group)
         
@@ -1487,8 +1625,12 @@ class LammpsGui(QMainWindow):
     
     def browse_potential_file(self):
         """Browse for potential file"""
-        extensions = " ".join([f"*{ext}" for ext in self.potential_file_extensions])
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", f"Potential Files ({extensions});;All files (*)")
+        # Allow any file when potential_file_extensions is ["*"]
+        if self.potential_file_extensions == ["*"]:
+            file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "All Files (*)")
+        else:
+            extensions = " ".join([f"*{ext}" for ext in self.potential_file_extensions])
+            file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", f"Potential Files ({extensions});;All files (*)")
         if file_path:
             self.potential_path_edit.setText(file_path)
             # Automatically check the "Use separate potential file" checkbox
@@ -1618,6 +1760,20 @@ class LammpsGui(QMainWindow):
         enabled = state == Qt.CheckState.Checked.value
         self.custom_fixes_text.setEnabled(enabled)
 
+    def toggle_field_enabled(self, field_widget, state):
+        """Toggle field enabled state and appearance based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        field_widget.setEnabled(enabled)
+        
+        # Set appearance to make text look grey when disabled
+        palette = field_widget.palette()
+        if enabled:
+            # Reset to default colors
+            field_widget.setStyleSheet("")
+        else:
+            # Apply greyed out appearance
+            field_widget.setStyleSheet("color: grey;")
+
     def validate_paths(self):
         """Validate all user-provided paths for invalid characters"""
         paths_to_check = {
@@ -1709,10 +1865,23 @@ class LammpsGui(QMainWindow):
         )
         layout.addWidget(instructions_text)
         
-        # Buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-        button_box.accepted.connect(dialog.accept)
-        layout.addWidget(button_box)
+        # Buttons layout - custom layout to position Open Path button on bottom left
+        buttons_layout = QHBoxLayout()
+        
+        # Open Path button
+        open_path_button = QPushButton("Open Path")
+        open_path_button.clicked.connect(lambda: self.open_generated_path(result))
+        buttons_layout.addWidget(open_path_button)
+        
+        # Stretch to push OK button to the right
+        buttons_layout.addStretch()
+        
+        # OK button
+        ok_button = QPushButton("OK")
+        ok_button.clicked.connect(dialog.accept)
+        buttons_layout.addWidget(ok_button)
+        
+        layout.addLayout(buttons_layout)
         
         dialog.setLayout(layout)
         dialog.exec()
@@ -1760,6 +1929,25 @@ class LammpsGui(QMainWindow):
         structure_lines.extend(build_tree_text(tree))
         
         return "\n".join(structure_lines)
+    
+    def open_generated_path(self, result):
+        """Open the output directory specified in the Output Options tab"""
+        import subprocess
+        import sys
+        
+        output_path = self.output_path_edit.text()
+        
+        if output_path and os.path.exists(output_path):
+            # Open the folder using the OS-appropriate method
+            if sys.platform == "win32":
+                # Use subprocess.run with explorer for better reliability on Windows
+                subprocess.run(["explorer", os.path.normpath(output_path)])
+            elif sys.platform == "darwin":  # macOS
+                subprocess.run(["open", output_path])
+            else:  # Linux and other Unix-like
+                subprocess.run(["xdg-open", output_path])
+        else:
+            QMessageBox.critical(self, "Error", f"Output path does not exist: {output_path}")
     
     def apply_modern_stylesheet(self):
         """Apply modern stylesheet to the application"""
@@ -1931,9 +2119,15 @@ class LammpsGui(QMainWindow):
                 "initial_velocity_seed": self.initial_velocity_seed.value(),
                 "damping_factor": self.damping_factor.value(),
                 "neighbor_distance": self.neighbor_distance.value(),
+                "enable_neighbor_distance": self.enable_neighbor_distance.isChecked(),
                 "neigh_modify_every": self.neigh_modify_every.value(),
+                "enable_neigh_modify_every": self.enable_neigh_modify_every.isChecked(),
                 "neigh_modify_delay": self.neigh_modify_delay.value(),
-                "neigh_modify_check": self.neigh_modify_check.isChecked(),
+                "enable_neigh_modify_delay": self.enable_neigh_modify_delay.isChecked(),
+                "neigh_modify_check": self.neigh_modify_check_combo.currentText(),
+                "enable_neigh_modify_check": self.enable_neigh_modify_check.isChecked(),
+                "neigh_modify_one": self.neigh_modify_one.value(),
+                "enable_neigh_modify_one": self.enable_neigh_modify_one.isChecked(),
                 "timestep": self.timestep.value()
             },
             "fixes": {
@@ -1952,7 +2146,7 @@ class LammpsGui(QMainWindow):
                 "custom_computes": self.custom_computes_text.toPlainText(),
                 "enable_custom_dumps": self.enable_custom_dumps.isChecked(),
                 "custom_dumps": self.custom_dumps_text.toPlainText(),
-                "enable_write_data": self.enable_write_data.isChecked()
+                    "write_data_option": self.write_data_combo.currentText(),
             },
             
             "multistudy": {
@@ -2050,9 +2244,15 @@ class LammpsGui(QMainWindow):
             self.initial_velocity_seed.setValue(self.settings.value("system/initial_velocity_seed", 12345, type=int))
             self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
             self.neighbor_distance.setValue(self.settings.value("system/neighbor_distance", 0.3, type=float))
+            self.enable_neighbor_distance.setChecked(self.settings.value("system/enable_neighbor_distance", True, type=bool))
             self.neigh_modify_every.setValue(self.settings.value("system/neigh_modify_every", 1, type=int))
+            self.enable_neigh_modify_every.setChecked(self.settings.value("system/enable_neigh_modify_every", True, type=bool))
             self.neigh_modify_delay.setValue(self.settings.value("system/neigh_modify_delay", 10, type=int))
-            self.neigh_modify_check.setChecked(self.settings.value("system/neigh_modify_check", True, type=bool))
+            self.enable_neigh_modify_delay.setChecked(self.settings.value("system/enable_neigh_modify_delay", True, type=bool))
+            self.neigh_modify_check_combo.setCurrentText(self.settings.value("system/neigh_modify_check", "yes"))
+            self.enable_neigh_modify_check.setChecked(self.settings.value("system/enable_neigh_modify_check", True, type=bool))
+            self.neigh_modify_one.setValue(self.settings.value("system/neigh_modify_one", 0, type=int))
+            self.enable_neigh_modify_one.setChecked(self.settings.value("system/enable_neigh_modify_one", False, type=bool))
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
             
             # Fixes settings
@@ -2071,7 +2271,14 @@ class LammpsGui(QMainWindow):
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
             self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
-            self.enable_write_data.setChecked(self.settings.value("output/enable_write_data", False, type=bool))
+            # For backward compatibility, handle the old boolean setting
+            if self.settings.contains("output/write_data_option"):
+                self.write_data_combo.setCurrentText(self.settings.value("output/write_data_option", "Never", type=str))
+            elif self.settings.contains("output/enable_write_data"):
+                if self.settings.value("output/enable_write_data", False, type=bool):
+                    self.write_data_combo.setCurrentText("At the end of the simulation")
+                else:
+                    self.write_data_combo.setCurrentText("Never")
 
             # Job submission settings
             self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
@@ -2151,9 +2358,15 @@ class LammpsGui(QMainWindow):
             self.settings.setValue("system/initial_velocity_seed", config["system"]["initial_velocity_seed"])
             self.settings.setValue("system/damping_factor", config["system"]["damping_factor"])
             self.settings.setValue("system/neighbor_distance", config["system"]["neighbor_distance"])
+            self.settings.setValue("system/enable_neighbor_distance", config["system"]["enable_neighbor_distance"])
             self.settings.setValue("system/neigh_modify_every", config["system"]["neigh_modify_every"])
+            self.settings.setValue("system/enable_neigh_modify_every", config["system"]["enable_neigh_modify_every"])
             self.settings.setValue("system/neigh_modify_delay", config["system"]["neigh_modify_delay"])
+            self.settings.setValue("system/enable_neigh_modify_delay", config["system"]["enable_neigh_modify_delay"])
             self.settings.setValue("system/neigh_modify_check", config["system"]["neigh_modify_check"])
+            self.settings.setValue("system/enable_neigh_modify_check", config["system"]["enable_neigh_modify_check"])
+            self.settings.setValue("system/neigh_modify_one", config["system"]["neigh_modify_one"])
+            self.settings.setValue("system/enable_neigh_modify_one", config["system"]["enable_neigh_modify_one"])
             self.settings.setValue("system/timestep", config["system"]["timestep"])
             
             # Save fixes settings
@@ -2355,9 +2568,15 @@ class LammpsGui(QMainWindow):
                 self.initial_velocity_seed.setValue(system.get("initial_velocity_seed", 12345))
                 self.damping_factor.setValue(system.get("damping_factor", 100.0))
                 self.neighbor_distance.setValue(system.get("neighbor_distance", 0.3))
+                self.enable_neighbor_distance.setChecked(system.get("enable_neighbor_distance", True))
                 self.neigh_modify_every.setValue(system.get("neigh_modify_every", 1))
+                self.enable_neigh_modify_every.setChecked(system.get("enable_neigh_modify_every", True))
                 self.neigh_modify_delay.setValue(system.get("neigh_modify_delay", 10))
-                self.neigh_modify_check.setChecked(system.get("neigh_modify_check", True))
+                self.enable_neigh_modify_delay.setChecked(system.get("enable_neigh_modify_delay", True))
+                self.neigh_modify_check_combo.setCurrentText(system.get("neigh_modify_check", "yes"))
+                self.enable_neigh_modify_check.setChecked(system.get("enable_neigh_modify_check", True))
+                self.neigh_modify_one.setValue(system.get("neigh_modify_one", 0))
+                self.enable_neigh_modify_one.setChecked(system.get("enable_neigh_modify_one", False))
                 self.timestep.setValue(system.get("timestep", 0.001))
 
             # Fixes configuration
@@ -2379,7 +2598,14 @@ class LammpsGui(QMainWindow):
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
                 self.enable_custom_dumps.setChecked(output.get("enable_custom_dumps", False))
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
-                self.enable_write_data.setChecked(output.get("enable_write_data", False))
+                # For backward compatibility, handle the old boolean setting
+                if "write_data_option" in output:
+                    self.write_data_combo.setCurrentText(output.get("write_data_option", "Never"))
+                elif "enable_write_data" in output:
+                    if output.get("enable_write_data", False):
+                        self.write_data_combo.setCurrentText("At the end of the simulation")
+                    else:
+                        self.write_data_combo.setCurrentText("Never")
 
             # Job submission settings
             if "job_submission" in config:
