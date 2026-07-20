@@ -74,7 +74,7 @@ class LammpsScriptGenerator:
                 if not isinstance(study, dict):
                     return {"success": False, "message": f"Invalid deformation study at index {i}"}
                 
-                required_fields = ["name", "data_points", "max_steps", "min_strain", "max_strain", "thermo_freq"]
+                required_fields = ["name", "data_points", "max_steps", "min_strain", "max_strain"]
                 for field in required_fields:
                     if field not in study:
                         return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
@@ -335,8 +335,8 @@ class LammpsScriptGenerator:
                 ])
 
             # Output settings
-            thermo_output_freq = deform_study.get("thermo_freq", 100)
-            trj_output_freq = deform_study.get("thermo_freq", 1000)
+            thermo_output_freq = output_config.get("thermo_freq", 100)
+            trj_output_freq = output_config.get("thermo_freq", 1000)
 
             script_lines.extend([
                 "#------------------------",
@@ -387,17 +387,20 @@ class LammpsScriptGenerator:
             ])
 
             points = deform_study.get("data_points", [])
+            mode = deform_study.get("mode", "Deformation")
+
             if len(points) > 1:
                 timestep = system_config.get("timestep", 0.001)
                 deform_axis = deform_study.get("deform_axis", "x")
                 
-                # Store initial box boundaries for symmetric deformation
-                script_lines.append(f"# Store initial box boundaries for symmetric engineering strain calculation")
-                script_lines.append(f"variable {deform_axis}lo0 equal $({deform_axis}lo)")
-                script_lines.append(f"variable {deform_axis}hi0 equal $({deform_axis}hi)")
-                script_lines.append(f"variable L0 equal $(l{deform_axis})")
-                script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0}}\"")
-                script_lines.append("")
+                if mode == "Deformation":
+                    # Store initial box boundaries for symmetric deformation
+                    script_lines.append(f"# Store initial box boundaries for symmetric engineering strain calculation")
+                    script_lines.append(f"variable {deform_axis}lo0 equal $({deform_axis}lo)")
+                    script_lines.append(f"variable {deform_axis}hi0 equal $({deform_axis}hi)")
+                    script_lines.append(f"variable L0 equal $(l{deform_axis})")
+                    script_lines.append(f"print \"Initial box boundaries: {deform_axis}lo = ${{{deform_axis}lo0}}, {deform_axis}hi = ${{{deform_axis}hi0}}, length = ${{L0}}\"")
+                    script_lines.append("")
                 
                 for i in range(len(points) - 1):
                     p1 = points[i]
@@ -410,50 +413,64 @@ class LammpsScriptGenerator:
                     if duration <= 0:
                         continue
 
-                    start_strain = p1[1]
-                    end_strain = p2[1]
-                    strain_change = end_strain - start_strain
-                    
-                    # Calculate new boundaries based on engineering strain from initial state
-                    # For symmetric deformation: both boundaries move by (new_length - original_length)/2
-                    new_lo_var = f"{deform_axis}lo_target_{i+1}"
-                    new_hi_var = f"{deform_axis}hi_target_{i+1}"
-                    
+                    start_y = p1[1]
+                    end_y = p2[1]
+                    y_change = end_y - start_y
+
                     script_lines.append(f"# --- Segment {i+1}: from step {start_step:.0f} to {end_step:.0f} ---")
-                    script_lines.append(f"# Target engineering strain: {end_strain:.6f}")
-                    script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_strain}) / 2\"")
-                    script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_strain}) / 2\"")
-                    script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
 
-                    if abs(strain_change) > 1e-12:
-                        # Use final keyword to deform from current boundaries to target boundaries
-                        script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box")
+                    if mode == "Deformation":
+                        # Calculate new boundaries based on engineering strain from initial state
+                        new_lo_var = f"{deform_axis}lo_target_{i+1}"
+                        new_hi_var = f"{deform_axis}hi_target_{i+1}"
+                        
+                        script_lines.append(f"# Target engineering strain: {end_y:.6f}")
+                        script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_y}) / 2\"")
+                        script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_y}) / 2\"")
+                        script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
 
-                    # Apply ensemble for this segment
-                    if ensemble == "NVT":
-                        damping_factor = system_config.get("damping_factor", 100.0)
-                        script_lines.append(f"fix nvt all nvt temp {temp} {temp} $({damping_factor}*dt)")
-                    elif ensemble == "NPT":
-                        damping_factor = system_config.get("damping_factor", 100.0)
-                        npt_keyword = ""
-                        if deform_axis == 'x':
-                            npt_keyword = f"y {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
-                        elif deform_axis == 'y':
-                            npt_keyword = f"x {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
-                        elif deform_axis == 'z':
-                            npt_keyword = f"x {pressure} {pressure} $(1000*dt) y {pressure} {pressure} $(1000*dt)"
-                        else:
+                        if abs(y_change) > 1e-12:
+                            script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box")
+
+                        # Apply ensemble for this segment
+                        if ensemble == "NVT":
+                            damping_factor = system_config.get("damping_factor", 100.0)
+                            script_lines.append(f"fix nvt all nvt temp {temp} {temp} $({damping_factor}*dt)")
+                        elif ensemble == "NPT":
+                            damping_factor = system_config.get("damping_factor", 100.0)
+                            npt_keyword = ""
+                            if deform_axis == 'x':
+                                npt_keyword = f"y {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
+                            elif deform_axis == 'y':
+                                npt_keyword = f"x {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
+                            elif deform_axis == 'z':
+                                npt_keyword = f"x {pressure} {pressure} $(1000*dt) y {pressure} {pressure} $(1000*dt)"
+                            else:
+                                npt_keyword = f"iso {pressure} {pressure} $(1000*dt)"
+                            script_lines.append(f"fix npt all npt temp {temp} {temp} $({damping_factor}*dt) {npt_keyword}")
+                        
+                        script_lines.append(f"run {int(duration)}")
+                        
+                        if abs(y_change) > 1e-12:
+                            script_lines.append("unfix deform")
+                        
+                        if ensemble in ["NVT", "NPT"]:
+                            script_lines.append(f"unfix {ensemble.lower()}")
+
+                    elif mode == "Temperature":
+                        # Apply ensemble with temperature ramp
+                        if ensemble == "NVT":
+                            damping_factor = system_config.get("damping_factor", 100.0)
+                            script_lines.append(f"fix nvt all nvt temp {start_y} {end_y} $({damping_factor}*dt)")
+                        elif ensemble == "NPT":
+                            damping_factor = system_config.get("damping_factor", 100.0)
                             npt_keyword = f"iso {pressure} {pressure} $(1000*dt)"
-                        script_lines.append(f"fix npt all npt temp {temp} {temp} $({damping_factor}*dt) {npt_keyword}")
-                    
-                    script_lines.append(f"run {int(duration)}")
-                    
-                    if abs(strain_change) > 1e-12:
-                        script_lines.append("unfix deform")
-                    
-                    # Unfix ensemble
-                    if ensemble in ["NVT", "NPT"]:
-                        script_lines.append(f"unfix {ensemble.lower()}")
+                            script_lines.append(f"fix npt all npt temp {start_y} {end_y} $({damping_factor}*dt) {npt_keyword}")
+
+                        script_lines.append(f"run {int(duration)}")
+
+                        if ensemble in ["NVT", "NPT"]:
+                            script_lines.append(f"unfix {ensemble.lower()}")
 
                     script_lines.append("")
             

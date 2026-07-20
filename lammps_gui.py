@@ -732,7 +732,7 @@ class LammpsScriptGenerator(QMainWindow):
     def create_deformation_tab(self):
         """Create the deformation processing tab with the graphical UI"""
         self.deformation_tab = QWidget()
-        self.tab_widget.addTab(self.deformation_tab, "Deformation Processing")
+        self.tab_widget.addTab(self.deformation_tab, "Processing")
         
         deformation_layout = QVBoxLayout(self.deformation_tab)
         
@@ -1039,6 +1039,14 @@ class LammpsScriptGenerator(QMainWindow):
         self.enable_thermo.stateChanged.connect(self.toggle_thermo_settings)
         
         thermo_form_layout = QFormLayout()
+        
+        # Add Thermo Freq field
+        self.thermo_freq_spinbox = QSpinBox()
+        self.thermo_freq_spinbox.setRange(1, 1000000)
+        self.thermo_freq_spinbox.setValue(100)
+        self.thermo_freq_spinbox.setSingleStep(100)
+        self.thermo_freq_spinbox.setToolTip("Frequency of thermodynamic output")
+        thermo_form_layout.addRow("Thermo Freq:", self.thermo_freq_spinbox)
         
         self.thermo_style = QTextEdit()
         self.thermo_style.setPlainText("step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
@@ -1673,6 +1681,7 @@ class LammpsScriptGenerator(QMainWindow):
                 "traj_format": self.traj_format.currentText(),
                 "trj_output_items": self.trj_output_items.toPlainText(),
                 "enable_thermo": self.enable_thermo.isChecked(),
+                "thermo_freq": self.thermo_freq_spinbox.value(),
                 "thermo_style": self.thermo_style.toPlainText(),
                 "enable_custom_computes": self.enable_custom_computes.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
@@ -1755,6 +1764,7 @@ class LammpsScriptGenerator(QMainWindow):
             self.traj_format.setCurrentText(self.settings.value("output/traj_format", "lammpstrj"))
             self.trj_output_items.setPlainText(self.settings.value("output/trj_output_items", "id type x y z fx fy fz"))
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
+            self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
             self.thermo_style.setPlainText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
             self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
@@ -1800,16 +1810,7 @@ class LammpsScriptGenerator(QMainWindow):
                         self.deformation_tab_widget.tab_widget.setTabText(i, final_name)
 
                         # Restore the state of the study widget
-                        state = {
-                            'data_points': study.get("data_points", study.get("points", [])), # backward compatibility
-                            'max_steps': study.get("max_steps", 100),
-                            'min_strain': study.get("min_strain", 0.0),
-                            'max_strain': study.get("max_strain", 1.0),
-                            'thermo_freq': study.get("thermo_freq", 100),
-                            'deform_axis': study.get("deform_axis", "x"),
-                            'bond_breakage': study.get("bond_breakage", {}) # Add bond breakage settings
-                        }
-                        study_widget.set_state(state)
+                        study_widget.set_state(study)
                 else:
                     # No studies in settings, or settings were corrupted. Create a default one.
                     self.deformation_tab_widget._add_study(is_first=True)
@@ -2002,10 +2003,6 @@ class LammpsScriptGenerator(QMainWindow):
                 self.boundary_x_combo.setCurrentText(system.get("boundary_x", "p"))
                 self.boundary_y_combo.setCurrentText(system.get("boundary_y", "p"))
                 self.boundary_z_combo.setCurrentText(system.get("boundary_z", "p"))
-                self.ensemble_combo.setCurrentText(system.get("ensemble", "NVT"))
-                self.temp_init.setValue(system.get("temp_init", 300.0))
-                self.temp_end.setValue(system.get("temp_end", 300.0))
-                self.pressure.setValue(system.get("pressure", 1.0))
                 self.enable_velocity.setChecked(system.get("enable_velocity", True))
                 self.initial_velocity_seed.setValue(system.get("initial_velocity_seed", 12345))
                 self.damping_factor.setValue(system.get("damping_factor", 100.0))
@@ -2014,8 +2011,7 @@ class LammpsScriptGenerator(QMainWindow):
                 self.neigh_modify_delay.setValue(system.get("neigh_modify_delay", 10))
                 self.neigh_modify_check.setChecked(system.get("neigh_modify_check", True))
                 self.timestep.setValue(system.get("timestep", 0.001))
-            
-            # Deformation configuration
+
             # Fixes configuration
             if "fixes" in config:
                 fixes = config["fixes"]
@@ -2035,23 +2031,17 @@ class LammpsScriptGenerator(QMainWindow):
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
                 self.enable_custom_dumps.setChecked(output.get("enable_custom_dumps", False))
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
-            
-            # Cluster configuration (widgets removed, so skip loading)
-            if "cluster" in config:
-                cluster = config["cluster"]
-                # self.execution_mode_combo.setCurrentText(cluster.get("execution_mode", "local"))  # Removed - no longer needed
-                # self.lammps_command_edit.setText(cluster.get("lammps_command", "lmp"))
-                # self.threads_spin.setValue(cluster.get("threads", 4))
-                # self.cluster_partition.setText(cluster.get("cluster_partition", "singlenode"))
-                # self.cluster_nodes.setValue(cluster.get("cluster_nodes", 1))
-                # self.cluster_ntasks.setValue(cluster.get("cluster_ntasks", 72))
-                # self.cluster_time.setText(cluster.get("cluster_time", "24:00:00"))
-                # self.cluster_mail.setText(cluster.get("cluster_mail", ""))
-                # self.cluster_mail_type.setCurrentText(cluster.get("cluster_mail_type", "ALL"))
-                # self.auto_submit.setChecked(cluster.get("auto_submit", False))
-                # self.show_command.setChecked(cluster.get("show_command", True))
-                # self.save_scripts_only.setChecked(cluster.get("save_scripts_only", False))
-            
+
+            # Job submission settings
+            if "job_submission" in config:
+                job_submission = config["job_submission"]
+                self.local_lammps_cmd.setText(job_submission.get("local_lammps_cmd", "lmp"))
+                self.cluster_lammps_cmd.setText(job_submission.get("cluster_lammps_cmd", "lmp"))
+                self.srun_cmd.setText(job_submission.get("srun_cmd", "srun"))
+                self.sbatch_cmd.setText(job_submission.get("sbatch_cmd", "sbatch"))
+                self.module_load_cmd.setText(job_submission.get("module_load", "lammps"))
+                self.slurm_header_text.setPlainText(job_submission.get("slurm_header", ""))
+
             # Multi-study configuration
             if "multistudy" in config and hasattr(self, 'deformation_tab_widget'):
                 multistudy = config["multistudy"]
@@ -2061,21 +2051,15 @@ class LammpsScriptGenerator(QMainWindow):
                 while self.deformation_tab_widget.tab_widget.count() > 0:
                     self.deformation_tab_widget.tab_widget.removeTab(0)
 
-                for i, study_data in enumerate(studies):
-                    self.deformation_tab_widget._add_study(is_first=(i==0))
-                    study_widget = self.deformation_tab_widget.tab_widget.widget(i)
-                    self.deformation_tab_widget.tab_widget.setTabText(i, study_data.get("name", f"Study {i+1}"))
-
-                    state = {
-                        'data_points': study_data.get("data_points", []),
-                        'max_steps': study_data.get("max_steps", 100),
-                        'min_strain': study_data.get("min_strain", 0.0),
-                        'max_strain': study_data.get("max_strain", 1.0),
-                        'thermo_freq': study_data.get("thermo_freq", 100),
-                        'deform_axis': study_data.get("deform_axis", "x"),
-                        'bond_breakage': study_data.get("bond_breakage", {}) # Add bond breakage settings
-                    }
-                    study_widget.set_state(state)
+                if studies:
+                    for i, study_data in enumerate(studies):
+                        self.deformation_tab_widget._add_study(is_first=(i==0))
+                        study_widget = self.deformation_tab_widget.tab_widget.widget(i)
+                        self.deformation_tab_widget.tab_widget.setTabText(i, study_data.get("name", f"Study {i+1}"))
+                        study_widget.set_state(study_data)
+                else:
+                    # if no studies, create a default one
+                    self.deformation_tab_widget._add_study(is_first=True)
 
         except Exception as e:
             print(f"Error applying configuration: {e}")

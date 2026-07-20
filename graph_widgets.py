@@ -54,14 +54,23 @@ class PresetDialog(QDialog):
 
 class SlopeEditDialog(QDialog):
     def __init__(self, p1, p2, timestep, parent=None):
-        super().__init__(parent); self.setWindowTitle("Edit Slope / Strain Rate"); self._timestep = timestep
+        super().__init__(parent)
+        is_temp_mode = parent and parent.mode == 'Temperature'
+        self.setWindowTitle("Edit Temperature Change" if is_temp_mode else "Edit Slope / Strain Rate")
+        self._timestep = timestep
         self._dx_steps = p2.x() - p1.x()
         self.slope_box = QDoubleSpinBox(decimals=5); self.rate_box = QDoubleSpinBox(decimals=5)
         initial_slope = (p2.y() - p1.y()) / self._dx_steps if self._dx_steps != 0 else 0
         for box, val in [(self.slope_box, initial_slope), (self.rate_box, 0)]: box.setRange(-1e9, 1e9); box.setSingleStep(max(1e-5, abs(val) * 0.02))
         self.slope_box.setValue(initial_slope); self.slope_box.valueChanged.connect(self._slope_changed); self.rate_box.valueChanged.connect(self._rate_changed); self._slope_changed(initial_slope)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
-        layout = QFormLayout(self); layout.addRow("Slope (ε/step):", self.slope_box); layout.addRow("Strain Rate (ε/t):", self.rate_box); layout.addWidget(buttons)
+        layout = QFormLayout(self)
+        y_unit = parent.get_y_unit() if parent else "ε"
+        slope_label = f"Slope ({y_unit}/step):"
+        rate_label = f"Temperature Change Rate ({y_unit}/t):" if is_temp_mode else f"Strain Rate ({y_unit}/t):"
+        layout.addRow(slope_label, self.slope_box)
+        layout.addRow(rate_label, self.rate_box)
+        layout.addWidget(buttons)
     def _slope_changed(self, val): self.rate_box.blockSignals(True); dx_time = self._dx_steps * self._timestep; self.rate_box.setValue(val * self._dx_steps / dx_time if dx_time != 0 else 0); self.rate_box.blockSignals(False); self.slope_box.setSingleStep(max(1e-5, abs(val) * 0.02))
     def _rate_changed(self, val): self.slope_box.blockSignals(True); dx_time = self._dx_steps * self._timestep; self.slope_box.setValue(val * dx_time / self._dx_steps if self._dx_steps != 0 else 0); self.slope_box.blockSignals(False); self.rate_box.setSingleStep(max(1e-5, abs(val) * 0.02))
     def get_slope(self): return self.slope_box.value()
@@ -80,19 +89,33 @@ class TimeEditDialog(QDialog):
 
 class CoordinateDialog(QDialog):
     def __init__(self, index, step, strain, max_step, min_strain, max_strain, parent=None):
-        super().__init__(parent); self.setWindowTitle("Set Coordinates")
+        super().__init__(parent)
+        is_temp_mode = parent and parent.mode == 'Temperature'
+        self.setWindowTitle("Set Time and Temperature" if is_temp_mode else "Set Coordinates")
+        self._index = index  # Store the index
         self.step_box = QSpinBox(); self.step_box.setRange(0, max_step); self.step_box.setValue(int(step)); self.step_box.setSingleStep(max(1, int(step*0.02) if step > 0 else 1))
         self.strain_box = QDoubleSpinBox(); self.strain_box.setRange(min_strain, max_strain); self.strain_box.setValue(strain); self.strain_box.setDecimals(4); self.strain_box.setSingleStep(max(0.01, abs(strain)*0.02 if strain != 0 else 0.01))
-        if index == 0: self.step_box.setEnabled(False); self.strain_box.setEnabled(False)
+        if index == 0:
+            self.step_box.setEnabled(False)
+            self.strain_box.setEnabled(is_temp_mode)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
-        layout = QFormLayout(self); layout.addRow("Time Step:", self.step_box); layout.addRow("Strain:", self.strain_box); layout.addWidget(buttons)
-    def get_coordinates(self): return self.step_box.value(), self.strain_box.value()
+        layout = QFormLayout(self)
+        y_label = "Temperature:" if is_temp_mode else "Strain:"
+        layout.addRow("Time Step:", self.step_box); layout.addRow(y_label, self.strain_box); layout.addWidget(buttons)
+    def get_coordinates(self): 
+        # For the first point, always return step 0
+        if self._index == 0:
+            return 0, self.strain_box.value()
+        return self.step_box.value(), self.strain_box.value()
 
 # --- Main Graph Widget ---
 class GraphWidget(QWidget):
     dataChanged = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent); self.setMinimumSize(600, 320); self.setMouseTracking(True)
+        self.mode = "Deformation"
+        self.STYLE_LINE = QColor("#007BFF")
+        self.STYLE_HANDLE = QColor("#007BFF")
         self.padding = {'top': 10, 'bottom': 60, 'left': 60, 'right': 60}
         self._max_steps, self._min_strain, self._max_strain, self._timestep, self._time_unit = 100, 0.0, 1.0, 1.0, "s"
         self.points_norm = [self._data_to_norm(QPointF(0,0)), self._data_to_norm(QPointF(100, 1.0))]; self._sort_points()
@@ -107,23 +130,43 @@ class GraphWidget(QWidget):
             new_x = p.x() * (self._max_steps / old_max_steps) if old_max_steps > 0 else 0
             clamped_y = max(self._min_strain, min(self._max_strain, p.y()))
             new_points_data.append(QPointF(new_x, clamped_y))
-        new_points_data[0] = QPointF(0,0)
+        if self.mode == 'Deformation':
+            new_points_data[0].setY(0)
+        new_points_data[0].setX(0)
         if len(new_points_data) > 1:
             new_points_data[-1].setX(float(self._max_steps))
         self.points_norm = [self._data_to_norm(p) for p in new_points_data]
         self.update(); self.dataChanged.emit()
     def set_timestep(self, s): self._timestep = s; self.update(); self.dataChanged.emit()
     def set_time_unit(self, u): self._time_unit = u; self.update()
-    def reset_graph(self): self.points_norm = [self._data_to_norm(QPointF(0,0)), self._data_to_norm(QPointF(self._max_steps, self._max_strain))]; self.update(); self.dataChanged.emit()
+
+    def get_y_start(self):
+        return self._min_strain if self.mode == 'Temperature' else 0.0
+
+    def set_mode(self, mode):
+        self.mode = mode
+        is_temp_mode = mode == 'Temperature'
+        if is_temp_mode:
+            self.STYLE_LINE = QColor("darkorange")
+            self.STYLE_HANDLE = QColor("darkorange")
+        else:
+            self.STYLE_LINE = QColor("#007BFF")
+            self.STYLE_HANDLE = QColor("#007BFF")
+        self.update()
+    def reset_graph(self):
+        y_start = self.get_y_start()
+        self.points_norm = [self._data_to_norm(QPointF(0, y_start)), self._data_to_norm(QPointF(self._max_steps, self._max_strain))]
+        self.update()
+        self.dataChanged.emit()
     def generate_staircase_scheme(self, cycles, relax_factor, direction):
         if cycles <= 0 or relax_factor < 0: return
         target_strain = self._max_strain if direction == "Tension" else self._min_strain
-        if target_strain == 0: self.reset_graph(); return
+        if abs(target_strain - self.get_y_start()) < 1e-9: self.reset_graph(); return
         strain_per_cycle = target_strain / cycles; total_ratio_units = cycles * (1 + relax_factor)
         if total_ratio_units == 0: return
         steps_per_load_unit = self._max_steps / total_ratio_units
         load_steps, relax_steps = steps_per_load_unit, steps_per_load_unit * relax_factor
-        new_data_points = [QPointF(0, 0)]
+        new_data_points = [QPointF(0, self.get_y_start())]
         for i in range(1, cycles + 1):
             load_end_step = i * load_steps + (i - 1) * relax_steps; load_end_strain = i * strain_per_cycle
             new_data_points.append(QPointF(load_end_step, load_end_strain))
@@ -133,13 +176,13 @@ class GraphWidget(QWidget):
         self.points_norm = [self._data_to_norm(self._snap_data_point(p)) for p in new_data_points]; self._sort_points(); self.update(); self.dataChanged.emit()
     def generate_cyclic_scheme(self, cycles, relax_factor, start_with):
         if cycles <= 0: return
-        path = [0.0]
+        y_start = self.get_y_start()
+        path = [y_start]
         peak1 = self._max_strain if start_with == "Tension" else self._min_strain
         peak2 = self._min_strain if start_with == "Tension" else self._max_strain
         for i in range(cycles):
             path.append(peak1)
-            if self._min_strain < 0 < self._max_strain: path.extend([0.0, peak2, 0.0])
-            else: path.append(0.0)
+            path.extend([y_start, peak2, y_start])
         total_dist = sum(abs(path[i] - path[i-1]) for i in range(1, len(path)))
         if total_dist == 0: return
         steps_per_one_cycle = total_dist / cycles
@@ -157,25 +200,33 @@ class GraphWidget(QWidget):
     def get_data_points(self): return [self._norm_to_data(p) for p in self.points_norm]
     def _norm_to_data(self, p_norm):
         strain_range = self._max_strain - self._min_strain
-        if strain_range < 1e-9: return QPointF(p_norm.x() * self._max_steps, self._min_strain)
-        y_norm_zero = abs(self._min_strain) / strain_range if self._min_strain < 0 else 0.0
-        if p_norm.y() >= y_norm_zero: y_data = (p_norm.y() - y_norm_zero) / (1.0 - y_norm_zero) * self._max_strain if (1.0 - y_norm_zero) > 1e-9 else self._max_strain
-        else: y_data = (p_norm.y() / y_norm_zero - 1.0) * abs(self._min_strain) if y_norm_zero > 1e-9 else self._min_strain
+        y_data = self._min_strain + p_norm.y() * strain_range
         return QPointF(p_norm.x() * self._max_steps, y_data)
+
     def _data_to_norm(self, p_data):
         strain_range = self._max_strain - self._min_strain
-        if strain_range < 1e-9: return QPointF(p_data.x() / self._max_steps if self._max_steps > 0 else 0, 0.5)
-        y_norm_zero = abs(self._min_strain) / strain_range if self._min_strain < 0 else 0.0
-        if p_data.y() >= 0: y_norm = y_norm_zero + (p_data.y() / self._max_strain) * (1.0 - y_norm_zero) if self._max_strain > 1e-9 else y_norm_zero
-        else: y_norm = (p_data.y() - self._min_strain) / abs(self._min_strain) * y_norm_zero if self._min_strain < -1e-9 else y_norm_zero
-        return QPointF(p_data.x() / self._max_steps if self._max_steps > 0 else 0, y_norm)
+        if strain_range < 1e-9:
+            y_norm = 0.5
+        else:
+            y_norm = (p_data.y() - self._min_strain) / strain_range
+        
+        x_norm = p_data.x() / self._max_steps if self._max_steps > 0 else 0
+        return QPointF(x_norm, y_norm)
     def _widget_to_norm(self, pos):
         dw, dh = self.width() - (self.padding['left'] + self.padding['right']), self.height() - (self.padding['top'] + self.padding['bottom'])
         if dw <= 0 or dh <= 0: return QPointF(0, 0)
         return QPointF(max(0.0, min(1.0, (pos.x() - self.padding['left']) / dw)), max(0.0, min(1.0, 1.0 - (pos.y() - self.padding['top']) / dh)))
     def _norm_to_widget(self, p): return QPointF(self.padding['left'] + p.x() * (self.width() - (self.padding['left'] + self.padding['right'])), self.padding['top'] + (1.0 - p.y()) * (self.height() - (self.padding['top'] + self.padding['bottom'])))
     def _sort_points(self): self.points_norm.sort(key=lambda p: p.x())
-    def _snap_data_point(self, p): strain_range = self._max_strain - self._min_strain; return QPointF(round(p.x()), round(p.y() / (strain_range/200.0)) * (strain_range/200.0) if strain_range > 0 else p.y())
+    def _snap_data_point(self, p):
+        strain_range = self._max_strain - self._min_strain
+        if strain_range > 0:
+            step_size = strain_range / 200.0
+            snapped_y = self._min_strain + round((p.y() - self._min_strain) / step_size) * step_size
+            snapped_y = max(self._min_strain, snapped_y)
+        else:
+            snapped_y = p.y()
+        return QPointF(round(p.x()), snapped_y)
     def _get_handle_at(self, pos):
         for i, p in enumerate(self.points_norm):
             if (pos - self._norm_to_widget(p)).manhattanLength() < HANDLE_RADIUS * 1.5: return i
@@ -197,11 +248,12 @@ class GraphWidget(QWidget):
         fm = QFontMetrics(QFont("Arial", 10))
         for i in range(len(self.points_norm) - 1):
             p1_w, p2_w = self._norm_to_widget(self.points_norm[i]), self._norm_to_widget(self.points_norm[i+1])
-            painter.setPen(QPen(STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
+            painter.setPen(QPen(self.STYLE_LINE, 2)); painter.drawLine(p1_w, p2_w)
             p1_d, p2_d = self._norm_to_data(self.points_norm[i]), self._norm_to_data(self.points_norm[i+1])
             dx_s, dy_e, dx_t = p2_d.x() - p1_d.x(), p2_d.y() - p1_d.y(), (p2_d.x() - p1_d.x()) * self._timestep
             slope, rate = (dy_e / dx_s if dx_s != 0 else float('inf')), (dy_e / dx_t if dx_t != 0 else float('inf'))
-            slope_text, rate_text = f"{slope:.2e} ε/step", f"{rate:.2e} ε/t"
+            slope_text = f"{slope:.2e} {self.get_y_unit()}/step"
+            rate_text = f"{rate:.2e} {self.get_y_unit()}/t"
             slope_rect = QRectF(fm.boundingRect(slope_text).adjusted(-2,-2,2,2)); slope_rect.moveCenter((p1_w/2 + p2_w/2) - QPointF(0, 20))
             rate_rect = QRectF(fm.boundingRect(rate_text).adjusted(-2,-2,2,2)); rate_rect.moveCenter((p1_w/2 + p2_w/2) - QPointF(0, 6))
             painter.setPen(STYLE_SLOPE_TEXT); painter.setFont(QFont("Arial", 9, QFont.Weight.Bold)); painter.drawText(slope_rect, slope_text)
@@ -209,9 +261,13 @@ class GraphWidget(QWidget):
             self._clickable_regions.append((slope_rect.united(rate_rect), "slope", i))
         for i, p_norm in enumerate(self.points_norm):
             p_data, p_w = self._norm_to_data(p_norm), self._norm_to_widget(p_norm)
-            painter.setPen(QPen(STYLE_HANDLE_OUTLINE, 2)); painter.setBrush(STYLE_HANDLE); painter.drawEllipse(p_w, HANDLE_RADIUS, HANDLE_RADIUS)
+            painter.setPen(QPen(STYLE_HANDLE_OUTLINE, 2)); painter.setBrush(self.STYLE_HANDLE); painter.drawEllipse(p_w, HANDLE_RADIUS, HANDLE_RADIUS)
             y_text = f"{p_data.y():.3f}"; y_rect = QRectF(fm.boundingRect(y_text)); y_rect.moveCenter(QPointF(p_w.x() + 35, p_w.y()))
-            painter.setPen(STYLE_TEXT_PRIMARY); painter.setFont(QFont("Arial", 10, QFont.Weight.Bold)); painter.drawText(y_rect, y_text)
+            if self.mode == 'Temperature':
+                painter.setPen(QColor("darkorange"))
+            else:
+                painter.setPen(STYLE_TEXT_PRIMARY)
+            painter.setFont(QFont("Arial", 10, QFont.Weight.Bold)); painter.drawText(y_rect, y_text)
             self._clickable_regions.append((y_rect, "y_val", i))
             step_text, time_text = f"{p_data.x():.0f}", f"({p_data.x() * self._timestep:.2f}{self._time_unit})"
             step_rect = QRectF(fm.boundingRect(step_text).adjusted(-4,0,4,0)); step_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 18))
@@ -222,8 +278,14 @@ class GraphWidget(QWidget):
     def _draw_axes_and_frame(self, painter):
         painter.setPen(QPen(STYLE_FRAME, 2)); painter.drawRect(self.padding['left'], self.padding['top'], self.width() - (self.padding['left'] + self.padding['right']), self.height() - (self.padding['top'] + self.padding['bottom']))
         painter.setPen(STYLE_TEXT_PRIMARY); painter.setFont(QFont("Arial", 11, QFont.Weight.Bold)); painter.save()
-        painter.translate(40, int(self.height() / 2) + 36); painter.rotate(-90); painter.drawText(0, 0, "Engineering strain"); painter.restore()
+        painter.translate(40, int(self.height() / 2) + 36); painter.rotate(-90)
+        y_label = "Temperature / K" if self.mode == 'Temperature' else "Engineering strain"
+        painter.drawText(0, 0, y_label)
+        painter.restore()
         painter.drawText(int(self.width()/2 - 30), self.height() - self.padding['bottom'] + 55, "Time Steps")
+
+    def get_y_unit(self):
+        return "ΔT" if self.mode == 'Temperature' else "ε"
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos_widget = event.position()
@@ -248,22 +310,48 @@ class GraphWidget(QWidget):
             if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
             else: constrained_pos.setX(self._drag_start_pos_widget.x())
         if self._dragged_handle_index is not None:
-            if self._dragged_handle_index == 0: return
-            p_data = self._norm_to_data(self._widget_to_norm(constrained_pos)); final_p_norm = self._data_to_norm(self._snap_data_point(p_data))
-            if self._dragged_handle_index == len(self.points_norm) - 1: final_p_norm.setX(1.0)
-            self.points_norm[self._dragged_handle_index] = final_p_norm; self._sort_points(); self._dragged_handle_index = self.points_norm.index(final_p_norm)
+            if self._dragged_handle_index == 0:
+                if self.mode == 'Deformation':
+                    return
+                else: # Temperature mode, only allow y-drag and ensure x stays at 0
+                    constrained_pos.setX(self._drag_start_pos_widget.x())
+                    # Ensure the first point stays at x=0
+                    p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
+                    p_data.setX(0)  # Force x to be 0 for the first point
+                    final_p_norm = self._data_to_norm(self._snap_data_point(p_data))
+                    final_p_norm.setX(0)  # Ensure normalized x is also 0
+            else:
+                p_data = self._norm_to_data(self._widget_to_norm(constrained_pos))
+                final_p_norm = self._data_to_norm(self._snap_data_point(p_data))
+                
+            if self._dragged_handle_index == len(self.points_norm) - 1:
+                final_p_norm.setX(1.0)
+                
+            self.points_norm[self._dragged_handle_index] = final_p_norm
+            self._sort_points()
+            self._dragged_handle_index = self.points_norm.index(final_p_norm)
         elif self._dragged_segment_index is not None:
             i = self._dragged_segment_index
-            target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
-            p1_new_data_snapped = self._snap_data_point(self._norm_to_data(self._widget_to_norm(target_p1_w)))
-            p1_new_norm = self._data_to_norm(p1_new_data_snapped)
-            p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
-            p_prev = self.points_norm[i-1] if i > 0 else None
-            p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
-            if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
-                self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
+            if i == 0:
+                p1_new_norm = self._data_to_norm(self._snap_data_point(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset))))
+                p1_new_norm.setX(0)  # Ensure first point stays at x=0
+                self.points_norm[i] = p1_new_norm
+            else:
+                target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
+                p1_new_data_snapped = self._snap_data_point(self._norm_to_data(self._widget_to_norm(target_p1_w)))
+                p1_new_norm = self._data_to_norm(p1_new_data_snapped)
+                p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
+                p_prev = self.points_norm[i-1] if i > 0 else None
+                p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
+                if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
+                    self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
         self.update()
-    def mouseReleaseEvent(self, event): self._dragged_handle_index, self._dragged_segment_index, self._drag_start_pos_widget, self._drag_axis_lock = None, None, None, None; self.dataChanged.emit()
+    def mouseReleaseEvent(self, event): 
+        # Ensure the first point stays at x=0 for both modes
+        if len(self.points_norm) > 0:
+            self.points_norm[0].setX(0)
+        self._dragged_handle_index, self._dragged_segment_index, self._drag_start_pos_widget, self._drag_axis_lock = None, None, None, None
+        self.dataChanged.emit()
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             for region, type, index in self._clickable_regions:
@@ -277,10 +365,14 @@ class GraphWidget(QWidget):
             if 0 < idx < len(self.points_norm) - 1: menu.addAction("Delete Handle", lambda: self._delete_handle(idx))
             menu.exec(event.globalPos())
     def _handle_direct_edit(self, type, index):
-        if (index == 0 and type in ["x_val", "y_val"]): return
+        if index == 0 and type == "x_val": return
+        if index == 0 and type == "y_val" and self.mode == 'Deformation': return
+
         p_data = self._norm_to_data(self.points_norm[index])
         if type == "y_val":
-            new_val, ok = QInputDialog.getDouble(self, "Set Strain", "New Strain Value:", p_data.y(), self._min_strain, self._max_strain, 4, flags=Qt.WindowType.Dialog, step=max(0.001, abs(p_data.y())*0.02) if p_data.y() != 0 else 0.001)
+            title = "Set Temperature" if self.mode == 'Temperature' else "Set Strain"
+            label = "New Temperature Value:" if self.mode == 'Temperature' else "New Strain Value:"
+            new_val, ok = QInputDialog.getDouble(self, title, label, p_data.y(), self._min_strain, self._max_strain, 4, flags=Qt.WindowType.Dialog, step=max(0.001, abs(p_data.y())*0.02) if p_data.y() != 0 else 0.001)
             if ok: p_data.setY(new_val)
         elif type == "x_val" and 0 < index < len(self.points_norm) - 1:
             dialog = TimeEditDialog(p_data.x(), self._timestep, self._max_steps, self);
@@ -289,22 +381,35 @@ class GraphWidget(QWidget):
             dialog = SlopeEditDialog(*self.get_data_points()[index:index+2], self._timestep, self)
             if dialog.exec():
                 p1_data, p2_data = self.get_data_points()[index], self.get_data_points()[index+1]
-                p2_data.setY(max(self._min_strain, min(self._max_strain, p1_data.y() + dialog.get_slope() * (p2_data.x() - p1_data.x())))); self.points_norm[index+1] = self._data_to_norm(p2_data)
+                p2_data.setY(max(self._min_strain, min(self._max_strain, p1_data.y() + dialog.get_slope() * (p2_data.x() - p1_data.x()))))
+                # Ensure first point stays at x=0
+                if index == 0:
+                    p1_data.setX(0)
+                self.points_norm[index] = self._data_to_norm(p1_data)
+                self.points_norm[index+1] = self._data_to_norm(p2_data)
         self.points_norm[index] = self._data_to_norm(p_data); self._sort_points(); self.update(); self.dataChanged.emit()
     def _show_set_coords_dialog(self, index):
         p_data = self._norm_to_data(self.points_norm[index])
         dialog = CoordinateDialog(index, p_data.x(), p_data.y(), self._max_steps, self._min_strain, self._max_strain, self)
         if dialog.exec():
-            step, strain = dialog.get_coordinates(); new_p_data = QPointF(float(step), strain)
-            if index == 0: return
-            elif index == len(self.points_norm) - 1: new_p_data.setX(float(self._max_steps))
-            self.points_norm[index] = self._data_to_norm(new_p_data); self._sort_points(); self.update(); self.dataChanged.emit()
+            step, strain = dialog.get_coordinates()
+            # For the first point, always force step to 0
+            if index == 0:
+                step = 0
+            new_p_data = QPointF(float(step), strain)
+            if index == len(self.points_norm) - 1:
+                new_p_data.setX(float(self._max_steps))
+            self.points_norm[index] = self._data_to_norm(new_p_data)
+            self._sort_points()
+            self.update()
+            self.dataChanged.emit()
     def _delete_handle(self, index): del self.points_norm[index]; self.update(); self.dataChanged.emit()
 
 class StudyWidget(QWidget):
     dataChanged = pyqtSignal()
     def __init__(self, initial_state=None, parent=None):
         super().__init__(parent); 
+        self.mode = "Deformation" 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5,5,5,5)
         layout.setSpacing(2)
@@ -312,6 +417,10 @@ class StudyWidget(QWidget):
         self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
         self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-0.999999, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3); self.min_strain_spinbox.setKeyboardTracking(False)
         self.max_strain_spinbox = QDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(-1e9, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setDecimals(3); self.max_strain_spinbox.setKeyboardTracking(False)
+
+        # Make the Min/Max Strain fields shorter (20% shorter)
+        self.min_strain_spinbox.setMaximumWidth(120)
+        self.max_strain_spinbox.setMaximumWidth(120)
 
         self.undo_button = QPushButton("↩"); self.redo_button = QPushButton("↪")
         self.generate_button = QPushButton("Generate Scheme..."); self.reset_button = QPushButton("Reset Graph")
@@ -322,29 +431,32 @@ class StudyWidget(QWidget):
         self.generate_button.setStyleSheet("")
         self.reset_button.setStyleSheet("")
 
-        controls_layout.addWidget(QLabel("<b>Axis Controls:</b>")); controls_layout.addWidget(self.max_steps_spinbox); controls_layout.addWidget(self.min_strain_spinbox); controls_layout.addWidget(self.max_strain_spinbox); 
-        controls_layout.addStretch()  # Push buttons to the right
-        # Add buttons with right alignment
-        controls_layout.addWidget(self.undo_button); controls_layout.addWidget(self.redo_button)
-        controls_layout.addWidget(self.generate_button); controls_layout.addWidget(self.reset_button)
-
-        # Add direction and thermo controls
-        deform_direc_thermo_layout = QHBoxLayout()
+        controls_layout.addWidget(QLabel("<b>Axis Controls:</b>"))
+        controls_layout.addWidget(self.max_steps_spinbox)
+        controls_layout.addWidget(self.min_strain_spinbox)
+        controls_layout.addWidget(self.max_strain_spinbox)
         
+        # Add deformation direction fields to the top row (initially hidden)
+        self.deform_axis_label = QLabel("Deformation Direction:")
         self.deform_axis_combo = QComboBox()
         self.deform_axis_combo.addItems(["x", "y", "z"])
         self.deform_axis_combo.setMinimumWidth(40)
         self.deform_axis_combo.setMaximumWidth(70)
-        deform_direc_thermo_layout.addWidget(QLabel("Deformation Direction:"))
-        deform_direc_thermo_layout.addWidget(self.deform_axis_combo)
+        self.deform_axis_label.setVisible(False)
+        self.deform_axis_combo.setVisible(False)
         
-        self.thermo_freq_spinbox = QSpinBox()
-        self.thermo_freq_spinbox.setPrefix("Thermo Freq: ")
-        self.thermo_freq_spinbox.setRange(1, 1000000)
-        self.thermo_freq_spinbox.setValue(100)
-        self.thermo_freq_spinbox.setSingleStep(100)
-        deform_direc_thermo_layout.addWidget(self.thermo_freq_spinbox)
+        controls_layout.addWidget(self.deform_axis_label)
+        controls_layout.addWidget(self.deform_axis_combo)
+        
+        controls_layout.addStretch()  # Push buttons to the right
+        # Add buttons with right alignment
+        controls_layout.addWidget(self.undo_button)
+        controls_layout.addWidget(self.redo_button)
+        controls_layout.addWidget(self.generate_button)
+        controls_layout.addWidget(self.reset_button)
 
+        # Empty layout for thermo controls (thermo freq has been moved to output tab)
+        deform_direc_thermo_layout = QHBoxLayout()
         deform_direc_thermo_layout.addStretch()
 
         self.graph_widget = GraphWidget(self)
@@ -509,39 +621,42 @@ class StudyWidget(QWidget):
 
     def _update_graph_controls(self):
         max_steps = self.max_steps_spinbox.value()
-        min_strain = self.min_strain_spinbox.value()
-        max_strain = self.max_strain_spinbox.value()
+        min_val = self.min_strain_spinbox.value()
+        max_val = self.max_strain_spinbox.value()
 
-        # Block signals to prevent recursive calls
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
 
-        # Ensure min_strain is not positive
-        if min_strain > 0:
-            min_strain = -min_strain
-            self.min_strain_spinbox.setValue(min_strain)
-        
-        # Ensure min_strain is greater than -1 (cannot be -1 or less)
-        if min_strain <= -1:
-            min_strain = -0.999
-            self.min_strain_spinbox.setValue(min_strain)
+        if self.mode == 'Deformation':
+            self.min_strain_spinbox.setRange(-0.999999, 1e9)
+            self.max_strain_spinbox.setRange(-1e9, 1e9)
+            if min_val > 0:
+                min_val = -min_val
+                self.min_strain_spinbox.setValue(min_val)
+            if min_val <= -1:
+                min_val = -0.999
+                self.min_strain_spinbox.setValue(min_val)
+            if max_val < 0:
+                max_val = -max_val
+                self.max_strain_spinbox.setValue(max_val)
+        else: # Temperature
+            self.min_strain_spinbox.setRange(0.001, 1e9)
+            self.max_strain_spinbox.setRange(0.001, 1e9)
+            if min_val < 0.001:
+                self.min_strain_spinbox.setValue(0.001)
+            if max_val < 0.001:
+                self.max_strain_spinbox.setValue(0.001)
 
-        # Ensure max_strain is not negative
-        if max_strain < 0:
-            max_strain = -max_strain
-            self.max_strain_spinbox.setValue(max_strain)
-
-        # Unblock signals
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
 
         self.max_steps_spinbox.setSingleStep(max(1, int(max_steps * 0.02)))
-        self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_strain) * 0.02) if min_strain != 0 else 0.001)
-        self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_strain) * 0.02) if max_strain != 0 else 0.001)
+        self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_val) * 0.02) if min_val != 0 else 0.001)
+        self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_val) * 0.02) if max_val != 0 else 0.001)
 
-        if min_strain >= max_strain:
+        if self.min_strain_spinbox.value() >= self.max_strain_spinbox.value():
             self.min_strain_spinbox.blockSignals(True)
-            self.min_strain_spinbox.setValue(round(max_strain - 0.01, 3))
+            self.min_strain_spinbox.setValue(round(self.max_strain_spinbox.value() - 0.01, 3))
             self.min_strain_spinbox.blockSignals(False)
 
         self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), self.max_strain_spinbox.value())
@@ -651,39 +766,42 @@ class StudyWidget(QWidget):
 
     def _update_graph_controls(self):
         max_steps = self.max_steps_spinbox.value()
-        min_strain = self.min_strain_spinbox.value()
-        max_strain = self.max_strain_spinbox.value()
+        min_val = self.min_strain_spinbox.value()
+        max_val = self.max_strain_spinbox.value()
 
-        # Block signals to prevent recursive calls
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
 
-        # Ensure min_strain is not positive
-        if min_strain > 0:
-            min_strain = -min_strain
-            self.min_strain_spinbox.setValue(min_strain)
-        
-        # Ensure min_strain is greater than -1 (cannot be -1 or less)
-        if min_strain <= -1:
-            min_strain = -0.999
-            self.min_strain_spinbox.setValue(min_strain)
+        if self.mode == 'Deformation':
+            self.min_strain_spinbox.setRange(-0.999999, 1e9)
+            self.max_strain_spinbox.setRange(-1e9, 1e9)
+            if min_val > 0:
+                min_val = -min_val
+                self.min_strain_spinbox.setValue(min_val)
+            if min_val <= -1:
+                min_val = -0.999
+                self.min_strain_spinbox.setValue(min_val)
+            if max_val < 0:
+                max_val = -max_val
+                self.max_strain_spinbox.setValue(max_val)
+        else: # Temperature
+            self.min_strain_spinbox.setRange(0.001, 1e9)
+            self.max_strain_spinbox.setRange(0.001, 1e9)
+            if min_val < 0.001:
+                self.min_strain_spinbox.setValue(0.001)
+            if max_val < 0.001:
+                self.max_strain_spinbox.setValue(0.001)
 
-        # Ensure max_strain is not negative
-        if max_strain < 0:
-            max_strain = -max_strain
-            self.max_strain_spinbox.setValue(max_strain)
-
-        # Unblock signals
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
 
         self.max_steps_spinbox.setSingleStep(max(1, int(max_steps * 0.02)))
-        self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_strain) * 0.02) if min_strain != 0 else 0.001)
-        self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_strain) * 0.02) if max_strain != 0 else 0.001)
+        self.min_strain_spinbox.setSingleStep(max(0.001, abs(min_val) * 0.02) if min_val != 0 else 0.001)
+        self.max_strain_spinbox.setSingleStep(max(0.001, abs(max_val) * 0.02) if max_val != 0 else 0.001)
 
-        if min_strain >= max_strain:
+        if self.min_strain_spinbox.value() >= self.max_strain_spinbox.value():
             self.min_strain_spinbox.blockSignals(True)
-            self.min_strain_spinbox.setValue(round(max_strain - 0.01, 3))
+            self.min_strain_spinbox.setValue(round(self.max_strain_spinbox.value() - 0.01, 3))
             self.min_strain_spinbox.blockSignals(False)
 
         self.graph_widget.set_max_values(max_steps, self.min_strain_spinbox.value(), self.max_strain_spinbox.value())
@@ -795,8 +913,8 @@ class StudyWidget(QWidget):
             'max_steps': self.max_steps_spinbox.value(),
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
-            'thermo_freq': self.thermo_freq_spinbox.value(),
             'deform_axis': self.deform_axis_combo.currentText(),
+            'mode': self.mode,
             'ensemble': {
                 'ensemble': self.ensemble_combo.currentText(),
                 'temperature': self.temp_spinbox.value(),
@@ -819,7 +937,6 @@ class StudyWidget(QWidget):
         self.max_steps_spinbox.blockSignals(True)
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
-        self.thermo_freq_spinbox.blockSignals(True)
         # Block signals for ensemble controls
         self.ensemble_combo.blockSignals(True)
         self.temp_spinbox.blockSignals(True)
@@ -838,8 +955,9 @@ class StudyWidget(QWidget):
         self.max_steps_spinbox.setValue(state.get('max_steps', 100))
         self.min_strain_spinbox.setValue(state.get('min_strain', 0.0))
         self.max_strain_spinbox.setValue(state.get('max_strain', 1.0))
-        self.thermo_freq_spinbox.setValue(state.get('thermo_freq', 100))
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
+
+        self.set_mode(state.get('mode', 'Deformation'))
 
         ensemble_state = state.get('ensemble', {})
         self.ensemble_combo.setCurrentText(ensemble_state.get('ensemble', 'NVT'))
@@ -860,7 +978,6 @@ class StudyWidget(QWidget):
         self.max_steps_spinbox.blockSignals(False)
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
-        self.thermo_freq_spinbox.blockSignals(False)
         # Unblock signals for ensemble controls
         self.ensemble_combo.blockSignals(False)
         self.temp_spinbox.blockSignals(False)
@@ -961,6 +1078,33 @@ class StudyWidget(QWidget):
 
         self.dataChanged.emit() # Emit dataChanged to update summaries
 
+    def set_mode(self, mode):
+        self.mode = mode
+        is_temp_mode = mode == 'Temperature'
+
+        self.min_strain_spinbox.setPrefix("Min Temp: " if is_temp_mode else "Min Strain: ")
+        self.max_strain_spinbox.setPrefix("Max Temp: " if is_temp_mode else "Max Strain: ")
+
+        self.temp_spinbox.setVisible(not is_temp_mode)
+        # Show/hide deformation direction fields based on mode
+        self.deform_axis_label.setVisible(not is_temp_mode)
+        self.deform_axis_combo.setVisible(not is_temp_mode)
+
+        self.graph_widget.set_mode(mode)
+
+        button_style = "background-color: darkorange;" if is_temp_mode else ""
+        self.undo_button.setStyleSheet(button_style)
+        self.redo_button.setStyleSheet(button_style)
+        self.generate_button.setStyleSheet(button_style)
+        self.reset_button.setStyleSheet(button_style)
+        
+        # Notify the parent DeformationTab to update tab colors
+        parent_tab = self.parent().parent() if self.parent() and self.parent().parent() else None
+        if parent_tab and hasattr(parent_tab, '_update_tab_colors'):
+            parent_tab._update_tab_colors()
+        
+        self.dataChanged.emit()
+
 class DeformationTab(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent); self.setWindowTitle("Interactive Strain-Time Profile Editor")
@@ -968,22 +1112,112 @@ class DeformationTab(QWidget):
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.tabBar().setMovable(True)
-        self.tab_widget.tabBar().tabMoved.connect(self.update_summaries)  # Add this line
-        self.tab_widget.setStyleSheet("QTabBar::tab { height: 14px; min-width: 70px; padding: 2px 4px; } QTabBar::close-button { padding: 0px; }")
+        self.tab_widget.tabBar().tabMoved.connect(self.update_summaries)
+        # Set base stylesheet for the tab widget
+        self._update_tab_stylesheet()
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+        corner_widget = QWidget()
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setSpacing(5)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Deformation", "Temperature"])
+        font = QFont()
+        font.setBold(True)
+        self.mode_combo.setFont(font)
+        self.mode_combo.setToolTip("Select the processing mode for this study")
+        self.mode_combo.setMinimumWidth(120)
+        self.mode_combo.setStyleSheet(""" 
+            QComboBox {
+                combobox-popup: 0;
+            }
+            QComboBox QAbstractItemView {
+                background-color: white;
+                selection-background-color: #007acc;
+                selection-color: white;
+            }
+        """)
+        self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+        
+        corner_layout.addWidget(QLabel("<b>Mode:</b>"))
+        corner_layout.addWidget(self.mode_combo)
 
         add_tab_button = QPushButton("+")
         add_tab_button.setToolTip("Add a new study")
         add_tab_button.clicked.connect(self._add_study)
-        add_tab_button.setFixedSize(20, 14)  # Reduced height and width
-        # Adjust position with stylesheet - move up by 3mm and left (negative right margin moves it left)
-        add_tab_button.setStyleSheet("QPushButton { margin: -3px 5px 0px 0px; padding: 0px; }")  # Move up and slightly left
-        self.tab_widget.setCornerWidget(add_tab_button, Qt.Corner.TopRightCorner)
+        add_tab_button.setFixedSize(20, 14)
+        add_tab_button.setStyleSheet("QPushButton { margin: -3px 5px 0px 0px; padding: 0px; }")
+        corner_layout.addWidget(add_tab_button)
+        
+        self.tab_widget.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
 
         main_layout.addWidget(self.tab_widget)
 
         self._create_summary_area(main_layout)
         self._add_study(is_first=True)
+
+    def _mode_changed(self, index):
+        mode = self.mode_combo.currentText()
+        current_widget = self.tab_widget.currentWidget()
+        if current_widget:
+            current_widget.set_mode(mode)
+        self._update_tab_colors()
+        self.update_summaries()
+
+    def _on_tab_changed(self, index):
+        widget = self.tab_widget.widget(index)
+        if widget:
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setCurrentText(widget.mode)
+            self.mode_combo.blockSignals(False)
+        # Update tab colors when the current tab changes
+        self._update_tab_colors()
+
+    def _update_tab_stylesheet(self):
+        """Update the tab widget stylesheet based on the current tab's mode"""
+        current_index = self.tab_widget.currentIndex()
+        is_temperature_mode = False
+        
+        if current_index >= 0:
+            current_widget = self.tab_widget.widget(current_index)
+            if current_widget and hasattr(current_widget, 'mode') and current_widget.mode == "Temperature":
+                is_temperature_mode = True
+        
+        # Set the stylesheet with appropriate selected tab indicator color
+        indicator_color = "darkorange" if is_temperature_mode else "#007acc"
+        
+        self.tab_widget.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: 1px solid #c0c0c0;
+            }}
+            QTabBar::tab {{
+                height: 14px; 
+                min-width: 70px; 
+                padding: 2px 4px;
+            }}
+            QTabBar::close-button {{
+                padding: 0px;
+            }}
+            QTabBar::tab:selected {{
+                border-bottom: 2px solid {indicator_color};
+            }}
+        """)
+
+    def _update_tab_colors(self):
+        # Update individual tab text colors
+        for i in range(self.tab_widget.count()):
+            widget = self.tab_widget.widget(i)
+            if widget and hasattr(widget, 'mode') and widget.mode == "Temperature":
+                self.tab_widget.tabBar().setTabTextColor(i, QColor("darkorange"))
+            else:
+                self.tab_widget.tabBar().setTabTextColor(i, QColor(Qt.GlobalColor.black))
+                
+        # Update the stylesheet for selected tab indicator
+        self._update_tab_stylesheet()
+
 
     def _create_summary_area(self, layout):
         # Use a single scrollable text area for all summaries
@@ -1016,6 +1250,7 @@ class DeformationTab(QWidget):
         tab_name = f"Study{self._get_next_default_study_number():02d}"
         tab_index = self.tab_widget.addTab(new_study, tab_name); self.tab_widget.setCurrentIndex(tab_index)
         self.update_summaries()
+        self._update_tab_colors()
 
     def _wrapped_mouse_move_event(self, original_mouse_move_event, event, graph_widget):
         # Call the original mouse move event
@@ -1040,6 +1275,7 @@ class DeformationTab(QWidget):
         if self.tab_widget.count() > 1:
             self.tab_widget.widget(index).deleteLater(); self.tab_widget.removeTab(index)
             self.update_summaries()
+            self._update_tab_colors()
         else:
             # If it's the last tab, create a new default one
             self.tab_widget.widget(index).deleteLater(); self.tab_widget.removeTab(index)
@@ -1050,6 +1286,7 @@ class DeformationTab(QWidget):
             new_widget.min_strain_spinbox.setValue(0.0)
             new_widget.max_strain_spinbox.setValue(1.0)
             new_widget.graph_widget.reset_graph()
+            self._update_tab_colors()
 
     def _rename_tab(self, index):
         current_name = self.tab_widget.tabText(index)
@@ -1184,17 +1421,20 @@ class DeformationTab(QWidget):
         for i in range(self.tab_widget.count()):
             study_widget = self.tab_widget.widget(i)
             study_name = self.tab_widget.tabText(i)
+            mode = study_widget.mode
             
             # Add study header with separator
             bond_breakage_status = "Disabled"
             study_state = study_widget.get_state()
             if study_state.get('bond_breakage', {}).get('enable_bond_breakage', False):
                 bond_breakage_status = "Enabled"
-            all_summaries.append(f"--- Summary for {study_name}, Bond Breakage: {bond_breakage_status} ---")
+            all_summaries.append(f"--- Summary for {study_name} | Mode: {mode} | Bond Breakage: {bond_breakage_status} ---")
             
             # Add data
             points = study_widget.graph_widget.get_data_points()
-            header = "{:<10} | {:<18} | {:<18} | {:<18} | {:<20} | {}".format("Segment", "Time Step", "Time", "Strain", "Slope (ε/step)", "Strain Rate (ε/t)")
+            y_unit = study_widget.graph_widget.get_y_unit()
+            y_header = "Temperature" if mode == 'Temperature' else "Strain"
+            header = f"{ 'Segment':<10} | { 'Time Step':<18} | { 'Time':<18} | {y_header:<18} | {f'Slope ({y_unit}/step)':<20} | {f'Rate ({y_unit}/t)':<20}"
             all_summaries.append(header)
             all_summaries.append("-" * len(header))
             
