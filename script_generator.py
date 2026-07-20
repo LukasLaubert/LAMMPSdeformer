@@ -9,6 +9,7 @@ and structured file generation.
 
 This version includes a robust, flag-based restart and predictive
 termination system for HPC cluster environments.
+Supports multiple data sets and studies.
 """
 
 import os
@@ -44,53 +45,88 @@ class LammpsScriptGenerator:
         if not isinstance(system_config, dict):
             return {"success": False, "message": "Invalid system configuration"}
             
-        # 2. Validate System Path
-        system_path = system_config.get("system_path", "")
-        if not system_path:
-            return {"success": False, "message": "System path not specified"}
-        
-        if not os.path.exists(system_path):
-            return {"success": False, "message": f"System path does not exist: {system_path}\nPlease check your selection in the System Configuration tab."}
-        
-        # 3. Validate Potential File (if enabled)
-        if system_config.get("use_potential_file", False):
-            potential_source = system_config.get("potential_source", "file")
-            
-            if potential_source == "file":
-                potential_file = system_config.get("potential_file", "")
-                if not potential_file:
-                    return {"success": False, "message": "Potential file usage is enabled, but no file path is specified."}
-                
-                if not os.path.exists(potential_file):
-                    return {"success": False, "message": f"Potential file does not exist: {potential_file}\nPlease check your selection in the System Configuration tab."}
-            elif potential_source == "text":
-                potential_content = system_config.get("potential_content", "")
-                if not potential_content.strip():
-                    return {"success": False, "message": "Potential usage is enabled (text mode), but no potential commands were provided."}
+        # 2. Validate System Sets
+        system_sets = system_config.get("system_sets", [])
+        if not system_sets:
+            # Fallback to legacy single path if system_sets is missing (should not happen with new GUI)
+            system_path = system_config.get("system_path", "")
+            if not system_path:
+                return {"success": False, "message": "No data sets defined."}
+            system_sets = [{
+                "system_path": system_path,
+                "data_file_extensions": system_config.get("data_file_extensions", [".data"]),
+                "use_potential_file": system_config.get("use_potential_file", False),
+                "potential_file": system_config.get("potential_file", ""),
+                "potential_source": system_config.get("potential_source", "file"),
+                "potential_content": system_config.get("potential_content", ""),
+                "potential_position": system_config.get("potential_position", "after"),
+                "is_enabled": True
+            }]
 
-        # 4. Resolve and Validate System Files
-        if os.path.isfile(system_path):
-            system_files = [system_path]
-            is_multi_system = False
-        elif os.path.isdir(system_path):
-            data_extensions = self.config.get("system", {}).get("data_file_extensions", [".data"])
-            system_files = []
-            for ext in data_extensions:
-                system_files.extend(glob.glob(os.path.join(system_path, f"*{ext}")))
+        validated_sets = []
+        for i, s_set in enumerate(system_sets):
+            # Only validate enabled sets
+            if not s_set.get("is_enabled", True):
+                continue
+
+            path = s_set.get("system_path", "")
+            if not path:
+                return {"success": False, "message": f"System path not specified for Data Set {i+1}"}
             
-            is_multi_system = len(system_files) > 1
-            if not system_files:
-                return {"success": False, "message": f"No data files with extensions {data_extensions} found in the specified directory: {system_path}"}
-        else:
-            return {"success": False, "message": "Invalid system path type (not a file or directory)."}
-        
-        # 5. Check Units Consistency (Warning only)
-        if is_multi_system:
-            units_check = self.check_units_consistency(system_files)
+            if not os.path.exists(path):
+                return {"success": False, "message": f"Path does not exist for Data Set {i+1}: {path}"}
+
+            # Resolve files for this set
+            if os.path.isfile(path):
+                set_files = [path]
+            elif os.path.isdir(path):
+                exts = s_set.get("data_file_extensions", [".data"])
+                set_files = []
+                for ext in exts:
+                    set_files.extend(glob.glob(os.path.join(path, f"*{ext}")))
+                if not set_files:
+                    return {"success": False, "message": f"No data files found in {path} for Data Set {i+1}"}
+            else:
+                return {"success": False, "message": f"Invalid path type for Data Set {i+1}: {path}"}
+            
+            # Validate potential if enabled for this set
+            if s_set.get("use_potential_file", False):
+                source = s_set.get("potential_source", "file")
+                if source == "file":
+                    p_file = s_set.get("potential_file", "")
+                    if not p_file or not os.path.exists(p_file):
+                        return {"success": False, "message": f"Potential file missing or invalid for Data Set {i+1}"}
+                elif source == "text":
+                    if not s_set.get("potential_content", "").strip():
+                        return {"success": False, "message": f"Potential commands missing for Data Set {i+1}"}
+
+            # Determine base name for this set
+            # If we have multiple system sets in the config, use the tab name (ConfigXX/VariantXX)
+            if len(system_sets) > 1 and "name" in s_set:
+                base_name = s_set["name"]
+            else:
+                base_name = Path(path).stem
+
+            validated_sets.append({
+                "config": s_set,
+                "files": set_files,
+                "name": base_name
+            })
+
+        if not validated_sets:
+            return {"success": False, "message": "No active data sets selected."}
+
+        # 3. Check Units Consistency (Warning only - across all active files)
+        all_active_files = []
+        for v_set in validated_sets:
+            all_active_files.extend(v_set["files"])
+            
+        if len(all_active_files) > 1:
+            units_check = self.check_units_consistency(all_active_files)
             if not units_check["consistent"]:
                 warnings.append(f"WARNING: {units_check['message']}")
         
-        # 6. Validate Deformation Studies
+        # 4. Validate Deformation Studies
         deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
         if not deform_studies:
             return {"success": False, "message": "No deformation studies defined."}
@@ -104,7 +140,7 @@ class LammpsScriptGenerator:
                 if field not in study:
                     return {"success": False, "message": f"Missing field '{field}' in deformation study '{study.get('name', f'study_{i}')}'"}
         
-        # 7. Validate Output Configuration
+        # 5. Validate Output Configuration
         output_config = self.config.get("output", {})
         if not isinstance(output_config, dict):
             return {"success": False, "message": "Invalid output configuration"}
@@ -113,8 +149,7 @@ class LammpsScriptGenerator:
             "success": True, 
             "message": "Validation successful", 
             "warnings": warnings, 
-            "system_files": system_files, 
-            "is_multi_system": is_multi_system
+            "validated_sets": validated_sets
         }
 
     def generate_all_scripts(self):
@@ -123,26 +158,29 @@ class LammpsScriptGenerator:
             self.generated_files = []
             
             # --- PHASE 1: VALIDATION ---
-            # Call the separate validation method first
             val_result = self.validate_configuration()
             if not val_result["success"]:
                 return val_result
             
             # Extract data derived during validation
             warnings = val_result["warnings"]
-            system_files = val_result["system_files"]
-            is_multi_system = val_result["is_multi_system"]
+            validated_sets = val_result["validated_sets"]
             
             # Retrieve configs
             system_config = self.config.get("system", {})
             output_config = self.config.get("output", {})
             deform_studies = self.config.get("multistudy", {}).get("deform_studies", [])
 
+            # Determine naming convention
+            total_sets_in_ui = len(system_config.get("system_sets", []))
+            use_naming_prefix = total_sets_in_ui > 1
+
             # --- PHASE 2: GENERATION (Write Operations) ---
             
             output_path = output_config.get("output_path", "")
             if not output_path:
-                output_path = os.path.dirname(system_files[0])
+                # Default to directory of first data file if not set
+                output_path = os.path.dirname(validated_sets[0]["files"][0])
             
             root_simulation_dir = output_path
             os.makedirs(root_simulation_dir, exist_ok=True)
@@ -156,67 +194,109 @@ class LammpsScriptGenerator:
             if not base_settings_result["success"]:
                 return base_settings_result
             
-            # Copy all data files to _input_files
-            data_file_dest_paths = {}
-            for i, system_file in enumerate(system_files):
-                system_name = Path(system_file).stem
-                data_file_dest = os.path.join(data_files_folder, f"{system_name}.data")
-                
-                # Copy the data file directly without modification
-                shutil.copy2(system_file, data_file_dest)
-                
-                data_file_dest_paths[system_file] = (Path("_input_files") / f"{system_name}.data").as_posix()
+            all_simulations = [] # To track all generated simulations for batch scripts
             
-            # Copy potential file
-            # Copy or create potential file
-            if system_config.get("use_potential_file", False):
-                potential_source = system_config.get("potential_source", "file")
+            # Shared potential reference if syncing is enabled
+            synced_potential_ref = None
+            synced_potential_processed = False
+
+            # Process each Data Set
+            for set_idx, v_set in enumerate(validated_sets):
+                set_config = v_set["config"]
+                set_files = v_set["files"]
+                set_base_name = v_set["name"]
                 
-                if potential_source == "file":
-                    potential_file = system_config.get("potential_file", "")
-                    # We validated existence in validate_configuration, so this is safe
-                    if os.path.exists(potential_file):
-                        potential_dest = os.path.join(data_files_folder, Path(potential_file).name)
-                        shutil.copy2(potential_file, potential_dest)
-                elif potential_source == "text":
-                    potential_content = system_config.get("potential_content", "")
-                    potential_dest = os.path.join(data_files_folder, "custom.potential")
-                    with open(potential_dest, 'w') as f:
-                        f.write(potential_content)
+                # Handle potential for this set
+                potential_ref = None
+                if set_config.get("use_potential_file", False):
+                    # Check if we should use a shared synced potential
+                    if set_config.get("sync_potential", False):
+                        if not synced_potential_processed:
+                            # Generate the shared potential once
+                            source = set_config.get("potential_source", "file")
+                            if source == "file":
+                                potential_file = set_config.get("potential_file", "")
+                                if potential_file and os.path.exists(potential_file):
+                                    unique_pot_name = f"synced_{Path(potential_file).name}"
+                                    potential_dest = os.path.join(data_files_folder, unique_pot_name)
+                                    shutil.copy2(potential_file, potential_dest)
+                                    synced_potential_ref = f"_input_files/{unique_pot_name}"
+                            elif source == "text":
+                                potential_content = set_config.get("potential_content", "")
+                                unique_pot_name = "synced_custom.potential"
+                                potential_dest = os.path.join(data_files_folder, unique_pot_name)
+                                with open(potential_dest, 'w') as f:
+                                    f.write(potential_content)
+                                synced_potential_ref = f"_input_files/{unique_pot_name}"
+                            synced_potential_processed = True
+                        
+                        potential_ref = synced_potential_ref
+                    else:
+                        # Standard per-variant potential
+                        source = set_config.get("potential_source", "file")
+                        prefix = f"{set_base_name}_" if use_naming_prefix else ""
+                        if source == "file":
+                            potential_file = set_config.get("potential_file", "")
+                            if potential_file and os.path.exists(potential_file):
+                                unique_pot_name = f"{prefix}{Path(potential_file).name}"
+                                potential_dest = os.path.join(data_files_folder, unique_pot_name)
+                                shutil.copy2(potential_file, potential_dest)
+                                potential_ref = f"_input_files/{unique_pot_name}"
+                        elif source == "text":
+                            potential_content = set_config.get("potential_content", "")
+                            unique_pot_name = f"{prefix}custom.potential"
+                            potential_dest = os.path.join(data_files_folder, unique_pot_name)
+                            with open(potential_dest, 'w') as f:
+                                f.write(potential_content)
+                            potential_ref = f"_input_files/{unique_pot_name}"
+
+                # Generate scripts for each study and file combination
+                for study in deform_studies:
+                    study_name = study.get("name", "study")
+                    # Apply naming convention
+                    study_folder_name = f"{set_base_name}_{study_name}" if use_naming_prefix else study_name
+                    study_folder = os.path.join(root_simulation_dir, study_folder_name)
+                    os.makedirs(study_folder, exist_ok=True)
+
+                    for system_file in set_files:
+                        system_name = Path(system_file).stem
+                        
+                        # Copy data file with variant prefix
+                        prefix = f"{set_base_name}_" if use_naming_prefix else ""
+                        unique_data_name = f"{prefix}{system_name}.data"
+                        data_file_dest = os.path.join(data_files_folder, unique_data_name)
+                        shutil.copy2(system_file, data_file_dest)
+                        data_file_relative_path = f"_input_files/{unique_data_name}"
+
+                        # Create simulation-specific folder
+                        sim_folder = os.path.join(study_folder, system_name)
+                        os.makedirs(sim_folder, exist_ok=True)
+                        
+                        # Generate script
+                        model_name = f"{study_folder_name}_{system_name}"
+                        
+                        result = self.generate_single_script(
+                            system_file, model_name, study, 
+                            sim_folder, data_file_relative_path,
+                            potential_ref=potential_ref,
+                            set_config=set_config
+                        )
+                        
+                        if not result["success"]:
+                            return result
+                            
+                        all_simulations.append({
+                            "study_folder": study_folder_name,
+                            "system_folder": system_name,
+                            "model_name": model_name
+                        })
             
-            # Generate scripts for each deformation study and system combination
-            for study in deform_studies:
-                study_name = study.get("name", "study")
-                
-                # Create deformation study folder
-                study_folder = os.path.join(root_simulation_dir, study_name)
-                os.makedirs(study_folder, exist_ok=True)
-                
-                for system_file in system_files:
-                    system_name = Path(system_file).stem
-                    
-                    # Always create system-specific folder
-                    system_folder = os.path.join(study_folder, system_name)
-                    os.makedirs(system_folder, exist_ok=True)
-                    
-                    # Generate script
-                    model_name = f"{study_name}_{system_name}"
-                    data_file_relative_path = data_file_dest_paths[system_file]
-                    
-                    result = self.generate_single_script(
-                        system_file, model_name, study, 
-                        system_folder, data_file_relative_path
-                    )
-                    
-                    if not result["success"]:
-                        return result
-            
-            # Generate execution scripts
-            exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
+            # Generate execution scripts using the new all_simulations list
+            exec_script_result = self.generate_execution_script(root_simulation_dir, all_simulations)
             if not exec_script_result["success"]:
                 return exec_script_result
             
-            cluster_script_result = self.generate_cluster_submission_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
+            cluster_script_result = self.generate_cluster_submission_script(root_simulation_dir, all_simulations)
             if not cluster_script_result["success"]:
                 return cluster_script_result
             
@@ -226,7 +306,7 @@ class LammpsScriptGenerator:
                 return settings_result
             
             # Final message
-            final_msg = "All scripts generated successfully."
+            final_msg = f"Successfully generated {len(self.generated_files)} scripts across {len(validated_sets)} data sets."
             if warnings:
                 final_msg += "\n\n" + "\n".join(warnings)
 
@@ -271,11 +351,11 @@ class LammpsScriptGenerator:
             "message": f"Units mismatch detected in source files: {defined_units}. The generator will proceed using the units defined in the System Configuration tab ('{self.config.get('system', {}).get('units', 'unknown')}'). Please check your input data files before running the simulations!"
         }
         
-    def generate_single_script(self, data_file, model_name, deform_study, output_dir, data_file_dest):
+    def generate_single_script(self, data_file, model_name, deform_study, output_dir, data_file_dest, potential_ref=None, set_config=None):
         """Generate a single LAMMPS input script"""
         try:
             script_filename = os.path.join(output_dir, f"{model_name}.in")
-            script_content = self.generate_script_content(data_file_dest, model_name, deform_study)
+            script_content = self.generate_script_content(data_file_dest, model_name, deform_study, potential_ref, set_config)
             with open(script_filename, 'w') as f:
                 f.write(script_content)
             self.generated_files.append(script_filename)
@@ -283,10 +363,13 @@ class LammpsScriptGenerator:
         except Exception as e:
             return {"success": False, "message": f"Error generating script: {str(e)}"}
 
-    def generate_script_content(self, data_file, model_name, deform_study):
+    def generate_script_content(self, data_file, model_name, deform_study, potential_ref=None, set_config=None):
         """Generate the content of a LAMMPS input script"""
         try:
             system_config = self.config.get("system", {})
+            if set_config is None:
+                set_config = system_config
+                
             fixes_config = self.config.get("fixes", {})
             output_config = self.config.get("output", {}).copy()
             job_submission_config = self.config.get("job_submission", {})
@@ -314,17 +397,10 @@ class LammpsScriptGenerator:
 
             # Prepare potential include line
             potential_include_line = ""
-            potential_position = system_config.get("potential_position", "after")
+            potential_position = set_config.get("potential_position", "after")
             
-            if system_config.get("use_potential_file", False):
-                potential_source = system_config.get("potential_source", "file")
-                if potential_source == "file":
-                    potential_file = system_config.get("potential_file", "")
-                    if potential_file:
-                        potential_filename = Path(potential_file).name
-                        potential_include_line = f"include ../../_input_files/{potential_filename}"
-                else: # text
-                    potential_include_line = "include ../../_input_files/custom.potential"
+            if potential_ref:
+                potential_include_line = f"include ../../{potential_ref}"
 
             if potential_include_line and potential_position == "before":
                 script_lines.extend([potential_include_line, ""])
@@ -333,14 +409,15 @@ class LammpsScriptGenerator:
                 script_lines.extend([
                     "#------------------------", "# Restart Setup", "#------------------------",
                     "shell \"mkdir -p restart_files\"",
-                    f"if \"${{curstep}} > 0\" then \"read_restart restart_files/{model_name}.restart.${{curstep}}\" &",
+                    "if \"${curstep} > 0\" then \"read_restart restart_files/" + str(model_name) + ".restart.${curstep}\" &",
                     "else &",
                     f"  \"read_data ../../{data_file}\"",
                     ""
                 ])
             else:
                 script_lines.extend(["#------------------------", "# System Setup", "#------------------------"])
-                script_lines.append([f"read_data ../../{data_file}", ""])
+                script_lines.append(f"read_data ../../{data_file}")
+                script_lines.append("")
             
             # Add potential after read_data if configured
             if potential_include_line and potential_position == "after":
@@ -407,7 +484,7 @@ class LammpsScriptGenerator:
                 if enable_restart:
                     script_lines.extend([
                         "#------------------------", "# Initial Velocity", "#------------------------",
-                        f"if \"${{curstep}} == 0\" then \"{velocity_command}\"",
+                        "if \"${curstep} == 0\" then \"" + str(velocity_command) + "\"",
                         ""
                     ])
                 else:
@@ -467,10 +544,10 @@ class LammpsScriptGenerator:
                 restart_steps = sorted(list(set([block['start_step'] for block in execution_blocks])))
                 for step in restart_steps:
                     block = next((b for b in execution_blocks if b['start_step'] == step), None)
-                    if block: script_lines.append(f"if \"${{curstep}} == {step}\" then \"jump SELF segment_{block['user_segment_id']}_{step}\"")
+                    if block: script_lines.append("if \"${curstep} == " + str(step) + "\" then \"jump SELF segment_" + str(block['user_segment_id']) + "_" + str(step) + "\"")
 
                 if max_steps > 0:
-                    script_lines.append(f"if \"${{curstep}} == {int(max_steps)}\" then \"jump SELF end\"")
+                    script_lines.append("if \"${curstep} == " + str(int(max_steps)) + "\" then \"jump SELF end\"")
                 
                 script_lines.extend(["if \"${curstep} > 0\" then \"print 'ERROR: Restart step ${curstep} does not match any known segment start. Aborting.' ; quit\"", ""])
 
@@ -776,7 +853,7 @@ class LammpsScriptGenerator:
         lines = []
         
         # 1. Base Thermo Style
-        base_thermo_style = output_config.get("thermo_style", "step ...")
+        base_thermo_style = output_config.get("thermo_style", "step temp press")
         thermo_style_parts = base_thermo_style.split()
         
         ensemble_config = deform_study.get("ensemble", {})
@@ -967,8 +1044,8 @@ class LammpsScriptGenerator:
             lines.extend(["# Custom Dumps", config.get("custom_dumps", ""), ""])
         return lines
         
-    def generate_execution_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
-        """Generate execution script for local, multi-terminal processing."""
+    def generate_execution_script(self, root_simulation_dir, all_simulations):
+        """Generate execution script for local processing."""
         try:
             import platform
             job_config = self.config.get("job_submission", {})
@@ -980,35 +1057,20 @@ class LammpsScriptGenerator:
             elif os_type == "Unix/Linux":
                 is_unix = True
             else:
-                # Auto-detect
                 current_os = platform.system().lower()
                 is_unix = current_os in ['linux', 'darwin']
             
-            # --- Define OS-specific commands and script structure ---
-            if is_unix:  # Linux or Mac
+            if is_unix:
                 exec_path = os.path.join(root_simulation_dir, "local_run_all.sh")
-                lines = [
-                    "#!/bin/bash",
-                    "# Execution script to run each LAMMPS simulation in a new terminal.",
-                    "# For Linux/Mac systems.", "",
-                    "echo 'Starting LAMMPS simulations in new terminals...'", ""
-                ]
-                # This command opens a new terminal, executes the lammps command, and keeps the terminal open
+                lines = ["#!/bin/bash", "echo 'Starting LAMMPS simulations...'", ""]
                 command_prefix = "gnome-terminal -- bash -c '"
                 command_suffix = "; exec bash'"
-            else:  # Windows
+            else:
                 exec_path = os.path.join(root_simulation_dir, "local_run_all.bat")
-                lines = [
-                    "@echo off",
-                    "REM Execution script to run each LAMMPS simulation in a new command prompt.",
-                    "REM For Windows systems.", "",
-                    "echo Starting LAMMPS simulations in new command prompts...", ""
-                ]
-                # This command opens a new command prompt that remains open after the command finishes
+                lines = ["@echo off", "echo Starting LAMMPS simulations...", ""]
                 command_prefix = "start cmd /k "
                 command_suffix = ""
 
-            # --- Construct the base LAMMPS command for local execution ---
             local_lammps_cmd = job_config.get("local_lammps_cmd", "lmp")
             if job_config.get("local_multiprocessor", False):
                 lammps_executable = job_config.get("local_lammps_executable", "lmp_mpi")
@@ -1017,36 +1079,18 @@ class LammpsScriptGenerator:
             else:
                 full_local_cmd = local_lammps_cmd
 
-            # Add log file and variables for local runs to prevent script errors.
-            # curstep is always 0 for a fresh local run. maxtime is a huge number.
             log_file = job_config.get("log_file_name", "job.log")
             full_local_cmd += f" -log {log_file} -var curstep 0 -var maxtime 1e99"
 
-            # --- Loop through studies and generate commands ---
-            for study in deform_studies:
-                study_name = study.get("name", "study")
-                for system_file in system_files:
-                    system_name = Path(system_file).stem
-                    model_name = f"{study_name}_{system_name}"
-                    sim_directory = f"{study_name}/{system_name}"
-                    
-                    # This structure matches the old, working version
-                    lines.extend([
-                        f"echo 'Running simulation: {model_name}'",
-                        f"cd {sim_directory}",
-                        f"{command_prefix}{full_local_cmd} -in {model_name}.in{command_suffix}",
-                        f"echo 'Started simulation in new terminal: {model_name}'",
-                        f"cd ../../",
-                        ""
-                    ])
+            for sim in all_simulations:
+                lines.extend([
+                    f"echo 'Running: {sim['model_name']}'",
+                    f"cd {sim['study_folder']}/{sim['system_folder']}",
+                    f"{command_prefix}{full_local_cmd} -in {sim['model_name']}.in{command_suffix}",
+                    f"cd ../../",
+                    ""
+                ])
 
-            # --- Add final messages ---
-            if is_unix:
-                lines.extend(["echo 'All simulation terminals started.'", "echo 'Each simulation runs in its own terminal window.'", ""])
-            else:
-                lines.extend(["echo All simulation terminals started.", "echo Each simulation runs in its own command prompt window.", ""])
-            
-            # --- Write the script file ---
             with open(exec_path, 'w', newline='\n') as f:
                 f.write("\n".join(lines))
             
@@ -1054,18 +1098,17 @@ class LammpsScriptGenerator:
                 os.chmod(exec_path, 0o755)
             
             self.generated_files.append(exec_path)
-            return {"success": True, "message": f"Execution script generated: {exec_path}"}
-            
+            return {"success": True}
         except Exception as e:
-            return {"success": False, "message": f"Error generating execution script: {str(e)}"}
+            return {"success": False, "message": f"Error generating local script: {str(e)}"}
 
-    def generate_cluster_submission_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
-        """Generate single master cluster job file and submission script"""
+    def generate_cluster_submission_script(self, root_simulation_dir, all_simulations):
+        """Generate cluster job file and submission script"""
         try:
             job_config = self.config.get("job_submission", {})
             enable_restart = job_config.get("enable_restart", False)
 
-            # Master Job File (lammps_simulation.job)
+            # 1. Master Job File
             master_job_path = os.path.join(root_simulation_dir, "lammps_simulation.job")
             job_lines = [job_config.get("slurm_header", "#!/bin/bash\n#SBATCH --time=24:00:00"), ""]
             
@@ -1077,94 +1120,55 @@ class LammpsScriptGenerator:
 
                 job_lines.extend([
                     "input_file=$1",
-                    "if [ -z \"$input_file\" ]; then echo 'Error: No input file specified'; exit 1; fi",
+                    "if [ -z \"$input_file\" ]; then echo 'Error: No input file'; exit 1; fi",
                     "MODEL_NAME=$(basename \"$input_file\" .in)",
                     "SIM_DIR=$(dirname \"$input_file\")",
                     "cd \"$SIM_DIR\"",
-                    "",
-                    "# --- Restart Logic ---",
                     "curstep=0",
                     "if [ -d restart_files ] && [ \"$(ls -A restart_files)\" ]; then",
                     "  latest_restart=$(ls -v restart_files/${MODEL_NAME}.restart.* | tail -n 1)",
                     "  if [ -n \"$latest_restart\" ]; then",
                     "    curstep=$(basename \"$latest_restart\" | sed 's/.*\\.//')",
-                    "    echo \"Found latest restart file with step: $curstep\"",
                     "  fi",
                     "fi",
-                    "",
-                    "# --- Run LAMMPS ---",
                     f"module load {job_config.get('module_load', 'lammps')}",
                     f"{job_config.get('srun_cmd', 'srun')} {job_config.get('cluster_lammps_cmd', 'lmp')} -in \"$input_file\" -log none -var curstep $curstep -var maxtime {maxtime}",
-                    "",
-                    "# --- Post-Run Resubmission and Cleanup (on Rank 0 only to prevent job stampede) ---",
                     "if [ \"${SLURM_PROCID:-0}\" -eq 0 ]; then",
                     "    if [ -f resubmit.flag ]; then",
-                    "        echo \"Resubmit flag found. Resubmitting for next segment.\"",
                     "        rm resubmit.flag",
-                    f"        {job_config.get('sbatch_cmd', 'sbatch')} --job-name=\"$SLURM_JOB_NAME\" --mail-type=ALL \"../../lammps_simulation.job\" \"$input_file\"",
+                    f"        {job_config.get('sbatch_cmd', 'sbatch')} \"../../lammps_simulation.job\" \"$input_file\"",
                     "    elif [ -f finished.flag ]; then",
-                    "        echo \"Simulation completed successfully.\"",
-                    f"        if [ \"{delete_restarts}\" = \"true\" ]; then",
-                    "            echo \"Cleanup is enabled. Deleting restart_files directory and restart.init.\"",
-                    "            rm -rf restart_files",
-                    "            rm restart.init",
-                    "        fi",
+                    f"        if [ \"{delete_restarts}\" = \"true\" ]; then rm -rf restart_files; rm restart.init; fi",
                     "        rm finished.flag",
-                    "    else",
-                    "        echo \"No resubmit or finished flag found. Assuming failure. No resubmission or cleanup.\"",
                     "    fi",
-                    "    echo \"Job script for ${MODEL_NAME} finished.\"",
                     "fi"
                 ])
-            else: # Simple, no-restart version
+            else:
                 job_lines.extend([
                     "input_file=$1",
                     "SIM_DIR=$(dirname \"$input_file\")",
                     f"module load {job_config.get('module_load', 'lammps')}",
                     f"cd \"$SIM_DIR\"",
                     f"{job_config.get('srun_cmd', 'srun')} {job_config.get('cluster_lammps_cmd', 'lmp')} -in \"$input_file\"",
-                    "echo \"Simulation Completed.\""
                 ])
             
             with open(master_job_path, 'w', newline='\n') as f: f.write("\n".join(job_lines))
             os.chmod(master_job_path, 0o755)
             self.generated_files.append(master_job_path)
 
-            # Submission Script (cluster_run_jobs.sh)
-            cluster_script_path = os.path.join(root_simulation_dir, "cluster_run_jobs.sh")
-            script_lines = ["#!/bin/bash", "# Submits all simulation jobs to the cluster.", ""]
-            
-            for study in deform_studies:
-                for system_file in system_files:
-                    sys_name = Path(system_file).stem
-                    model_name = f"{study['name']}_{sys_name}"
-                    sim_directory = f"{study['name']}/{sys_name}"
-                    input_file_name = f"{model_name}.in"
-                    
-                    script_lines.append(f"cd {sim_directory}")
-                    script_lines.append(f"{job_config.get('sbatch_cmd', 'sbatch')} --job-name=\"{model_name}\" --mail-type=ALL \"../../lammps_simulation.job\" \"{input_file_name}\"")
-                    script_lines.append("cd ../../")
-                    script_lines.append("")
-
-            total_jobs = len(deform_studies) * len(system_files)
-            num_studies = len(deform_studies)
-            num_systems = len(system_files)
-
-            if total_jobs == 1:
-                final_message = "echo '1 cluster job submitted. Use squeue to monitor the job status.'"
-            else:
-                study_word = "study" if num_studies == 1 else "studies"
-                system_word = "system" if num_systems == 1 else "systems"
-                each_phrase = " each" if num_studies > 1 else ""
-                final_message = f"echo 'All {total_jobs} cluster jobs submitted: {num_studies} {study_word} with {num_systems} {system_word}{each_phrase}. Use squeue to monitor the job status.'"
-            
-            script_lines.append(final_message)
+            # 2. Submission Script
+            cluster_script_path = os.path.join(root_simulation_dir, "cluster_run_all.sh")
+            script_lines = ["#!/bin/bash", ""]
+            for sim in all_simulations:
+                script_lines.append(f"cd {sim['study_folder']}/{sim['system_folder']}")
+                script_lines.append(f"{job_config.get('sbatch_cmd', 'sbatch')} --job-name=\"{sim['model_name']}\" \"../../lammps_simulation.job\" \"{sim['model_name']}.in\"")
+                script_lines.append("cd ../../\n")
             
             with open(cluster_script_path, 'w', newline='\n') as f: f.write("\n".join(script_lines))
             os.chmod(cluster_script_path, 0o755)
             self.generated_files.append(cluster_script_path)
 
-            return {"success": True, "message": f"Master job file and submission script generated."}
+            return {"success": True}
         except Exception as e:
             return {"success": False, "message": f"Error generating cluster scripts: {str(e)}"}
 
@@ -1177,52 +1181,34 @@ class LammpsScriptGenerator:
                 f"units {config.get('units', 'metal')}",
                 f"atom_style {config.get('atom_style', 'atomic')}",
                 "dimension 3",
-                f"boundary {config.get('boundary_x', 'p')} {config.get('boundary_y', 'p')} {config.get('boundary_z', 'p')}",
-                "", "# Ensemble Settings", f"timestep {config.get('timestep', 0.001)}",
+                f"boundary p p p",
+                "", f"timestep {config.get('timestep', 0.001)}",
                 ""
             ]
-
-            # --- Custom Commands (formerly neighbor settings) ---
             custom_commands = config.get("custom_commands", "")
             if custom_commands:
                 lines.extend(["# Custom Commands", custom_commands, ""])
 
-            # --- Strain and Stress Variables ---
             lines.extend([
                 "# Strain and Stress Variables",
                 "variable strain_xx equal (lx-v_L0x)/v_L0x",
                 "variable strain_yy equal (ly-v_L0y)/v_L0y",
                 "variable strain_zz equal (lz-v_L0z)/v_L0z",
-                "variable strain_xy equal xy/v_L0y",
-                "variable strain_xz equal xz/v_L0z",
-                "variable strain_yz equal yz/v_L0z",
                 f"variable cauchy_xx equal -(pxx-v_base_pressure)",
                 f"variable cauchy_yy equal -(pyy-v_base_pressure)",
                 f"variable cauchy_zz equal -(pzz-v_base_pressure)",
-                "variable cauchy_xy equal -pxy",
-                "variable cauchy_xz equal -pxz",
-                "variable cauchy_yz equal -pyz",
-                "variable hydrostatic equal (v_cauchy_xx+v_cauchy_yy+v_cauchy_zz)/3",
-                'variable vMises equal "sqrt(0.5*((v_cauchy_xx-v_cauchy_yy)^2+(v_cauchy_yy-v_cauchy_zz)^2+(v_cauchy_zz-v_cauchy_xx)^2+6*(v_cauchy_xy^2+v_cauchy_yz^2+v_cauchy_xz^2)))"',
                 ""
             ])
-
-            # --- Custom Computes ---
-            output_config = self.config.get("output", {}) # We removed fixes tab, so we don't look at fixes_config anymore
-            if output_config.get("enable_custom_computes", False):
-                custom_computes = output_config.get("custom_computes", "")
-                if custom_computes:
-                    lines.extend(["", "# Custom Computes", custom_computes, ""])
 
             base_settings_file = os.path.join(root_simulation_dir, "base_input.in")
             with open(base_settings_file, 'w') as f: f.write("\n".join(lines))
             self.generated_files.append(base_settings_file)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "message": f"Error generating base settings file: {str(e)}"}
+            return {"success": False, "message": f"Error generating base settings: {str(e)}"}
         
     def read_units_from_data_file(self, data_file):
-        """Read units from the first line of a LAMMPS data file."""
+        """Read units from a LAMMPS data file."""
         try:
             with open(data_file, 'r') as f:
                 first_line = f.readline().strip()
@@ -1230,4 +1216,4 @@ class LammpsScriptGenerator:
                     return first_line.split("units")[-1].strip().split()[0]
         except Exception:
             pass
-        return None # Default None (unknown) if not found
+        return None

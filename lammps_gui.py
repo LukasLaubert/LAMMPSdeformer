@@ -27,7 +27,7 @@ try:
                                 QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
                                 QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
                                 QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate,
-                                QListWidget, QStyle, QLayout)
+                                QListWidget, QStyle, QLayout, QInputDialog, QMenu)
     from PyQt6.QtCore import (Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF, 
                              QRect, QPoint, QMimeData, QObject, QEvent)
     from PyQt6.QtGui import (QIcon, QDesktopServices, QCursor, QPalette, QColor, QPixmap, 
@@ -756,6 +756,362 @@ class OutputSelectorWidget(QWidget):
         self.blockSignals(False)
         self.selectionChanged.emit()
 
+class SystemSetWidget(QWidget):
+    """Widget representing a single data set (data file/folder + potential definition)"""
+    dataChanged = pyqtSignal()
+    
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.is_enabled = True
+        self.data_file_extensions = [".data"]
+
+        # Set background to light grey to match main window background
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#f5f5f5"))
+        self.setPalette(palette)
+
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # System selection
+        system_group = InfoGroupBox("System Selection", "")
+        system_layout_main = QVBoxLayout()
+        
+        # Lower part of the system selection group
+        lower_layout = QHBoxLayout()
+
+        # File extensions for data files
+        extensions_group = QWidget()
+        extensions_layout = QHBoxLayout(extensions_group)
+        extensions_layout.setContentsMargins(0,0,0,0)
+        extensions_label = QLabel("File Extensions:")
+        self.extensions_input = QLineEdit()
+        self.extensions_input.setPlaceholderText("Add, e.g., .data, .txt, .atom")
+        self.extensions_input.returnPressed.connect(self._add_data_extension_chip)
+        self.extensions_input.editingFinished.connect(self._add_data_extension_chip)
+        self.extensions_input.installEventFilter(self)
+
+        self.chips_layout = QHBoxLayout()
+        self._add_chip(".data", self.chips_layout, self._remove_data_extension_chip)
+
+        extensions_layout.addWidget(extensions_label)
+        extensions_layout.addLayout(self.chips_layout)
+        extensions_layout.addWidget(self.extensions_input, 1)
+        
+        lower_layout.addWidget(extensions_group, 1)
+
+        # System type display
+        self.system_type_label = QLabel("System Type: Not selected")
+        self.system_type_label.setStyleSheet("font-weight: bold;")
+        lower_layout.addWidget(self.system_type_label)
+
+        system_layout_main.addLayout(lower_layout)
+
+        # Single field for file/directory selection
+        selection_layout = QHBoxLayout()
+        
+        system_path_label = QLabel("System File Path:")
+        selection_layout.addWidget(system_path_label)
+        
+        self.system_path_edit = QLineEdit()
+        self.system_path_edit.setPlaceholderText("Select data file or directory containing data files")
+        self.system_path_edit.setToolTip("Path to a single .data file or directory with multiple .data files")
+        self.system_path_edit.textChanged.connect(self.update_system_type)
+        self.system_path_edit.textChanged.connect(self.dataChanged)
+        
+        self.system_path_browse = QPushButton("Browse...")
+        self.system_path_browse.clicked.connect(self.browse_system_path)
+        self.system_path_browse.setToolTip("Browse for data file or directory")
+        
+        selection_layout.addWidget(self.system_path_edit)
+        selection_layout.addWidget(self.system_path_browse)
+        
+        system_layout_main.addLayout(selection_layout)
+        
+        system_group.setLayout(system_layout_main)
+        layout.addWidget(system_group)
+        
+        # Potential Definition
+        potential_group = InfoGroupBox("Potential Definition", "include")
+        potential_layout = QVBoxLayout(potential_group)
+
+        # Header row
+        header_layout = QHBoxLayout()
+        self.use_potential_file = QCheckBox("Use separate potential definition from")
+        self.use_potential_file.setChecked(False) 
+        self.use_potential_file.stateChanged.connect(self.toggle_potential_settings)
+        self.use_potential_file.stateChanged.connect(self._on_potential_changed)
+        
+        self.potential_source_combo = QComboBox()
+        self.potential_source_combo.addItems(["file", "text"])
+        self.potential_source_combo.currentTextChanged.connect(self.update_potential_visibility)
+        self.potential_source_combo.currentTextChanged.connect(self._on_potential_changed)
+        
+        header_layout.addWidget(self.use_potential_file)
+        header_layout.addWidget(self.potential_source_combo)
+        header_layout.addWidget(QLabel("and initialize"))
+        
+        self.potential_pos_combo = QComboBox()
+        self.potential_pos_combo.addItems(["after", "before"])
+        self.potential_pos_combo.setCurrentText("after")
+        self.potential_pos_combo.currentTextChanged.connect(self._on_potential_changed)
+        header_layout.addWidget(self.potential_pos_combo)
+        
+        header_layout.addWidget(QLabel("reading atom data"))
+        header_layout.addStretch()
+        
+        # Sync potential checkbox (moved to top row, right-aligned)
+        self.sync_potential_checkbox = QCheckBox("Sync Potential across all data sets")
+        self.sync_potential_checkbox.stateChanged.connect(self._on_potential_changed)
+        header_layout.addWidget(self.sync_potential_checkbox)
+        
+        potential_layout.addLayout(header_layout)
+
+        # File Mode UI
+        self.potential_file_widget = QWidget()
+        file_layout = QHBoxLayout(self.potential_file_widget)
+        file_layout.setContentsMargins(0,0,0,0)
+        self.potential_path_edit = QLineEdit()
+        self.potential_path_edit.textChanged.connect(self._on_potential_changed)
+        self.potential_path_browse = QPushButton("Browse...")
+        self.potential_path_browse.clicked.connect(self.browse_potential_file)
+        self.potential_path_edit.setToolTip("Path to the potential file")
+        file_layout.addWidget(QLabel("Path:"))
+        file_layout.addWidget(self.potential_path_edit)
+        file_layout.addWidget(self.potential_path_browse)
+        potential_layout.addWidget(self.potential_file_widget)
+
+        # Text Mode UI
+        self.potential_text_edit = QTextEdit()
+        self.potential_text_edit.setPlaceholderText("Enter potential commands here...")
+        self.potential_text_edit.textChanged.connect(self._on_potential_changed)
+        self.main_window.set_precise_height(self.potential_text_edit, 4.3)
+        
+        # Apply style to scrollbar
+        scrollbar_style = """
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 10px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """
+        self.potential_text_edit.setStyleSheet(scrollbar_style)
+        potential_layout.addWidget(self.potential_text_edit)
+        
+        # Initial visibility update
+        self.update_potential_visibility(self.potential_source_combo.currentText())
+        self.toggle_potential_settings(self.use_potential_file.checkState())
+
+        layout.addWidget(potential_group)
+        # Removed layout.addStretch() to allow the tab widget to fit content
+
+
+    def update_sync_visibility(self, visible):
+        """Show or hide the sync checkbox based on whether multiple tabs exist"""
+        self.sync_potential_checkbox.setVisible(visible)
+        if not visible:
+            # Ensure it's unchecked when there's only one tab
+            self.sync_potential_checkbox.blockSignals(True)
+            self.sync_potential_checkbox.setChecked(False)
+            self.sync_potential_checkbox.blockSignals(False)
+
+    def _on_potential_changed(self):
+        """Handle changes to potential settings or sync checkbox."""
+        if hasattr(self.main_window, 'system_sets_tab_widget'):
+            sync_state = self.sync_potential_checkbox.isChecked()
+            if sync_state:
+                # Sync is enabled, propagate to all other tabs
+                self.main_window._sync_potential_settings(self)
+            else:
+                # Sync is disabled, check if this was a sync checkbox change
+                sender = self.sender()
+                if sender == self.sync_potential_checkbox:
+                    # Sync was just unchecked in this tab, uncheck it in all other tabs
+                    self.main_window._sync_potential_settings(self, force_unchecked=True)
+        
+        self.dataChanged.emit()
+
+    def set_enabled_state(self, enabled):
+        """Visually enable/disable the widget"""
+        self.is_enabled = enabled
+        self.setEnabled(enabled)
+        self.dataChanged.emit()
+
+    def get_state(self):
+        """Return current state as dictionary"""
+        return {
+            "system_path": self.system_path_edit.text(),
+            "data_file_extensions": self.data_file_extensions,
+            "use_potential_file": self.use_potential_file.isChecked(),
+            "potential_file": self.potential_path_edit.text(),
+            "potential_source": self.potential_source_combo.currentText(),
+            "potential_position": self.potential_pos_combo.currentText(),
+            "potential_content": self.potential_text_edit.toPlainText(),
+            "sync_potential": self.sync_potential_checkbox.isChecked(),
+            "is_enabled": self.is_enabled
+        }
+
+    def set_state(self, state):
+        """Set state from dictionary"""
+        self.blockSignals(True)
+        self.system_path_edit.setText(state.get("system_path", ""))
+        
+        # Extensions
+        self.data_file_extensions = state.get("data_file_extensions", [".data"])
+        while self.chips_layout.count():
+            item = self.chips_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        for ext in self.data_file_extensions:
+            self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
+            
+        self.use_potential_file.setChecked(state.get("use_potential_file", False))
+        self.potential_path_edit.setText(state.get("potential_file", ""))
+        self.potential_source_combo.setCurrentText(state.get("potential_source", "file"))
+        self.potential_pos_combo.setCurrentText(state.get("potential_position", "after"))
+        self.potential_text_edit.setPlainText(state.get("potential_content", ""))
+        self.sync_potential_checkbox.setChecked(state.get("sync_potential", False))
+        
+        self.is_enabled = state.get("is_enabled", True)
+        self.setEnabled(self.is_enabled)
+        
+        self.update_potential_visibility(self.potential_source_combo.currentText())
+        self.toggle_potential_settings(self.use_potential_file.checkState())
+        self.update_system_type()
+        self.blockSignals(False)
+
+    def _add_chip(self, text, layout, remove_callback):
+        chip = Chip(text)
+        chip.removed.connect(remove_callback)
+        layout.addWidget(chip)
+
+    def _add_data_extension_chip(self):
+        text = self.extensions_input.text().strip()
+        if not text: return
+        if not text.startswith("."): text = "." + text
+        if text not in self.data_file_extensions:
+            self.data_file_extensions.append(text)
+            self._add_chip(text, self.chips_layout, self._remove_data_extension_chip)
+            self.extensions_input.clear()
+            self.update_system_type()
+            self.dataChanged.emit()
+
+    def _remove_data_extension_chip(self, text):
+        if text in self.data_file_extensions:
+            self.data_file_extensions.remove(text)
+            self.update_system_type()
+            self.dataChanged.emit()
+
+    def browse_system_path(self):
+        current_path = self.system_path_edit.text().strip()
+        start_dir = ""
+        if current_path and os.path.exists(current_path):
+            start_dir = os.path.dirname(current_path) if os.path.isfile(current_path) else current_path
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select System")
+        dialog.setMinimumSize(300, 120)
+        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Select data file or directory containing data files:"))
+        button_layout = QHBoxLayout()
+        file_button = QPushButton("Select File")
+        dir_button = QPushButton("Select Directory")
+        button_layout.addWidget(file_button)
+        button_layout.addWidget(dir_button)
+        layout.addLayout(button_layout)
+
+        def select_file():
+            extensions = " ".join([f"*{ext}" for ext in self.data_file_extensions])
+            path, _ = QFileDialog.getOpenFileName(self, "Select Data File", start_dir, f"Data Files ({extensions});;All Files (*)")
+            if path:
+                self.system_path_edit.setText(path)
+                dialog.accept()
+
+        def select_dir():
+            path = QFileDialog.getExistingDirectory(self, "Select Directory", start_dir)
+            if path:
+                self.system_path_edit.setText(path)
+                dialog.accept()
+
+        file_button.clicked.connect(select_file)
+        dir_button.clicked.connect(select_dir)
+        dialog.exec()
+
+    def browse_potential_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "Potential Files (*.potential *.txt *.in);;All Files (*)")
+        if path:
+            self.potential_path_edit.setText(path)
+            if not self.use_potential_file.isChecked():
+                self.use_potential_file.setChecked(True)
+
+    def toggle_potential_settings(self, state):
+        is_enabled = self.use_potential_file.isChecked()
+        source = self.potential_source_combo.currentText()
+        self.potential_source_combo.setEnabled(is_enabled)
+        self.potential_pos_combo.setEnabled(is_enabled)
+        if not is_enabled:
+            self.potential_file_widget.setVisible(False)
+            self.potential_text_edit.setVisible(False)
+        else:
+            self.update_potential_visibility(source)
+
+    def update_potential_visibility(self, source):
+        if not self.use_potential_file.isChecked(): return
+        if source == "file":
+            self.potential_file_widget.setVisible(True)
+            self.potential_text_edit.setVisible(False)
+        else:
+            self.potential_file_widget.setVisible(False)
+            self.potential_text_edit.setVisible(True)
+
+    def update_system_type(self):
+        path = self.system_path_edit.text().strip()
+        if not path:
+            self.system_type_label.setText("System Type: Not selected")
+            return
+        if os.path.isfile(path):
+            self.system_type_label.setText("System Type: Single File")
+            self.main_window.auto_detect_from_data_file(path)
+        elif os.path.isdir(path):
+            data_files = []
+            for ext in self.data_file_extensions:
+                data_files.extend(glob.glob(os.path.join(path, f"*{ext}")))
+            count = len(data_files)
+            if count == 0:
+                self.system_type_label.setText("System Type: Directory (No data files found)")
+            elif count == 1:
+                self.system_type_label.setText("System Type: Directory (1 data file)")
+                self.main_window.auto_detect_from_data_file(data_files[0])
+            else:
+                self.system_type_label.setText(f"System Type: Directory ({count} data files)")
+                if count > 0:
+                    self.main_window.auto_detect_from_data_file(data_files[0])
+        else:
+            self.system_type_label.setText("System Type: Invalid Path")
+
+    def eventFilter(self, obj, event):
+        if obj == self.extensions_input and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Comma, Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._add_data_extension_chip()
+                return True
+        return super().eventFilter(obj, event)
+
+
 class LammpsGui(QMainWindow):
     """Main application window for LAMMPS script generation"""
     
@@ -851,148 +1207,53 @@ class LammpsGui(QMainWindow):
         self.system_tab = QWidget()
         self.tab_widget.addTab(self.system_tab, "System Configuration")
         
-        # Create scroll area
+        # Main layout for system tab - everything will be in a scroll area
+        main_system_layout = QVBoxLayout(self.system_tab)
+        
+        # Create scroll area for all content in this tab
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
         scroll.setWidget(scroll_widget)
-        
-        # Main layout for system tab
-        system_layout = QVBoxLayout(self.system_tab)
-        system_layout.addWidget(scroll)
-        
-        # System selection
-        system_group = InfoGroupBox("System Selection", "")
-        system_layout_main = QVBoxLayout()
-        
-        # Lower part of the system selection group
-        lower_layout = QHBoxLayout()
+        main_system_layout.addWidget(scroll)
 
-        # File extensions for data files
-        extensions_group = QWidget()
-        extensions_layout = QHBoxLayout(extensions_group)
-        extensions_layout.setContentsMargins(0,0,0,0)
-        extensions_label = QLabel("File Extensions:")
-        self.extensions_input = QLineEdit()
-        self.extensions_input.setPlaceholderText("Add, e.g., .data, .txt, .atom")
-        self.extensions_input.returnPressed.connect(self._add_data_extension_chip)
-        self.extensions_input.editingFinished.connect(self._add_data_extension_chip)
-        self.extensions_input.installEventFilter(self)
+        # Tab widget for multiple system sets
+        self.system_sets_tab_widget = QTabWidget()
+        self.system_sets_tab_widget.setTabsClosable(True)
+        self.system_sets_tab_widget.tabCloseRequested.connect(self._close_system_tab)
+        self.system_sets_tab_widget.tabBar().setMovable(True)
+        self.system_sets_tab_widget.tabBarDoubleClicked.connect(self._rename_system_tab)
+        self.system_sets_tab_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.system_sets_tab_widget.customContextMenuRequested.connect(self._show_system_tab_context_menu)
+        
+        # Set size policy to fit content exactly
+        self.system_sets_tab_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        
+        # Corner widget for adding tabs
+        corner_widget = QWidget()
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setSpacing(5)
+        
+        add_tab_button = QPushButton("+")
+        add_tab_button.setToolTip("Add a new data set")
+        add_tab_button.clicked.connect(lambda: self._add_system_set(auto_rename=True))
+        add_tab_button.setFixedSize(20, 18)
+        add_tab_button.setStyleSheet("QPushButton { margin: -3px 5px 0px 0px; padding: 0px; }")
+        corner_layout.addWidget(add_tab_button)
+        
+        self.system_sets_tab_widget.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
+        
+        scroll_layout.addWidget(self.system_sets_tab_widget)
+        
+        # Apply style to match deformation tabs
+        self._update_system_tab_stylesheet()
+        
+        # Initialize with one set
+        self._add_system_set(is_first=True)
 
-        self.chips_layout = QHBoxLayout()
-        self._add_chip(".data", self.chips_layout, self._remove_data_extension_chip)
-
-        extensions_layout.addWidget(extensions_label)
-        extensions_layout.addLayout(self.chips_layout)
-        extensions_layout.addWidget(self.extensions_input, 1)
-        
-        lower_layout.addWidget(extensions_group, 1)
-
-        # System type display
-        self.system_type_label = QLabel("System Type: Not selected")
-        self.system_type_label.setStyleSheet("font-weight: bold;")
-        lower_layout.addWidget(self.system_type_label)
-
-        system_layout_main.addLayout(lower_layout)
-
-        # Single field for file/directory selection
-        selection_layout = QHBoxLayout()
-        
-        system_path_label = QLabel("System File Path:")
-        selection_layout.addWidget(system_path_label)
-        
-        self.system_path_edit = QLineEdit()
-        self.system_path_edit.setPlaceholderText("Select data file or directory containing data files")
-        self.system_path_edit.setToolTip("Path to a single .data file or directory with multiple .data files")
-        
-        self.system_path_browse = QPushButton("Browse...")
-        self.system_path_browse.clicked.connect(self.browse_system_path)
-        self.system_path_browse.setToolTip("Browse for data file or directory")
-        
-        selection_layout.addWidget(self.system_path_edit)
-        selection_layout.addWidget(self.system_path_browse)
-        
-        system_layout_main.addLayout(selection_layout)
-        
-        # Update system type when path changes
-        self.system_path_edit.textChanged.connect(self.update_system_type)
-        
-        system_group.setLayout(system_layout_main)
-        scroll_layout.addWidget(system_group)
-        
-        # Potential Definition
-        potential_group = InfoGroupBox("Potential Definition", "include")
-        potential_layout = QVBoxLayout(potential_group)
-
-        # Header row
-        header_layout = QHBoxLayout()
-        self.use_potential_file = QCheckBox("Use separate potential definition from")
-        self.use_potential_file.setChecked(False) 
-        self.use_potential_file.stateChanged.connect(self.toggle_potential_settings)
-        
-        self.potential_source_combo = QComboBox()
-        self.potential_source_combo.addItems(["file", "text"])
-        self.potential_source_combo.currentTextChanged.connect(self.update_potential_visibility)
-        
-        header_layout.addWidget(self.use_potential_file)
-        header_layout.addWidget(self.potential_source_combo)
-        header_layout.addWidget(QLabel("and initialize"))
-        
-        self.potential_pos_combo = QComboBox()
-        self.potential_pos_combo.addItems(["after", "before"])
-        self.potential_pos_combo.setCurrentText("after")
-        header_layout.addWidget(self.potential_pos_combo)
-        
-        header_layout.addWidget(QLabel("reading atom data"))
-        header_layout.addStretch()
-        
-        potential_layout.addLayout(header_layout)
-
-        # File Mode UI
-        self.potential_file_widget = QWidget()
-        file_layout = QHBoxLayout(self.potential_file_widget)
-        file_layout.setContentsMargins(0,0,0,0)
-        self.potential_path_edit = QLineEdit()
-        self.potential_path_browse = QPushButton("Browse...")
-        self.potential_path_browse.clicked.connect(self.browse_potential_file)
-        self.potential_path_edit.setToolTip("Path to the potential file")
-        file_layout.addWidget(QLabel("Path:"))
-        file_layout.addWidget(self.potential_path_edit)
-        file_layout.addWidget(self.potential_path_browse)
-        potential_layout.addWidget(self.potential_file_widget)
-
-        # Text Mode UI
-        self.potential_text_edit = QTextEdit()
-        self.potential_text_edit.setPlaceholderText("Enter potential commands here...")
-        self.set_precise_height(self.potential_text_edit, 4.3) # Precise 4.3 lines
-        
-        # Apply style to scrollbar
-        scrollbar_style = """
-            QScrollBar:vertical {
-                border: none;
-                background: #f0f0f0;
-                width: 10px;
-                margin: 0px 0px 0px 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c0c0c0;
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-        """
-        self.potential_text_edit.setStyleSheet(scrollbar_style)
-        potential_layout.addWidget(self.potential_text_edit)
-        
-        # Initial visibility update
-        self.update_potential_visibility(self.potential_source_combo.currentText())
-        self.toggle_potential_settings(self.use_potential_file.checkState())
-
-        scroll_layout.addWidget(potential_group)
-        
         # Create a horizontal layout for the three widgets
         settings_layout = QHBoxLayout()
         
@@ -1105,6 +1366,9 @@ class LammpsGui(QMainWindow):
 
         # Ensemble settings (MOVED to deformation tab)
         
+        # Velocity initialization & Temperature Control settings
+        init_settings_layout = QHBoxLayout()
+        
         # Velocity initialization settings
         velocity_group = InfoGroupBox("Velocity Initialization", "velocity")
         velocity_layout = QHBoxLayout() # Changed to HBox
@@ -1122,20 +1386,29 @@ class LammpsGui(QMainWindow):
         self.initial_velocity_seed.setValue(12345)
         self.initial_velocity_seed.setToolTip("Random seed for initializing the velocity")
         
+        velocity_layout.addWidget(QLabel("Seed:"))
+        velocity_layout.addWidget(self.initial_velocity_seed, 1)
+        
+        velocity_group.setLayout(velocity_layout)
+        init_settings_layout.addWidget(velocity_group, 1)
+        
+        # Thermostating settings
+        thermostating_group = InfoGroupBox("Thermostating", "fix_nh")
+        thermostating_layout = QHBoxLayout()
+        
         self.damping_factor = QDoubleSpinBox()
         self.damping_factor.setRange(0.1, 1000)
         self.damping_factor.setValue(100.0)
         self.damping_factor.setSingleStep(10.0)
         self.damping_factor.setToolTip("Damping factor multiplied with timestep for thermostating the system")
         
-        velocity_layout.addWidget(QLabel("Seed:"))
-        velocity_layout.addWidget(self.initial_velocity_seed, 1)
-        velocity_layout.addSpacing(10)
-        velocity_layout.addWidget(QLabel("Damping factor:"))
-        velocity_layout.addWidget(self.damping_factor, 1)
+        thermostating_layout.addWidget(QLabel("Damping factor:"))
+        thermostating_layout.addWidget(self.damping_factor, 1)
         
-        velocity_group.setLayout(velocity_layout)
-        scroll_layout.addWidget(velocity_group)
+        thermostating_group.setLayout(thermostating_layout)
+        init_settings_layout.addWidget(thermostating_group, 1)
+        
+        scroll_layout.addLayout(init_settings_layout)
         
         # Custom Commands (formerly Neighbor Settings)
         custom_commands_group = InfoGroupBox("Custom Commands", "neighbor", additional_docs=[("comm_modify", False)])
@@ -1145,6 +1418,22 @@ class LammpsGui(QMainWindow):
         self.custom_commands_edit.setPlaceholderText("e.g., neighbor 2.0 bin\nneigh_modify delay 5 every 1 check yes one 20000 page 200000\ncomm_modify cutoff 20.0")
         
         # Apply style to scrollbar
+        scrollbar_style = """
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 10px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """
         self.custom_commands_edit.setStyleSheet(scrollbar_style)
         
         # Fixed height (4 lines)
@@ -1153,8 +1442,242 @@ class LammpsGui(QMainWindow):
         custom_commands_layout.addWidget(self.custom_commands_edit)
         scroll_layout.addWidget(custom_commands_group)
         
-        # Add stretch to push everything up
+        # Add stretch at the very bottom to push everything up
         scroll_layout.addStretch()
+
+    def _update_system_tab_stylesheet(self):
+        """Update the system tab widget stylesheet to match deformation tabs"""
+        self.system_sets_tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #c0c0c0;
+                background-color: #f5f5f5;
+            }
+            QTabBar::tab {
+                height: 14px; 
+                min-width: 70px; 
+                padding: 2px 4px;
+            }
+            QTabBar::close-button {
+                padding: 0px;
+            }
+            QTabBar::tab:selected {
+                border-bottom: 2px solid #007acc;
+            }
+        """)
+
+    def _get_next_default_system_number(self):
+        num = 1
+        while any(f"Variant{num:02d}" == self.system_sets_tab_widget.tabText(i) for i in range(self.system_sets_tab_widget.count())): num += 1
+        return num
+
+    def _add_system_set(self, is_first=False, source_index=None, auto_rename=False):
+        """Add a new system set tab"""
+        initial_state = None
+        tab_name = ""
+        
+        if source_index is not None:
+            # Copy from source
+            source_widget = self.system_sets_tab_widget.widget(source_index)
+            initial_state = source_widget.get_state()
+            tab_name = self.system_sets_tab_widget.tabText(source_index)
+            insert_index = source_index + 1
+        else:
+            # New default
+            tab_name = f"Variant{self._get_next_default_system_number():02d}"
+            insert_index = self.system_sets_tab_widget.currentIndex() + 1 if self.system_sets_tab_widget.count() > 0 else 0
+
+        new_set = SystemSetWidget(self)
+        if initial_state:
+            new_set.set_state(initial_state)
+            
+        # Check if Sync Potential is active in any existing tab
+        sync_active = False
+        sync_source = None
+        for i in range(self.system_sets_tab_widget.count()):
+            widget = self.system_sets_tab_widget.widget(i)
+            if isinstance(widget, SystemSetWidget) and widget.sync_potential_checkbox.isChecked():
+                sync_active = True
+                sync_source = widget
+                break
+        
+        if sync_active and sync_source:
+            # Sync the new tab with existing synced settings
+            source_state = sync_source.get_state()
+            new_set.blockSignals(True)
+            new_set.use_potential_file.setChecked(source_state['use_potential_file'])
+            new_set.potential_path_edit.setText(source_state['potential_file'])
+            new_set.potential_source_combo.setCurrentText(source_state['potential_source'])
+            new_set.potential_pos_combo.setCurrentText(source_state['potential_position'])
+            new_set.potential_text_edit.setPlainText(source_state['potential_content'])
+            new_set.sync_potential_checkbox.setChecked(True)
+            new_set.update_potential_visibility(source_state['potential_source'])
+            new_set.toggle_potential_settings(new_set.use_potential_file.checkState())
+            new_set.blockSignals(False)
+        else:
+            # If no sync is active, just ensure this one is unchecked by default
+            new_set.sync_potential_checkbox.blockSignals(True)
+            new_set.sync_potential_checkbox.setChecked(False)
+            new_set.sync_potential_checkbox.blockSignals(False)
+            
+        new_set.dataChanged.connect(self._on_system_data_changed)
+        
+        tab_index = self.system_sets_tab_widget.insertTab(insert_index, new_set, tab_name)
+        self.system_sets_tab_widget.setCurrentIndex(tab_index)
+        
+        self._update_system_tab_colors()
+        self._update_sync_potential_visibility()
+        
+        if auto_rename:
+            self._rename_system_tab(tab_index, dialog_title="Create Copy", delete_on_cancel=True)
+
+    def _close_system_tab(self, index, force=False):
+        """Close a system set tab"""
+        if self.system_sets_tab_widget.count() > 1 or force:
+            widget = self.system_sets_tab_widget.widget(index)
+            self.system_sets_tab_widget.removeTab(index)
+            widget.deleteLater()
+            
+            self._update_system_tab_colors()
+            self._update_sync_potential_visibility()
+        else:
+            # Don't close the last tab unless forced, just reset it
+            QMessageBox.information(self, "Info", "At least one data set must remain.")
+
+    def _rename_system_tab(self, index, dialog_title="Rename Data Set", delete_on_cancel=False):
+        """Rename a system set tab with validation"""
+        current_name = self.system_sets_tab_widget.tabText(index)
+
+        while True:
+            new_name, ok = QInputDialog.getText(self, dialog_title, "New data set name:", text=current_name)
+
+            if not ok:
+                if delete_on_cancel:
+                    self._close_system_tab(index, force=True)
+                return
+
+            if not new_name:
+                QMessageBox.warning(self, "Invalid Name", "Name cannot be empty.")
+                continue
+
+            # Validate the new name: no spaces, only alphanumeric, underscores, hyphens
+            if re.match(r"^[a-zA-Z0-9_-]+$", new_name):
+                # Check if name already exists
+                if any(new_name == self.system_sets_tab_widget.tabText(i) for i in range(self.system_sets_tab_widget.count()) if i != index):
+                    QMessageBox.warning(self, "Invalid Name", "A data set with this name already exists.")
+                    continue
+
+                self.system_sets_tab_widget.setTabText(index, new_name)
+                break
+            else:
+                QMessageBox.warning(self, "Invalid Name", "Name can only contain letters, numbers, underscores, and hyphens (no spaces).")
+
+    def _show_system_tab_context_menu(self, position):
+        """Show context menu for system set tabs"""
+        tab_bar = self.system_sets_tab_widget.tabBar()
+        index = tab_bar.tabAt(position)
+        
+        if index == -1:
+            return
+            
+        set_widget = self.system_sets_tab_widget.widget(index)
+        
+        menu = QMenu(self)
+        
+        # Enable/Disable action
+        enabled_action = QAction("Activated", self, checkable=True)
+        enabled_action.setChecked(set_widget.is_enabled)
+        enabled_action.toggled.connect(lambda checked: self._toggle_system_set_activation(index, checked))
+        menu.addAction(enabled_action)
+        
+        # Create copy option
+        copy_action = QAction("Create copy", self)
+        copy_action.triggered.connect(lambda: self._add_system_set(source_index=index, auto_rename=True))
+        menu.addAction(copy_action)
+        
+        # Rename option
+        rename_action = QAction("Rename", self)
+        rename_action.triggered.connect(lambda: self._rename_system_tab(index))
+        menu.addAction(rename_action)
+        
+        menu.exec(tab_bar.mapToGlobal(position))
+
+    def _toggle_system_set_activation(self, index, enabled):
+        """Toggle the enabled state of a system set"""
+        set_widget = self.system_sets_tab_widget.widget(index)
+        set_widget.set_enabled_state(enabled)
+        self._update_system_tab_colors()
+
+    def _update_sync_potential_visibility(self):
+        """Update the visibility of the sync potential checkbox in all tabs"""
+        visible = self.system_sets_tab_widget.count() > 1
+        for i in range(self.system_sets_tab_widget.count()):
+            widget = self.system_sets_tab_widget.widget(i)
+            if isinstance(widget, SystemSetWidget):
+                widget.update_sync_visibility(visible)
+
+    def _on_system_data_changed(self):
+        """Handle data changes in system sets"""
+        pass
+
+    def update_system_sets(self, count):
+        """Update the number of system set tabs (for legacy/loading support)"""
+        current_count = self.system_sets_tab_widget.count()
+        
+        if count > current_count:
+            # Add tabs
+            for i in range(current_count, count):
+                self._add_system_set(is_first=(i==0))
+        elif count < current_count:
+            # Remove tabs
+            for i in range(current_count - 1, count - 1, -1):
+                self._close_system_tab(i, force=True)
+        
+        # Rename tabs to ensure they are consistent if it was a bulk update
+        if count > 1 and not any(re.match(r"^[a-zA-Z0-9_-]+$", self.system_sets_tab_widget.tabText(i)) for i in range(count)):
+             for i in range(self.system_sets_tab_widget.count()):
+                self.system_sets_tab_widget.setTabText(i, f"Variant{i+1:02d}")
+        
+        self._update_system_tab_colors()
+
+    def _update_system_tab_colors(self):
+        """Update tab colors based on enabled state"""
+        for i in range(self.system_sets_tab_widget.count()):
+            set_widget = self.system_sets_tab_widget.widget(i)
+            if not set_widget.is_enabled:
+                self.system_sets_tab_widget.tabBar().setTabTextColor(i, QColor(128, 128, 128))  # Grey
+            else:
+                self.system_sets_tab_widget.tabBar().setTabTextColor(i, QColor(0, 0, 0))  # Black
+
+    def _sync_potential_settings(self, source_set_widget, force_unchecked=False):
+        """Sync potential settings across all data set tabs"""
+        source_state = source_set_widget.get_state()
+
+        for i in range(self.system_sets_tab_widget.count()):
+            set_widget = self.system_sets_tab_widget.widget(i)
+            if set_widget == source_set_widget:
+                continue
+
+            set_widget.blockSignals(True)
+            # Prevent potential text edit from triggering sync back
+            set_widget.potential_text_edit.blockSignals(True)
+            set_widget.sync_potential_checkbox.blockSignals(True)
+
+            if force_unchecked:
+                set_widget.sync_potential_checkbox.setChecked(False)
+            else:
+                set_widget.use_potential_file.setChecked(source_state['use_potential_file'])
+                set_widget.potential_path_edit.setText(source_state['potential_file'])
+                set_widget.potential_source_combo.setCurrentText(source_state['potential_source'])
+                set_widget.potential_pos_combo.setCurrentText(source_state['potential_position'])
+                set_widget.potential_text_edit.setPlainText(source_state['potential_content'])
+                set_widget.sync_potential_checkbox.setChecked(source_state['sync_potential'])
+                
+                set_widget.update_potential_visibility(source_state['potential_source'])
+                set_widget.toggle_potential_settings(source_set_widget.use_potential_file.checkState())
+
+            set_widget.potential_text_edit.blockSignals(False)
+            set_widget.sync_potential_checkbox.blockSignals(False)
+            set_widget.blockSignals(False)
 
     def adjust_text_height(self, text_edit, min_lines, max_lines):
         """Adjust QTextEdit height dynamically based on content."""
@@ -1182,6 +1705,10 @@ class LammpsGui(QMainWindow):
         # Clamp
         if new_height < min_h:
             new_height = min_h
+        if new_height > max_h:
+            new_height = max_h
+            
+        text_edit.setFixedHeight(new_height)
         if new_height > max_h:
             new_height = max_h
             
@@ -1402,35 +1929,7 @@ class LammpsGui(QMainWindow):
         self.prob_fraction.setEnabled(enabled)
         self.prob_seed.setEnabled(enabled)
         
-    def update_system_type(self):
-        """Update system type display based on selected path"""
-        path = self.system_path_edit.text()
-        if not path:
-            self.system_type_label.setText("System Type: Not selected")
-            return
-            
-        if os.path.isfile(path):
-            if any(path.endswith(ext) for ext in self.data_file_extensions):
-                self.system_type_label.setText("System Type: Single file")
-                # Auto-detect units and atom style from .data file
-                self.auto_detect_from_data_file(path)
-            else:
-                self.system_type_label.setText("System Type: Single file")
-        elif os.path.isdir(path):
-            # Count data files in directory
-            data_files = []
-            for ext in self.data_file_extensions:
-                data_files.extend(glob.glob(os.path.join(path, f"*{ext}")))
-            count = len(data_files)
-            if count > 0:
-                self.system_type_label.setText(f"System Type: Multiple files ({count} files found)")
-                # Auto-detect units and atom style from first .data file
-                self.auto_detect_from_data_file(data_files[0])
-            else:
-                self.system_type_label.setText("System Type: Directory (no files found)")
-        else:
-            self.system_type_label.setText("System Type: Path does not exist")
-    
+
     def auto_detect_from_data_file(self, data_file):
         """Auto-detect units and atom style from .data file"""
         try:
@@ -2117,16 +2616,6 @@ class LammpsGui(QMainWindow):
         self.cluster_lammps_cmd.setToolTip("Command to run LAMMPS on the cluster.")
         cluster_layout.addRow("Cluster LAMMPS Command:", self.cluster_lammps_cmd)
 
-        self.srun_cmd = QLineEdit()
-        self.srun_cmd.setPlaceholderText("srun")
-        self.srun_cmd.setToolTip("srun command for cluster execution.")
-        cluster_layout.addRow("srun Command:", self.srun_cmd)
-
-        self.sbatch_cmd = QLineEdit()
-        self.sbatch_cmd.setPlaceholderText("sbatch")
-        self.sbatch_cmd.setToolTip("sbatch command for cluster job submission.")
-        cluster_layout.addRow("sbatch Command:", self.sbatch_cmd)
-
         self.module_load_cmd = QLineEdit()
         self.module_load_cmd.setPlaceholderText("lammps")
         self.module_load_cmd.setToolTip("Module to load on the cluster.")
@@ -2215,7 +2704,6 @@ class LammpsGui(QMainWindow):
         self.delete_restart_files_checkbox = QCheckBox("Delete restart files after successful simulation")
         self.delete_restart_files_checkbox.setToolTip("If checked, adds a command in the .job script to delete the restart_files folder inside each respective simulation folder after successful completion.")
         restart_options_layout.addRow(self.delete_restart_files_checkbox)
-
 
         cluster_layout.addRow(self.restart_options_widget)
 
@@ -2421,11 +2909,17 @@ class LammpsGui(QMainWindow):
     def validate_paths(self):
         """Validate all user-provided paths for invalid characters"""
         paths_to_check = {
-            "System Path": self.system_path_edit.text(),
-            "Potential File Path": self.potential_path_edit.text() if self.use_potential_file.isChecked() else "",
             "Output Path": self.output_path_edit.text()
         }
-        
+
+        # Add all active system set paths
+        for i in range(self.system_sets_tab_widget.count()):
+            set_widget = self.system_sets_tab_widget.widget(i)
+            if set_widget.is_enabled:
+                prefix = self.system_sets_tab_widget.tabText(i)
+                paths_to_check[f"{prefix} System Path"] = set_widget.system_path_edit.text()
+                if set_widget.use_potential_file.isChecked():
+                    paths_to_check[f"{prefix} Potential Path"] = set_widget.potential_path_edit.text()
         invalid_paths = []
         # Regex to find spaces or non-ascii characters that are not basic path separators
         invalid_char_re = re.compile(r'[\säöüÄÖÜß]')
@@ -2787,16 +3281,26 @@ class LammpsGui(QMainWindow):
 
         avg_items = self.avg_selector.get_selected_items()
 
+        # Collect system sets
+        system_sets_config = []
+        for i in range(self.system_sets_tab_widget.count()):
+            widget = self.system_sets_tab_widget.widget(i)
+            if isinstance(widget, SystemSetWidget):
+                state = widget.get_state()
+                state["name"] = self.system_sets_tab_widget.tabText(i) # Use the tab name
+                system_sets_config.append(state)
+
         config = {
             "system": {
-                "system_path": self.system_path_edit.text(),
-                "data_file_extensions": self.data_file_extensions,
+                # Legacy support: use first set for single-set mode or generic settings
+                "system_path": self.system_sets_tab_widget.widget(0).system_path_edit.text() if self.system_sets_tab_widget.count() > 0 else "",
+                "data_file_extensions": self.system_sets_tab_widget.widget(0).data_file_extensions if self.system_sets_tab_widget.count() > 0 else [".data"],
 
-                "use_potential_file": self.use_potential_file.isChecked(),
-                "potential_file": self.potential_path_edit.text(),
-                "potential_source": self.potential_source_combo.currentText(),
-                "potential_position": self.potential_pos_combo.currentText(),
-                "potential_content": self.potential_text_edit.toPlainText(),
+                "use_potential_file": self.system_sets_tab_widget.widget(0).use_potential_file.isChecked() if self.system_sets_tab_widget.count() > 0 else False,
+                "potential_file": self.system_sets_tab_widget.widget(0).potential_path_edit.text() if self.system_sets_tab_widget.count() > 0 else "",
+                "potential_source": self.system_sets_tab_widget.widget(0).potential_source_combo.currentText() if self.system_sets_tab_widget.count() > 0 else "file",
+                "potential_position": self.system_sets_tab_widget.widget(0).potential_pos_combo.currentText() if self.system_sets_tab_widget.count() > 0 else "after",
+                "potential_content": self.system_sets_tab_widget.widget(0).potential_text_edit.toPlainText() if self.system_sets_tab_widget.count() > 0 else "",
                 
                 "atom_style": self.atom_style_combo.currentText(),
                 "units": self.units_combo.currentText(),
@@ -2808,7 +3312,10 @@ class LammpsGui(QMainWindow):
                 "damping_factor": self.damping_factor.value(),
                 
                 "custom_commands": self.custom_commands_edit.toPlainText(),
-                "timestep": self.timestep.value()
+                "timestep": self.timestep.value(),
+                
+                # New multi-set configuration
+                "system_sets": system_sets_config
             },
 
             "output": {
@@ -2842,8 +3349,8 @@ class LammpsGui(QMainWindow):
                 "log_file_name": self.log_file_name.text() or "job.log",
                 "os_type": self.os_selection_combo.currentText(),
                 "cluster_lammps_cmd": self.cluster_lammps_cmd.text() or "lmp",
-                "srun_cmd": self.srun_cmd.text() or "srun",
-                "sbatch_cmd": self.sbatch_cmd.text() or "sbatch",
+                "srun_cmd": "srun",
+                "sbatch_cmd": "sbatch",
                 "module_load": self.module_load_cmd.text() or "lammps",
                 "slurm_header": self.slurm_header_text.toPlainText() or '''#!/bin/bash
 #SBATCH --job-name=lammps_simulation
@@ -2900,27 +3407,39 @@ class LammpsGui(QMainWindow):
         """Load settings from QSettings"""
         try:
             # System settings
-            system_path = self.settings.value("system/system_path", "")
-            if system_path:
-                self.system_path_edit.setText(system_path)
+            system_sets_data = self.settings.value("system/system_sets", "[]")
+            if isinstance(system_sets_data, str):
+                try:
+                    system_sets_list = json.loads(system_sets_data)
+                except:
+                    system_sets_list = []
+            else:
+                system_sets_list = system_sets_data
 
-            extensions = self.settings.value("system/data_file_extensions", [".data"])
-            if isinstance(extensions, str):
-                extensions = extensions.split(',')
-            self.data_file_extensions = []
-            for i in reversed(range(self.chips_layout.count())):
-                if self.chips_layout.itemAt(i).widget():
-                    self.chips_layout.itemAt(i).widget().setParent(None)
-            for ext in extensions:
-                if ext and ext not in self.data_file_extensions:
-                    self.data_file_extensions.append(ext)
-                    self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
-
-            self.use_potential_file.setChecked(self.settings.value("system/use_potential_file", False, type=bool))
-            self.potential_path_edit.setText(self.settings.value("system/potential_file", ""))
-            self.potential_source_combo.setCurrentText(self.settings.value("system/potential_source", "file"))
-            self.potential_pos_combo.setCurrentText(self.settings.value("system/potential_position", "after"))
-            self.potential_text_edit.setPlainText(self.settings.value("system/potential_content", ""))
+            if system_sets_list:
+                self.update_system_sets(len(system_sets_list))
+                for i, set_state in enumerate(system_sets_list):
+                    if i < self.system_sets_tab_widget.count():
+                        self.system_sets_tab_widget.widget(i).set_state(set_state)
+                        # Restore the tab name if it exists in the saved state
+                        if "name" in set_state:
+                            self.system_sets_tab_widget.setTabText(i, set_state["name"])
+            else:
+                # Fallback to single system settings
+                self.update_system_sets(1)
+                if self.system_sets_tab_widget.count() > 0:
+                    fallback_state = {
+                        "system_path": self.settings.value("system/system_path", ""),
+                        "data_file_extensions": self.settings.value("system/data_file_extensions", ".data").split(","),
+                        "use_potential_file": self.settings.value("system/use_potential_file", False, type=bool),
+                        "potential_file": self.settings.value("system/potential_file", ""),
+                        "potential_source": self.settings.value("system/potential_source", "file"),
+                        "potential_position": self.settings.value("system/potential_position", "after"),
+                        "potential_content": self.settings.value("system/potential_content", ""),
+                        "sync_potential": False,
+                        "is_enabled": True
+                    }
+                    self.system_sets_tab_widget.widget(0).set_state(fallback_state)
             
             self.atom_style_combo.setCurrentText(self.settings.value("system/atom_style", "atomic"))
             self.units_combo.setCurrentText(self.settings.value("system/units", "metal"))
@@ -2985,8 +3504,6 @@ class LammpsGui(QMainWindow):
             self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
             self.log_file_name.setText(self.settings.value("job_submission/log_file_name", "job.log"))
             self.cluster_lammps_cmd.setText(self.settings.value("job_submission/cluster_lammps_cmd", ""))
-            self.srun_cmd.setText(self.settings.value("job_submission/srun_cmd", ""))
-            self.sbatch_cmd.setText(self.settings.value("job_submission/sbatch_cmd", ""))
             self.module_load_cmd.setText(self.settings.value("job_submission/module_load", ""))
             self.slurm_header_text.setPlainText(self.settings.value("job_submission/slurm_header", ""))
 
@@ -3080,16 +3597,21 @@ class LammpsGui(QMainWindow):
         """Save settings to QSettings"""
         try:
             config = self.collect_config(for_saving=True)
-            
-            # Save system settings
-            self.settings.setValue("system/system_path", config["system"]["system_path"])
-            self.settings.setValue("system/data_file_extensions", ",".join(config["system"]["data_file_extensions"]))
 
-            self.settings.setValue("system/use_potential_file", config["system"]["use_potential_file"])
-            self.settings.setValue("system/potential_file", config["system"]["potential_file"])
-            self.settings.setValue("system/potential_source", config["system"]["potential_source"])
-            self.settings.setValue("system/potential_position", config["system"]["potential_position"])
-            self.settings.setValue("system/potential_content", config["system"]["potential_content"])
+            # Save system settings
+            self.settings.setValue("system/num_sets", self.system_sets_tab_widget.count())
+            self.settings.setValue("system/system_sets", json.dumps(config["system"]["system_sets"]))
+            
+            # Legacy fields for backward compatibility (using first set)
+            if config["system"]["system_sets"]:
+                first_set = config["system"]["system_sets"][0]
+                self.settings.setValue("system/system_path", first_set["system_path"])
+                self.settings.setValue("system/data_file_extensions", ",".join(first_set["data_file_extensions"]))
+                self.settings.setValue("system/use_potential_file", first_set["use_potential_file"])
+                self.settings.setValue("system/potential_file", first_set["potential_file"])
+                self.settings.setValue("system/potential_source", first_set["potential_source"])
+                self.settings.setValue("system/potential_position", first_set["potential_position"])
+                self.settings.setValue("system/potential_content", first_set["potential_content"])
             
             self.settings.setValue("system/atom_style", config["system"]["atom_style"])
             self.settings.setValue("system/units", config["system"]["units"])
@@ -3103,8 +3625,6 @@ class LammpsGui(QMainWindow):
             self.settings.setValue("system/custom_commands", config["system"]["custom_commands"])
             self.settings.setValue("system/timestep", config["system"]["timestep"])
             
-
-            
             # Save output settings
             for key, value in config["output"].items():
                 self.settings.setValue(f"output/{key}", value)
@@ -3114,11 +3634,7 @@ class LammpsGui(QMainWindow):
                 self.settings.setValue(f"job_submission/{key}", value)
 
             # Save multi-study settings
-            for key, value in config["multistudy"].items():
-                if key == "deform_studies":
-                    self.settings.setValue(f"multistudy/{key}", json.dumps(value))
-                else:
-                    self.settings.setValue(f"multistudy/{key}", value)
+            self.settings.setValue("multistudy/deform_studies", json.dumps(config["multistudy"]["deform_studies"]))
             
             # Save active tab indices
             self.settings.setValue("gui/active_main_tab_index", self.tab_widget.currentIndex())
@@ -3451,8 +3967,6 @@ class LammpsGui(QMainWindow):
                 self.log_file_name.setText(job_submission.get("log_file_name", "job.log"))
                 self.os_selection_combo.setCurrentText(job_submission.get("os_type", "Auto-detect"))
                 self.cluster_lammps_cmd.setText(job_submission.get("cluster_lammps_cmd", "lmp"))
-                self.srun_cmd.setText(job_submission.get("srun_cmd", "srun"))
-                self.sbatch_cmd.setText(job_submission.get("sbatch_cmd", "sbatch"))
                 self.module_load_cmd.setText(job_submission.get("module_load", "lammps"))
                 self.slurm_header_text.setPlainText(job_submission.get("slurm_header", ""))
                 enable_restart = job_submission.get("enable_restart", False)
