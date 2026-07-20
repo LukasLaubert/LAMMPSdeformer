@@ -1478,26 +1478,30 @@ class LammpsScriptGenerator(QMainWindow):
         
         QGroupBox {
             font-weight: bold;
-            border: 2px solid #cccccc;
-            border-radius: 6px;
-            margin-top: 12px;
-            padding-top: 10px;
-            background-color: #fafafa;
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+            margin-top: 8px;
+            padding-top: 6px;
+            background-color: #ffffff;
         }
         
         QGroupBox::title {
             subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px 0 5px;
+            left: 8px;
+            padding: 0 3px 0 3px;
+            font-size: 11px;
         }
         
         QPushButton {
             background-color: #007acc;
             color: white;
             border: none;
-            border-radius: 4px;
-            padding: 8px 16px;
-            font-weight: bold;
+            border-radius: 3px;
+            padding: 4px 12px;
+            font-size: 12px;
+            min-height: 20px;
+            max-height: 28px;
+            font-weight: normal;
         }
         
         QPushButton:hover {
@@ -1515,24 +1519,27 @@ class LammpsScriptGenerator(QMainWindow):
         
         QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
             border: 1px solid #cccccc;
-            border-radius: 4px;
-            padding: 4px;
+            border-radius: 3px;
+            padding: 2px;
             background-color: white;
+            font-size: 12px;
+            min-height: 16px;
         }
         
         QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-            border: 2px solid #007acc;
+            border: 1px solid #007acc;
         }
         
         QCheckBox {
-            spacing: 8px;
+            spacing: 6px;
+            font-size: 12px;
         }
         
         QCheckBox::indicator {
-            width: 18px;
-            height: 18px;
-            border: 2px solid #cccccc;
-            border-radius: 3px;
+            width: 14px;
+            height: 14px;
+            border: 1px solid #cccccc;
+            border-radius: 2px;
             background-color: white;
         }
         
@@ -1553,7 +1560,27 @@ class LammpsScriptGenerator(QMainWindow):
         }
         
         QTableWidget::item {
-            padding: 4px;
+            padding: 2px;
+            font-size: 11px;
+        }
+        
+        QTableWidget::header {
+            background-color: #f5f5f5;
+            padding: 2px;
+            font-weight: bold;
+            font-size: 11px;
+        }
+        
+        QLabel {
+            font-size: 12px;
+        }
+        
+        QFormLayout {
+            spacing: 3px;
+        }
+        
+        QVBoxLayout, QHBoxLayout {
+            spacing: 4px;
         }
         
         QTableWidget::item:selected {
@@ -1634,7 +1661,7 @@ class LammpsScriptGenerator(QMainWindow):
                 "custom_dumps": self.custom_dumps_text.toPlainText()
             },
             "cluster": {
-                "execution_mode": self.execution_mode_combo.currentText(),
+                # "execution_mode": self.execution_mode_combo.currentText(),  # Removed - no longer needed
                 "lammps_command": self.lammps_command_edit.text(),
                 "threads": self.threads_spin.value(),
                 "cluster_partition": self.cluster_partition.text(),
@@ -1722,8 +1749,8 @@ class LammpsScriptGenerator(QMainWindow):
             self.enable_custom_dumps.setChecked(self.settings.value("output/enable_custom_dumps", False, type=bool))
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
             
-            # Cluster settings
-            self.execution_mode_combo.setCurrentText(self.settings.value("cluster/execution_mode", "local"))
+            # Cluster settings (removed - no longer needed)
+            # self.execution_mode_combo.setCurrentText(self.settings.value("cluster/execution_mode", "local"))
             self.lammps_command_edit.setText(self.settings.value("cluster/lammps_command", "lmp"))
             self.threads_spin.setValue(self.settings.value("cluster/threads", 4, type=int))
             self.cluster_partition.setText(self.settings.value("cluster/cluster_partition", "singlenode"))
@@ -1940,7 +1967,7 @@ class LammpsScriptGenerator(QMainWindow):
             # Cluster configuration
             if "cluster" in config:
                 cluster = config["cluster"]
-                self.execution_mode_combo.setCurrentText(cluster.get("execution_mode", "local"))
+                # self.execution_mode_combo.setCurrentText(cluster.get("execution_mode", "local"))  # Removed - no longer needed
                 self.lammps_command_edit.setText(cluster.get("lammps_command", "lmp"))
                 self.threads_spin.setValue(cluster.get("threads", 4))
                 self.cluster_partition.setText(cluster.get("cluster_partition", "singlenode"))
