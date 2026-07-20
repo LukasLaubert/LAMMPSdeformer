@@ -1112,6 +1112,17 @@ class StudyWidget(QWidget):
         self.pressure_spinbox.setFixedWidth(100)
         ensemble_layout.addWidget(self.pressure_spinbox)
 
+        # NPT Anisotropic dropdown (only visible when NPT is selected)
+        self.npt_aniso_label = QLabel("NPT Aniso:")
+        self.npt_aniso_combo = QComboBox()
+        self.npt_aniso_combo.addItems(["iso", "aniso", "tri"])
+        self.npt_aniso_combo.setToolTip("Select NPT anisotropic option for the simulation")
+        self.npt_aniso_combo.setFixedWidth(70)
+        self.npt_aniso_label.setVisible(False)
+        self.npt_aniso_combo.setVisible(False)
+        ensemble_layout.addWidget(self.npt_aniso_label)
+        ensemble_layout.addWidget(self.npt_aniso_combo)
+
         ensemble_layout.addStretch(1)
 
         self.sync_ensemble_checkbox = QCheckBox("Sync ensemble")
@@ -1193,6 +1204,7 @@ class StudyWidget(QWidget):
         self.ensemble_combo.currentTextChanged.connect(self._on_ensemble_setting_changed)
         self.temp_spinbox.valueChanged.connect(self._on_ensemble_setting_changed)
         self.pressure_spinbox.valueChanged.connect(self._on_ensemble_setting_changed)
+        self.npt_aniso_combo.currentTextChanged.connect(self._on_ensemble_setting_changed)
         self.sync_ensemble_checkbox.stateChanged.connect(self._on_ensemble_setting_changed)
 
         # Connect signals for bond breakage controls
@@ -1433,6 +1445,7 @@ class StudyWidget(QWidget):
                 'ensemble': self.ensemble_combo.currentText(),
                 'temperature': self.temp_spinbox.value(),
                 'pressure': self.pressure_spinbox.value(),
+                'npt_aniso': self.npt_aniso_combo.currentText(),
                 'sync_ensemble': self.sync_ensemble_checkbox.isChecked()
             },
             'bond_breakage': {
@@ -1455,6 +1468,7 @@ class StudyWidget(QWidget):
         self.ensemble_combo.blockSignals(True)
         self.temp_spinbox.blockSignals(True)
         self.pressure_spinbox.blockSignals(True)
+        self.npt_aniso_combo.blockSignals(True)
         self.sync_ensemble_checkbox.blockSignals(True)
         # Block signals for bond breakage controls
         self.enable_bond_breakage_checkbox.blockSignals(True)
@@ -1472,12 +1486,13 @@ class StudyWidget(QWidget):
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
         self.deform_scenario_combo.setCurrentText(state.get('deform_scenario', 'symmetric'))
 
-        self.set_mode(state.get('mode', 'Deformation'))
+        self.set_mode(state.get('mode', 'Deformation'), adjust_values=False)
 
         ensemble_state = state.get('ensemble', {})
         self.ensemble_combo.setCurrentText(ensemble_state.get('ensemble', 'NVT'))
         self.temp_spinbox.setValue(ensemble_state.get('temperature', 300.0))
         self.pressure_spinbox.setValue(ensemble_state.get('pressure', 1.0))
+        self.npt_aniso_combo.setCurrentText(ensemble_state.get('npt_aniso', 'iso'))
         self.sync_ensemble_checkbox.setChecked(ensemble_state.get('sync_ensemble', False))
 
         bond_breakage_state = state.get('bond_breakage', {})
@@ -1497,6 +1512,7 @@ class StudyWidget(QWidget):
         self.ensemble_combo.blockSignals(False)
         self.temp_spinbox.blockSignals(False)
         self.pressure_spinbox.blockSignals(False)
+        self.npt_aniso_combo.blockSignals(False)
         self.sync_ensemble_checkbox.blockSignals(False)
         # Unblock signals for bond breakage controls
         self.enable_bond_breakage_checkbox.blockSignals(False)
@@ -1568,6 +1584,9 @@ class StudyWidget(QWidget):
     def _update_ensemble_ui_state(self):
         is_npt = self.ensemble_combo.currentText() == "NPT"
         self.pressure_spinbox.setEnabled(is_npt)
+        # Show/hide NPT anisotropic options when NPT is selected
+        self.npt_aniso_label.setVisible(is_npt)
+        self.npt_aniso_combo.setVisible(is_npt)
 
     def _on_bond_breakage_setting_changed(self):
         # Update UI state first
@@ -1597,7 +1616,7 @@ class StudyWidget(QWidget):
 
         self.dataChanged.emit() # Emit dataChanged to update summaries
 
-    def set_mode(self, mode):
+    def set_mode(self, mode, adjust_values=True):
         if self.mode == mode:
             return
 
@@ -1614,26 +1633,27 @@ class StudyWidget(QWidget):
             self.min_strain_spinbox.setRange(-0.999999, 1e9)
             self.max_strain_spinbox.setRange(-1e9, 1e9)
 
-        # Adjust min/max based on slope
-        points = self.graph_widget.get_data_points()
-        if len(points) > 1:
-            first_point = points[0]
-            last_point = points[-1]
+        # Adjust min/max based on slope only if adjust_values is True
+        if adjust_values:
+            points = self.graph_widget.get_data_points()
+            if len(points) > 1:
+                first_point = points[0]
+                last_point = points[-1]
 
-            dx = last_point.x() - first_point.x()
-            dy = last_point.y() - first_point.y()
-            slope = dy / dx if dx != 0 else 0
+                dx = last_point.x() - first_point.x()
+                dy = last_point.y() - first_point.y()
+                slope = dy / dx if dx != 0 else 0
 
-            if is_temp_mode:
-                self.min_strain_spinbox.setValue(1.0)
-                self.max_strain_spinbox.setValue(300.0)
-            else:  # Deformation mode
-                if slope >= 0:
-                    self.min_strain_spinbox.setValue(0.0)
-                    self.max_strain_spinbox.setValue(0.5)
-                else:
-                    self.min_strain_spinbox.setValue(-0.5)
-                    self.max_strain_spinbox.setValue(0.0)
+                if is_temp_mode:
+                    self.min_strain_spinbox.setValue(1.0)
+                    self.max_strain_spinbox.setValue(300.0)
+                else:  # Deformation mode
+                    if slope >= 0:
+                        self.min_strain_spinbox.setValue(0.0)
+                        self.max_strain_spinbox.setValue(0.5)
+                    else:
+                        self.min_strain_spinbox.setValue(-0.5)
+                        self.max_strain_spinbox.setValue(0.0)
 
         self.min_strain_spinbox.setPrefix("Min Temp: " if is_temp_mode else "Min Strain: ")
         self.max_strain_spinbox.setPrefix("Max Temp: " if is_temp_mode else "Max Strain: ")
@@ -1719,7 +1739,7 @@ class DeformationTab(QWidget):
         mode = self.mode_combo.currentText()
         current_widget = self.tab_widget.currentWidget()
         if current_widget:
-            current_widget.set_mode(mode)
+            current_widget.set_mode(mode, adjust_values=True)
         self._update_tab_colors()
         self.update_summaries()
 
@@ -1938,6 +1958,7 @@ class DeformationTab(QWidget):
             target_study_widget.ensemble_combo.blockSignals(True)
             target_study_widget.temp_spinbox.blockSignals(True)
             target_study_widget.pressure_spinbox.blockSignals(True)
+            target_study_widget.npt_aniso_combo.blockSignals(True)
             target_study_widget.sync_ensemble_checkbox.blockSignals(True)
 
             if force_unchecked:
@@ -1946,11 +1967,13 @@ class DeformationTab(QWidget):
                 target_study_widget.ensemble_combo.setCurrentText(source_state['ensemble'])
                 target_study_widget.temp_spinbox.setValue(source_state['temperature'])
                 target_study_widget.pressure_spinbox.setValue(source_state['pressure'])
+                target_study_widget.npt_aniso_combo.setCurrentText(source_state['npt_aniso'])
                 target_study_widget.sync_ensemble_checkbox.setChecked(source_state['sync_ensemble'])
 
             target_study_widget.ensemble_combo.blockSignals(False)
             target_study_widget.temp_spinbox.blockSignals(False)
             target_study_widget.pressure_spinbox.blockSignals(False)
+            target_study_widget.npt_aniso_combo.blockSignals(False)
             target_study_widget.sync_ensemble_checkbox.blockSignals(False)
 
             target_study_widget._update_ensemble_ui_state()

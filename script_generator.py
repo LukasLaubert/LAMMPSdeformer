@@ -353,6 +353,17 @@ class LammpsScriptGenerator:
                     f"fix stop_early all halt {halt_freq} tlimit > ${{maxtime}}",
                     ""
                 ])
+                
+                # Add triclinic box setting if NPT aniso is set to "tri"
+                ensemble_config = deform_study.get("ensemble", {})
+                ensemble = ensemble_config.get("ensemble", "NVT")
+                npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
+                if ensemble == "NPT" and npt_aniso == "tri":
+                    script_lines.extend([
+                        "# Triclinic boundaries are required for NPT anisotropic simulation with 'tri' setting",
+                        "change_box all triclinic",
+                        ""
+                    ])
             else:
                 # For non-restart case, read data and potential directly
                 script_lines.extend([
@@ -369,6 +380,17 @@ class LammpsScriptGenerator:
                         potential_path = (Path("_input_files") / potential_name).as_posix()
                         script_lines.append(f"include ../../{potential_path}")
                 script_lines.append("")
+                
+                # Add triclinic box setting if NPT aniso is set to "tri"
+                ensemble_config = deform_study.get("ensemble", {})
+                ensemble = ensemble_config.get("ensemble", "NVT")
+                npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
+                if ensemble == "NPT" and npt_aniso == "tri":
+                    script_lines.extend([
+                        "# Triclinic boundaries are required for NPT anisotropic simulation with 'tri' setting",
+                        "change_box all triclinic",
+                        ""
+                    ])
 
             # Variables
             deform_axis = deform_study.get("deform_axis", "x")
@@ -558,16 +580,9 @@ class LammpsScriptGenerator:
                             script_lines.append(f"fix nvt all nvt temp {temp} {temp} $({damping_factor}*dt)")
                         elif ensemble == "NPT":
                             damping_factor = system_config.get("damping_factor", 100.0)
-                            npt_keyword = ""
-                            if deform_axis == 'x':
-                                npt_keyword = f"y {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
-                            elif deform_axis == 'y':
-                                npt_keyword = f"x {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
-                            elif deform_axis == 'z':
-                                npt_keyword = f"x {pressure} {pressure} $(1000*dt) y {pressure} {pressure} $(1000*dt)"
-                            else:
-                                npt_keyword = f"iso {pressure} {pressure} $(1000*dt)"
-                            script_lines.append(f"fix npt all npt temp {temp} {temp} $({damping_factor}*dt) {npt_keyword}")
+                            npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
+                            
+                            script_lines.append(f"fix npt all npt temp {temp} {temp} $({damping_factor}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt)")
                         
                         script_lines.append(f"run {int(duration)}")
                         
@@ -591,8 +606,9 @@ class LammpsScriptGenerator:
                             script_lines.append(f"fix nvt all nvt temp {start_y} {end_y} $({damping_factor}*dt)")
                         elif ensemble == "NPT":
                             damping_factor = system_config.get("damping_factor", 100.0)
-                            npt_keyword = f"iso {pressure} {pressure} $(1000*dt)"
-                            script_lines.append(f"fix npt all npt temp {start_y} {end_y} $({damping_factor}*dt) {npt_keyword}")
+                            npt_aniso = ensemble_config.get("npt_aniso", "iso")  # Get the new anisotropic setting
+                            
+                            script_lines.append(f"fix npt all npt temp {start_y} {end_y} $({damping_factor}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt)")
 
                         script_lines.append(f"run {int(duration)}")
 

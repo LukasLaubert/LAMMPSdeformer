@@ -1348,14 +1348,25 @@ class LammpsGui(QMainWindow):
         thermo_layout.addLayout(thermo_top_layout)
 
         # Thermo Style
-        thermo_form_layout = QFormLayout()
-        self.thermo_style = QTextEdit()
-        self.thermo_style.setPlainText("step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
-        self.thermo_style.setMaximumHeight(60)  # Reduced height (about 3 lines)
+        thermo_style_layout = QHBoxLayout()
+        thermo_style_label = QLabel("Thermo Style:")
+        self.thermo_style = QLineEdit()
+        self.thermo_style.setText("step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
         self.thermo_style.setToolTip("Thermo style specification")
-        thermo_form_layout.addRow("Thermo Style:", self.thermo_style)
+        thermo_style_layout.addWidget(thermo_style_label)
+        thermo_style_layout.addWidget(self.thermo_style)
         
-        thermo_layout.addLayout(thermo_form_layout)
+        # Time averaged thermo styles
+        time_averaged_layout = QHBoxLayout()
+        time_averaged_label = QLabel("Time averaged thermo styles:")
+        self.time_averaged_thermo_style = QLineEdit()
+        self.time_averaged_thermo_style.setText("")
+        self.time_averaged_thermo_style.setToolTip("Time averaged thermo style specification")
+        time_averaged_layout.addWidget(time_averaged_label)
+        time_averaged_layout.addWidget(self.time_averaged_thermo_style)
+        
+        thermo_layout.addLayout(thermo_style_layout)
+        thermo_layout.addLayout(time_averaged_layout)
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
 
@@ -1402,9 +1413,8 @@ class LammpsGui(QMainWindow):
 
         # Output Items
         traj_form_layout = QFormLayout()
-        self.trj_output_items = QTextEdit()
-        self.trj_output_items.setPlainText("id type x y z fx fy fz")
-        self.trj_output_items.setMaximumHeight(60)  # Reduced height (about 3 lines)
+        self.trj_output_items = QLineEdit()
+        self.trj_output_items.setText("id type x y z fx fy fz")
         self.trj_output_items.setToolTip("Items to include in trajectory output")
         traj_form_layout.addRow("Output Items:", self.trj_output_items)
         
@@ -2182,10 +2192,11 @@ class LammpsGui(QMainWindow):
                 "enable_trajectory": self.enable_trajectory.isChecked(),
                 "traj_freq": self.traj_freq_spinbox.value(),
                 "traj_format": self.traj_format.currentText(),
-                "trj_output_items": self.trj_output_items.toPlainText(),
+                "trj_output_items": self.trj_output_items.text(),
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_freq": self.thermo_freq_spinbox.value(),
-                "thermo_style": self.thermo_style.toPlainText(),
+                "thermo_style": self.thermo_style.text(),
+                "time_averaged_thermo_style": self.time_averaged_thermo_style.text(),
                 "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
                 "custom_computes": self.custom_computes_text.toPlainText(),
                 "custom_dumps": self.custom_dumps_text.toPlainText(),
@@ -2297,10 +2308,11 @@ class LammpsGui(QMainWindow):
             self.enable_trajectory.setChecked(self.settings.value("output/enable_trajectory", True, type=bool))
             self.traj_freq_spinbox.setValue(self.settings.value("output/traj_freq", 100, type=int))
             self.traj_format.setCurrentText(self.settings.value("output/traj_format", "lammpstrj"))
-            self.trj_output_items.setPlainText(self.settings.value("output/trj_output_items", "id type x y z fx fy fz"))
+            self.trj_output_items.setText(self.settings.value("output/trj_output_items", "id type x y z fx fy fz"))
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
-            self.thermo_style.setPlainText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
+            self.thermo_style.setText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
+            self.time_averaged_thermo_style.setText(self.settings.value("output/time_averaged_thermo_style", ""))
             self.add_target_to_thermo_check.setChecked(self.settings.value("output/add_target_to_thermo", False, type=bool))
             self.enable_custom_computes.setChecked(self.settings.value("output/enable_custom_computes", False, type=bool))
             self.custom_computes_text.setPlainText(self.settings.value("output/custom_computes", ""))
@@ -2622,10 +2634,11 @@ class LammpsGui(QMainWindow):
                 self.enable_trajectory.setChecked(output.get("enable_trajectory", True))
                 self.traj_freq_spinbox.setValue(output.get("traj_freq", 100))
                 self.traj_format.setCurrentText(output.get("traj_format", "lammpstrj"))
-                self.trj_output_items.setPlainText(output.get("trj_output_items", "id type x y z fx fy fz"))
+                self.trj_output_items.setText(output.get("trj_output_items", "id type x y z fx fy fz"))
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_freq_spinbox.setValue(output.get("thermo_freq", 100))
-                self.thermo_style.setPlainText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
+                self.thermo_style.setText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
+                self.time_averaged_thermo_style.setText(output.get("time_averaged_thermo_style", ""))
                 self.add_target_to_thermo_check.setChecked(output.get("add_target_to_thermo", False))
                 self.enable_custom_computes.setChecked(output.get("enable_custom_computes", False))
                 self.custom_computes_text.setPlainText(output.get("custom_computes", ""))
