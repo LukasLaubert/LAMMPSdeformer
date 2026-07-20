@@ -107,6 +107,8 @@ class GraphWidget(QWidget):
             clamped_y = max(self._min_strain, min(self._max_strain, p.y()))
             new_points_data.append(QPointF(new_x, clamped_y))
         new_points_data[0] = QPointF(0,0)
+        if len(new_points_data) > 1:
+            new_points_data[-1].setX(float(self._max_steps))
         self.points_norm = [self._data_to_norm(p) for p in new_points_data]
         self.update(); self.dataChanged.emit()
     def set_timestep(self, s): self._timestep = s; self.update(); self.dataChanged.emit()
@@ -259,7 +261,7 @@ class GraphWidget(QWidget):
             p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
             if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
                 self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
-        self.update(); self.dataChanged.emit()
+        self.update()
     def mouseReleaseEvent(self, event): self._dragged_handle_index, self._dragged_segment_index, self._drag_start_pos_widget, self._drag_axis_lock = None, None, None, None; self.dataChanged.emit()
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -307,7 +309,7 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-1e9, 0.0); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3)
         self.max_strain_spinbox = QDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(0.0, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setDecimals(3)
 
-        self.undo_button = QPushButton("Undo"); self.redo_button = QPushButton("Redo")
+        self.undo_button = QPushButton("↩"); self.redo_button = QPushButton("↪")
         self.generate_button = QPushButton("Generate Scheme..."); self.reset_button = QPushButton("Reset Graph")
 
         controls_layout.addWidget(QLabel("<b>Axis Controls:</b>")); controls_layout.addWidget(self.max_steps_spinbox); controls_layout.addWidget(self.min_strain_spinbox); controls_layout.addWidget(self.max_strain_spinbox); controls_layout.addStretch()
@@ -464,6 +466,7 @@ class DeformationTab(QWidget):
         self.main_window = main_window
         main_layout = QVBoxLayout(self)
         self.tab_widget = QTabWidget(); self.tab_widget.setTabsClosable(True); self.tab_widget.tabCloseRequested.connect(self._close_tab)
+        self.tab_widget.tabBar().setMovable(True)
         self.tab_widget.tabBarDoubleClicked.connect(self._rename_tab)
 
         self.add_study_button = QPushButton("Add Study")
@@ -477,7 +480,7 @@ class DeformationTab(QWidget):
 
     def _create_summary_area(self, layout):
         layout.addWidget(QLabel("<h3>Segment Summaries</h3>"))
-        scroll_area = QScrollArea(); scroll_area.setWidgetResizable(True); scroll_area.setFixedHeight(220)
+        scroll_area = QScrollArea(); scroll_area.setWidgetResizable(True)
         self.summary_container = QWidget(); self.summary_layout = QVBoxLayout(self.summary_container)
         scroll_area.setWidget(self.summary_container); layout.addWidget(scroll_area)
 
@@ -492,13 +495,13 @@ class DeformationTab(QWidget):
         new_study.graph_widget.set_time_unit(LAMMPS_UNITS[units])
 
         new_study.dataChanged.connect(self.update_summaries)
-        tab_name = f"Study {self._get_next_default_study_number()}"
+        tab_name = f"Study_{self._get_next_default_study_number()}"
         tab_index = self.tab_widget.addTab(new_study, tab_name); self.tab_widget.setCurrentIndex(tab_index)
         self.update_summaries()
 
     def _get_next_default_study_number(self):
         num = 1
-        while any(f"Study{num:02d}" == self.tab_widget.tabText(i) for i in range(self.tab_widget.count())): num += 1
+        while any(f"Study_{num}" == self.tab_widget.tabText(i) for i in range(self.tab_widget.count())): num += 1
         return num
 
     def _close_tab(self, index):
@@ -536,7 +539,7 @@ class DeformationTab(QWidget):
         default_study_counter = 1
         for i in range(self.tab_widget.count()):
             tab_text = self.tab_widget.tabText(i)
-            if re.match(r"^Study \d+$", tab_text):
+            if re.match(r"^Study_\d+$", tab_text):
                 self.tab_widget.setTabText(i, f"Study {default_study_counter}"); default_study_counter += 1
 
     def update_all_graphs(self, timestep, unit_key):
@@ -580,8 +583,6 @@ class DeformationTab(QWidget):
                         break
                 lines.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
             summary_text.setText("\n".join(lines))
-            summary_text.document().adjustSize()
-            summary_text.setFixedHeight(int(summary_text.document().size().height() + 5))
             self.summary_layout.addWidget(summary_text)
         self.summary_layout.addStretch()
 

@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import shutil
+import re
 from pathlib import Path
 
 # Import PyQt6 components
@@ -330,6 +331,8 @@ class LammpsScriptGenerator(QMainWindow):
         self.timestep.setDecimals(6)
         self.timestep.setToolTip("Integration timestep for the simulation")
         self.timestep.setMinimumWidth(120)
+        self.timestep.valueChanged.connect(self.update_timestep_step)
+        self.update_timestep_step(self.timestep.value())
 
         self.timestep_unit_label = QLabel("ps")
 
@@ -810,6 +813,10 @@ class LammpsScriptGenerator(QMainWindow):
             self.timestep.setValue(2.0)
         elif units == "nano":
             self.timestep.setValue(0.00045)
+
+    def update_timestep_step(self, value):
+        """Update the single step of the timestep spinbox"""
+        self.timestep.setSingleStep(max(1e-6, round(value * 0.02, 6)) if value > 0 else 1e-6)
         
     def create_deformation_tab(self):
         """Create the deformation processing tab with the graphical UI"""
@@ -1365,6 +1372,41 @@ class LammpsScriptGenerator(QMainWindow):
         """Toggle custom fixes settings based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         self.custom_fixes_text.setEnabled(enabled)
+
+    def validate_paths(self):
+        """Validate all user-provided paths for invalid characters"""
+        paths_to_check = {
+            "System Path": self.system_path_edit.text(),
+            "Potential File Path": self.potential_path_edit.text() if self.use_potential_file.isChecked() else "",
+            "Output Path": self.output_path_edit.text()
+        }
+        
+        invalid_paths = []
+        # Regex to find spaces or non-ascii characters that are not basic path separators
+        invalid_char_re = re.compile(r'[\säöüÄÖÜß]')
+
+        for name, path in paths_to_check.items():
+            if not path:
+                continue
+
+            if invalid_char_re.search(path):
+                # Highlight invalid characters
+                highlighted_path = ""
+                for char in path:
+                    if invalid_char_re.search(char):
+                        highlighted_path += f"<b>{char}</b>"
+                    else:
+                        highlighted_path += char
+                invalid_paths.append(f"<li><b>{name}:</b> {highlighted_path}</li>")
+
+        if invalid_paths:
+            error_message = "The following paths contain spaces or special characters that are not allowed:<br><ul>"
+            error_message += "".join(invalid_paths)
+            error_message += "</ul>Please correct them before generating scripts."
+            QMessageBox.critical(self, "Invalid Paths", error_message)
+            return False
+            
+        return True
     
     def show_generated_files_dialog(self, result):
         """Show dialog with generated file structure"""
@@ -1799,7 +1841,17 @@ class LammpsScriptGenerator(QMainWindow):
                         for i, study in enumerate(studies):
                             self.deformation_tab_widget._add_study(is_first=(i==0))
                             study_widget = self.deformation_tab_widget.tab_widget.widget(i)
-                            self.deformation_tab_widget.tab_widget.setTabText(i, study.get("name", f"Study {i+1}"))
+                            original_name = study.get("name", f"Study_{i+1}")
+                            sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '_', original_name)
+                            
+                            # Ensure uniqueness
+                            final_name = sanitized_name
+                            suffix = 1
+                            while any(final_name == self.deformation_tab_widget.tab_widget.tabText(j) for j in range(self.deformation_tab_widget.tab_widget.count()) if j != i):
+                                final_name = f"{sanitized_name}_{suffix}"
+                                suffix += 1
+
+                            self.deformation_tab_widget.tab_widget.setTabText(i, final_name)
 
                             # Restore the state of the study widget
                             state = {
@@ -1849,6 +1901,9 @@ class LammpsScriptGenerator(QMainWindow):
     
     def generate_scripts(self):
         """Generate LAMMPS scripts based on current configuration"""
+        if not self.validate_paths():
+            return
+
         try:
             # Collect configuration with error handling
             try:
