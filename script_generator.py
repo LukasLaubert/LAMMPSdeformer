@@ -285,11 +285,12 @@ class LammpsScriptGenerator:
                 f"neigh_modify every {neigh_modify_every} delay {neigh_modify_delay} {'check yes' if neigh_modify_check else 'check no'}",
                 ""
             ])
-            
+
             # Ensemble settings
-            ensemble = system_config.get("ensemble", "NVT")
-            temp_init = system_config.get("temp_init", 300.0)
-            temp_end = system_config.get("temp_end", 300.0)
+            ensemble_config = deform_study.get("ensemble", {})
+            ensemble = ensemble_config.get("ensemble", "NVT")
+            temp = ensemble_config.get("temperature", 300.0)
+            pressure = ensemble_config.get("pressure", 1.0)
             
             script_lines.extend([
                 "#------------------------",
@@ -301,7 +302,7 @@ class LammpsScriptGenerator:
                 initial_velocity_seed = system_config.get("initial_velocity_seed", 12345)
                 script_lines.extend([
                     "# Initial velocity",
-                    f"velocity all create {temp_init} {initial_velocity_seed} mom yes rot yes dist gaussian",
+                    f"velocity all create {temp} {initial_velocity_seed} mom yes rot yes dist gaussian",
                     ""
                 ])
             
@@ -312,34 +313,6 @@ class LammpsScriptGenerator:
                 ""
             ])
             
-            if ensemble == "NVT":
-                damping_factor = system_config.get("damping_factor", 100.0)
-                script_lines.extend([
-                    "# NVT ensemble",
-                    f"fix nvt all nvt temp {temp_init} {temp_end} $({damping_factor}*dt)",
-                    ""
-                ])
-            elif ensemble == "NPT":
-                pressure = system_config.get("pressure", 1.0)
-                damping_factor = system_config.get("damping_factor", 100.0)
-                deform_axis = deform_study.get("deform_axis", "x")
-
-                npt_keyword = ""
-                if deform_axis == 'x':
-                    npt_keyword = f"y {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
-                elif deform_axis == 'y':
-                    npt_keyword = f"x {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
-                elif deform_axis == 'z':
-                    npt_keyword = f"x {pressure} {pressure} $(1000*dt) y {pressure} {pressure} $(1000*dt)"
-                else:
-                    npt_keyword = f"iso {pressure} {pressure} $(1000*dt)"
-
-                script_lines.extend([
-                    "# NPT ensemble",
-                    f"fix npt all npt temp {temp_init} {temp_end} $({damping_factor}*dt) {npt_keyword}",
-                    ""
-                ])
-
             # Bond breakage if enabled (per study)
             bond_breakage_config = deform_study.get("bond_breakage", {})
             if bond_breakage_config.get("enable_bond_breakage", False):
@@ -451,16 +424,37 @@ class LammpsScriptGenerator:
                     script_lines.append(f"variable {new_lo_var} equal \"v_{deform_axis}lo0 - (v_L0 * {end_strain}) / 2\"")
                     script_lines.append(f"variable {new_hi_var} equal \"v_{deform_axis}hi0 + (v_L0 * {end_strain}) / 2\"")
                     script_lines.append(f"print \"Segment {i+1}: Target boundaries: {deform_axis}lo = ${{{new_lo_var}}}, {deform_axis}hi = ${{{new_hi_var}}}\"")
-                    
+
                     if abs(strain_change) > 1e-12:
                         # Use final keyword to deform from current boundaries to target boundaries
                         script_lines.append(f"fix deform all deform 1 {deform_axis} final ${{{new_lo_var}}} ${{{new_hi_var}}} units box")
+
+                    # Apply ensemble for this segment
+                    if ensemble == "NVT":
+                        damping_factor = system_config.get("damping_factor", 100.0)
+                        script_lines.append(f"fix nvt all nvt temp {temp} {temp} $({damping_factor}*dt)")
+                    elif ensemble == "NPT":
+                        damping_factor = system_config.get("damping_factor", 100.0)
+                        npt_keyword = ""
+                        if deform_axis == 'x':
+                            npt_keyword = f"y {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
+                        elif deform_axis == 'y':
+                            npt_keyword = f"x {pressure} {pressure} $(1000*dt) z {pressure} {pressure} $(1000*dt)"
+                        elif deform_axis == 'z':
+                            npt_keyword = f"x {pressure} {pressure} $(1000*dt) y {pressure} {pressure} $(1000*dt)"
+                        else:
+                            npt_keyword = f"iso {pressure} {pressure} $(1000*dt)"
+                        script_lines.append(f"fix npt all npt temp {temp} {temp} $({damping_factor}*dt) {npt_keyword}")
                     
                     script_lines.append(f"run {int(duration)}")
                     
                     if abs(strain_change) > 1e-12:
                         script_lines.append("unfix deform")
                     
+                    # Unfix ensemble
+                    if ensemble in ["NVT", "NPT"]:
+                        script_lines.append(f"unfix {ensemble.lower()}")
+
                     script_lines.append("")
             
             full_script = "\n".join(script_lines)

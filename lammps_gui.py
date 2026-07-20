@@ -395,52 +395,7 @@ class LammpsScriptGenerator(QMainWindow):
         boundary_group.setLayout(main_boundary_layout)
         scroll_layout.addWidget(boundary_group)
 
-        # Ensemble settings
-        ensemble_group = InfoGroupBox("Ensemble Settings", "fix_nh")
-        ensemble_layout = QFormLayout()
-
-        self.ensemble_combo = QComboBox()
-        self.ensemble_combo.addItems(["NVT", "NPT"])
-        self.ensemble_combo.setCurrentText("NVT")
-        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
-
-        self.temp_init = QDoubleSpinBox()
-        self.temp_init.setRange(0, 10000)
-        self.temp_init.setValue(300.0)
-        self.temp_init.setSingleStep(10.0)
-        self.temp_init.setToolTip("Initial temperature for the simulation")
-
-        self.temp_end = QDoubleSpinBox()
-        self.temp_end.setRange(0, 10000)
-        self.temp_end.setValue(300.0)
-        self.temp_end.setSingleStep(10.0)
-        self.temp_end.setToolTip("Final temperature for the simulation")
-
-        self.pressure = QDoubleSpinBox()
-        self.pressure.setRange(-100000, 100000)
-        self.pressure.setValue(1.0)
-        self.pressure.setDecimals(4)
-        self.pressure.setEnabled(False)  # Only enabled for NPT
-        self.pressure.setToolTip("Target pressure for NPT ensemble")
-        self.pressure.setMinimumWidth(120)
-
-        self.pressure_unit_label = QLabel("atm")
-
-        pressure_layout = QHBoxLayout()
-        pressure_layout.addWidget(self.pressure)
-        pressure_layout.addWidget(self.pressure_unit_label)
-
-        ensemble_label = QLabel("Ensemble:")
-
-        ensemble_layout.addRow(ensemble_label, self.ensemble_combo)
-        ensemble_layout.addRow("Initial Temperature:", self.temp_init)
-        ensemble_layout.addRow("Final Temperature:", self.temp_end)
-        ensemble_layout.addRow("Pressure (NPT only):", pressure_layout)
-        ensemble_group.setLayout(ensemble_layout)
-        scroll_layout.addWidget(ensemble_group)
-
-        # Connect ensemble combo box signal
-        self.ensemble_combo.currentTextChanged.connect(self.toggle_ensemble_settings)
+        # Ensemble settings (MOVED to deformation tab)
         
         # Velocity initialization settings
         velocity_group = InfoGroupBox("Velocity Initialization", "velocity")
@@ -589,10 +544,6 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(custom_computes_group)
 
         scroll_layout.addStretch()
-
-    def toggle_ensemble_settings(self, ensemble):
-        """Toggle pressure field based on ensemble selection"""
-        self.pressure.setEnabled(ensemble == "NPT")
         
     def toggle_velocity_settings(self, state):
         """Toggle velocity initialization fields based on checkbox state"""
@@ -744,7 +695,6 @@ class LammpsScriptGenerator(QMainWindow):
         }
         
         self.timestep_unit_label.setText(timestep_units.get(units.lower(), "ps"))
-        self.pressure_unit_label.setText(pressure_units.get(units.lower(), "atm"))
         
         # Update deformation tab graphs
         if hasattr(self, 'deformation_tab_widget'):
@@ -1704,10 +1654,6 @@ class LammpsScriptGenerator(QMainWindow):
                 "boundary_x": self.boundary_x_combo.currentText(),
                 "boundary_y": self.boundary_y_combo.currentText(),
                 "boundary_z": self.boundary_z_combo.currentText(),
-                "ensemble": self.ensemble_combo.currentText(),
-                "temp_init": self.temp_init.value(),
-                "temp_end": self.temp_end.value(),
-                "pressure": self.pressure.value(),
                 "enable_velocity": self.enable_velocity.isChecked(),
                 "initial_velocity_seed": self.initial_velocity_seed.value(),
                 "damping_factor": self.damping_factor.value(),
@@ -1790,10 +1736,6 @@ class LammpsScriptGenerator(QMainWindow):
             self.boundary_x_combo.setCurrentText(self.settings.value("system/boundary_x", "p"))
             self.boundary_y_combo.setCurrentText(self.settings.value("system/boundary_y", "p"))
             self.boundary_z_combo.setCurrentText(self.settings.value("system/boundary_z", "p"))
-            self.ensemble_combo.setCurrentText(self.settings.value("system/ensemble", "NVT"))
-            self.temp_init.setValue(self.settings.value("system/temp_init", 300.0, type=float))
-            self.temp_end.setValue(self.settings.value("system/temp_end", 300.0, type=float))
-            self.pressure.setValue(self.settings.value("system/pressure", 1.0, type=float))
             self.enable_velocity.setChecked(self.settings.value("system/enable_velocity", True, type=bool))
             self.initial_velocity_seed.setValue(self.settings.value("system/initial_velocity_seed", 12345, type=int))
             self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))

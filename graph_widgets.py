@@ -13,7 +13,7 @@ from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMet
 # --- Professional Style & Data ---
 STYLE_BACKGROUND = QColor("#FFFFFF"); STYLE_FRAME = QColor("#ADB5BD"); STYLE_LINE = QColor("#007BFF"); STYLE_HANDLE = QColor("#007BFF")
 STYLE_HANDLE_OUTLINE = QColor("#FFFFFF"); STYLE_TEXT_PRIMARY = QColor("#212529"); STYLE_TEXT_SECONDARY = QColor("#6C757D"); STYLE_SLOPE_TEXT = QColor("#E8590C")
-HANDLE_RADIUS = 7; PADDING = 60
+HANDLE_RADIUS = 7
 LAMMPS_UNITS = {"lj": "tau", "real": "fs", "metal": "ps", "si": "s", "cgs": "s", "electron": "fs", "micro": "μs", "nano": "ns"}
 
 # --- Custom Dialogs ---
@@ -92,7 +92,8 @@ class CoordinateDialog(QDialog):
 class GraphWidget(QWidget):
     dataChanged = pyqtSignal()
     def __init__(self, parent=None):
-        super().__init__(parent); self.setMinimumSize(600, 400); self.setMouseTracking(True)
+        super().__init__(parent); self.setMinimumSize(600, 320); self.setMouseTracking(True)
+        self.padding = {'top': 10, 'bottom': 60, 'left': 60, 'right': 60}
         self._max_steps, self._min_strain, self._max_strain, self._timestep, self._time_unit = 100, 0.0, 1.0, 1.0, "s"
         self.points_norm = [self._data_to_norm(QPointF(0,0)), self._data_to_norm(QPointF(100, 1.0))]; self._sort_points()
         self._dragged_handle_index, self._hovered_handle_index, self._dragged_segment_index, self._hovered_segment_index = None, None, None, None
@@ -169,10 +170,10 @@ class GraphWidget(QWidget):
         else: y_norm = (p_data.y() - self._min_strain) / abs(self._min_strain) * y_norm_zero if self._min_strain < -1e-9 else y_norm_zero
         return QPointF(p_data.x() / self._max_steps if self._max_steps > 0 else 0, y_norm)
     def _widget_to_norm(self, pos):
-        dw, dh = self.width() - 2 * PADDING, self.height() - 2 * PADDING
+        dw, dh = self.width() - (self.padding['left'] + self.padding['right']), self.height() - (self.padding['top'] + self.padding['bottom'])
         if dw <= 0 or dh <= 0: return QPointF(0, 0)
-        return QPointF(max(0.0, min(1.0, (pos.x() - PADDING) / dw)), max(0.0, min(1.0, 1.0 - (pos.y() - PADDING) / dh)))
-    def _norm_to_widget(self, p): return QPointF(PADDING + p.x() * (self.width() - 2 * PADDING), PADDING + (1.0 - p.y()) * (self.height() - 2 * PADDING))
+        return QPointF(max(0.0, min(1.0, (pos.x() - self.padding['left']) / dw)), max(0.0, min(1.0, 1.0 - (pos.y() - self.padding['top']) / dh)))
+    def _norm_to_widget(self, p): return QPointF(self.padding['left'] + p.x() * (self.width() - (self.padding['left'] + self.padding['right'])), self.padding['top'] + (1.0 - p.y()) * (self.height() - (self.padding['top'] + self.padding['bottom'])))
     def _sort_points(self): self.points_norm.sort(key=lambda p: p.x())
     def _snap_data_point(self, p): strain_range = self._max_strain - self._min_strain; return QPointF(round(p.x()), round(p.y() / (strain_range/200.0)) * (strain_range/200.0) if strain_range > 0 else p.y())
     def _get_handle_at(self, pos):
@@ -213,16 +214,16 @@ class GraphWidget(QWidget):
             painter.setPen(STYLE_TEXT_PRIMARY); painter.setFont(QFont("Arial", 10, QFont.Weight.Bold)); painter.drawText(y_rect, y_text)
             self._clickable_regions.append((y_rect, "y_val", i))
             step_text, time_text = f"{p_data.x():.0f}", f"({p_data.x() * self._timestep:.2f}{self._time_unit})"
-            step_rect = QRectF(fm.boundingRect(step_text).adjusted(-4,0,4,0)); step_rect.moveCenter(QPointF(p_w.x(), self.height() - PADDING + 18))
-            time_rect = QRectF(fm.boundingRect(time_text)); time_rect.moveCenter(QPointF(p_w.x(), self.height() - PADDING + 34))
+            step_rect = QRectF(fm.boundingRect(step_text).adjusted(-4,0,4,0)); step_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 18))
+            time_rect = QRectF(fm.boundingRect(time_text)); time_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 34))
             painter.setPen(STYLE_TEXT_PRIMARY); painter.drawText(step_rect, step_text)
             painter.setPen(STYLE_TEXT_SECONDARY); painter.setFont(QFont("Arial", 9)); painter.drawText(time_rect, time_text)
             self._clickable_regions.append((step_rect.united(time_rect), "x_val", i))
     def _draw_axes_and_frame(self, painter):
-        painter.setPen(QPen(STYLE_FRAME, 2)); painter.drawRect(PADDING, PADDING, self.width() - 2 * PADDING, self.height() - 2 * PADDING)
+        painter.setPen(QPen(STYLE_FRAME, 2)); painter.drawRect(self.padding['left'], self.padding['top'], self.width() - (self.padding['left'] + self.padding['right']), self.height() - (self.padding['top'] + self.padding['bottom']))
         painter.setPen(STYLE_TEXT_PRIMARY); painter.setFont(QFont("Arial", 11, QFont.Weight.Bold)); painter.save()
-        painter.translate(20, int(self.height() / 2)); painter.rotate(-90); painter.drawText(0, 0, "Engineering strain"); painter.restore()
-        painter.drawText(int(self.width()/2 - 30), self.height() - PADDING + 55, "Time Steps")
+        painter.translate(40, int(self.height() / 2) + 36); painter.rotate(-90); painter.drawText(0, 0, "Engineering strain"); painter.restore()
+        painter.drawText(int(self.width()/2 - 30), self.height() - self.padding['bottom'] + 55, "Time Steps")
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos_widget = event.position()
@@ -306,6 +307,7 @@ class StudyWidget(QWidget):
         super().__init__(parent); 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5,5,5,5)
+        layout.setSpacing(2)
         controls_layout = QHBoxLayout()
         self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
         self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-0.999999, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3); self.min_strain_spinbox.setKeyboardTracking(False)
@@ -350,6 +352,44 @@ class StudyWidget(QWidget):
         layout.addLayout(controls_layout)
         layout.addLayout(deform_direc_thermo_layout)
         layout.addWidget(self.graph_widget)
+
+        # Ensemble Settings
+        ensemble_layout = QHBoxLayout()
+        ensemble_layout.setContentsMargins(0, 0, 0, 0)
+        ensemble_layout.setSpacing(5)
+
+        self.ensemble_combo = QComboBox()
+        self.ensemble_combo.addItems(["NVT", "NPT"])
+        self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
+        self.ensemble_combo.setFixedWidth(70)
+        ensemble_layout.addWidget(QLabel("Ensemble:"))
+        ensemble_layout.addWidget(self.ensemble_combo)
+
+        self.temp_spinbox = QDoubleSpinBox()
+        self.temp_spinbox.setPrefix("Temperature: ")
+        self.temp_spinbox.setRange(0, 10000)
+        self.temp_spinbox.setValue(300.0)
+        self.temp_spinbox.setSingleStep(10.0)
+        self.temp_spinbox.setToolTip("Temperature for the simulation")
+        self.temp_spinbox.setFixedWidth(150)
+        ensemble_layout.addWidget(self.temp_spinbox)
+
+        self.pressure_spinbox = QDoubleSpinBox()
+        self.pressure_spinbox.setPrefix("P: ")
+        self.pressure_spinbox.setRange(-100000, 100000)
+        self.pressure_spinbox.setValue(1.0)
+        self.pressure_spinbox.setDecimals(4)
+        self.pressure_spinbox.setToolTip("Target pressure for NPT ensemble")
+        self.pressure_spinbox.setFixedWidth(100)
+        ensemble_layout.addWidget(self.pressure_spinbox)
+
+        ensemble_layout.addStretch(1)
+
+        self.sync_ensemble_checkbox = QCheckBox("Sync ensemble")
+        self.sync_ensemble_checkbox.setToolTip("Synchronize ensemble settings across all studies")
+        ensemble_layout.addWidget(self.sync_ensemble_checkbox)
+
+        layout.addLayout(ensemble_layout)
 
         # Bond Breakage Controls
         bond_breakage_layout = QHBoxLayout()
@@ -422,6 +462,12 @@ class StudyWidget(QWidget):
 
         layout.addLayout(bond_breakage_layout) # Add the new bond breakage layout to the main layout
 
+        # Connect signals for ensemble settings
+        self.ensemble_combo.currentTextChanged.connect(self._on_ensemble_setting_changed)
+        self.temp_spinbox.valueChanged.connect(self._on_ensemble_setting_changed)
+        self.pressure_spinbox.valueChanged.connect(self._on_ensemble_setting_changed)
+        self.sync_ensemble_checkbox.stateChanged.connect(self._on_ensemble_setting_changed)
+
         # Connect signals for bond breakage controls
         self.enable_bond_breakage_checkbox.stateChanged.connect(self._update_bond_breakage_ui_state)
         self.enable_prob_checkbox.stateChanged.connect(self._update_bond_breakage_ui_state)
@@ -437,6 +483,7 @@ class StudyWidget(QWidget):
         self.sync_bond_break_checkbox.stateChanged.connect(self._on_bond_breakage_setting_changed)
 
         # Initial UI state update for bond breakage controls
+        self._update_ensemble_ui_state()
         self._update_bond_breakage_ui_state()
 
         self._last_staircase_params = {'cycles': 5, 'factor': 1.0, 'direction': 'Tension'}
@@ -750,6 +797,12 @@ class StudyWidget(QWidget):
             'max_strain': self.max_strain_spinbox.value(),
             'thermo_freq': self.thermo_freq_spinbox.value(),
             'deform_axis': self.deform_axis_combo.currentText(),
+            'ensemble': {
+                'ensemble': self.ensemble_combo.currentText(),
+                'temperature': self.temp_spinbox.value(),
+                'pressure': self.pressure_spinbox.value(),
+                'sync_ensemble': self.sync_ensemble_checkbox.isChecked()
+            },
             'bond_breakage': {
                 'enable_bond_breakage': self.enable_bond_breakage_checkbox.isChecked(),
                 'nevery': self.nevery_spinbox.value(),
@@ -767,6 +820,11 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
         self.thermo_freq_spinbox.blockSignals(True)
+        # Block signals for ensemble controls
+        self.ensemble_combo.blockSignals(True)
+        self.temp_spinbox.blockSignals(True)
+        self.pressure_spinbox.blockSignals(True)
+        self.sync_ensemble_checkbox.blockSignals(True)
         # Block signals for bond breakage controls
         self.enable_bond_breakage_checkbox.blockSignals(True)
         self.nevery_spinbox.blockSignals(True)
@@ -783,6 +841,12 @@ class StudyWidget(QWidget):
         self.thermo_freq_spinbox.setValue(state.get('thermo_freq', 100))
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
 
+        ensemble_state = state.get('ensemble', {})
+        self.ensemble_combo.setCurrentText(ensemble_state.get('ensemble', 'NVT'))
+        self.temp_spinbox.setValue(ensemble_state.get('temperature', 300.0))
+        self.pressure_spinbox.setValue(ensemble_state.get('pressure', 1.0))
+        self.sync_ensemble_checkbox.setChecked(ensemble_state.get('sync_ensemble', False))
+
         bond_breakage_state = state.get('bond_breakage', {})
         self.enable_bond_breakage_checkbox.setChecked(bond_breakage_state.get('enable_bond_breakage', False))
         self.nevery_spinbox.setValue(bond_breakage_state.get('nevery', 1))
@@ -797,6 +861,11 @@ class StudyWidget(QWidget):
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
         self.thermo_freq_spinbox.blockSignals(False)
+        # Unblock signals for ensemble controls
+        self.ensemble_combo.blockSignals(False)
+        self.temp_spinbox.blockSignals(False)
+        self.pressure_spinbox.blockSignals(False)
+        self.sync_ensemble_checkbox.blockSignals(False)
         # Unblock signals for bond breakage controls
         self.enable_bond_breakage_checkbox.blockSignals(False)
         self.nevery_spinbox.blockSignals(False)
@@ -829,6 +898,7 @@ class StudyWidget(QWidget):
         self.dataChanged.emit()  # Emit the dataChanged signal to update summaries
         
         # Update bond breakage UI state to ensure fields are enabled/disabled correctly
+        self._update_ensemble_ui_state()
         self._update_bond_breakage_ui_state()
 
     def _update_bond_breakage_ui_state(self):
@@ -841,6 +911,27 @@ class StudyWidget(QWidget):
         enabled_prob = self.enable_prob_checkbox.isChecked() and enabled_bond_breakage
         self.prob_fraction_spinbox.setEnabled(enabled_prob)
         self.prob_seed_spinbox.setEnabled(enabled_prob)
+
+    def _on_ensemble_setting_changed(self):
+        self._update_ensemble_ui_state()
+        stacked_widget = self.parent()
+        if stacked_widget is not None:
+            tab_widget = stacked_widget.parent()
+            if tab_widget is not None:
+                deformation_tab = tab_widget.parent()
+                if isinstance(deformation_tab, DeformationTab):
+                    sync_state = self.sync_ensemble_checkbox.isChecked()
+                    if sync_state:
+                        deformation_tab._sync_ensemble_settings(self)
+                    else:
+                        sender = self.sender()
+                        if sender == self.sync_ensemble_checkbox:
+                            deformation_tab._sync_ensemble_settings(self, force_unchecked=True)
+        self.dataChanged.emit()
+
+    def _update_ensemble_ui_state(self):
+        is_npt = self.ensemble_combo.currentText() == "NPT"
+        self.pressure_spinbox.setEnabled(is_npt)
 
     def _on_bond_breakage_setting_changed(self):
         # Update UI state first
@@ -1042,6 +1133,34 @@ class DeformationTab(QWidget):
             # Update UI state for the target widget
             target_study_widget._update_bond_breakage_ui_state()
             target_study_widget.dataChanged.emit() # Trigger summary update for target
+
+    def _sync_ensemble_settings(self, source_study_widget, force_unchecked=False):
+        source_state = source_study_widget.get_state()['ensemble']
+        for i in range(self.tab_widget.count()):
+            target_study_widget = self.tab_widget.widget(i)
+            if target_study_widget == source_study_widget:
+                continue
+
+            target_study_widget.ensemble_combo.blockSignals(True)
+            target_study_widget.temp_spinbox.blockSignals(True)
+            target_study_widget.pressure_spinbox.blockSignals(True)
+            target_study_widget.sync_ensemble_checkbox.blockSignals(True)
+
+            if force_unchecked:
+                target_study_widget.sync_ensemble_checkbox.setChecked(False)
+            else:
+                target_study_widget.ensemble_combo.setCurrentText(source_state['ensemble'])
+                target_study_widget.temp_spinbox.setValue(source_state['temperature'])
+                target_study_widget.pressure_spinbox.setValue(source_state['pressure'])
+                target_study_widget.sync_ensemble_checkbox.setChecked(source_state['sync_ensemble'])
+
+            target_study_widget.ensemble_combo.blockSignals(False)
+            target_study_widget.temp_spinbox.blockSignals(False)
+            target_study_widget.pressure_spinbox.blockSignals(False)
+            target_study_widget.sync_ensemble_checkbox.blockSignals(False)
+
+            target_study_widget._update_ensemble_ui_state()
+            target_study_widget.dataChanged.emit()
 
     def update_all_graphs(self, timestep, unit_key):
         for i in range(self.tab_widget.count()):
