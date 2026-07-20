@@ -55,11 +55,16 @@ class LAMMPSdeformerGenerator:
             system_sets = [{
                 "system_path": system_path,
                 "data_file_extensions": system_config.get("data_file_extensions", [".data"]),
-                "use_potential_file": system_config.get("use_potential_file", False),
-                "potential_file": system_config.get("potential_file", ""),
-                "potential_source": system_config.get("potential_source", "file"),
-                "potential_content": system_config.get("potential_content", ""),
-                "potential_position": system_config.get("potential_position", "after"),
+                # Before Potential
+                "use_potential_before": system_config.get("use_potential_before", False),
+                "potential_file_before": system_config.get("potential_file_before", ""),
+                "potential_source_before": system_config.get("potential_source_before", "file"),
+                "potential_content_before": system_config.get("potential_content_before", ""),
+                # After Potential
+                "use_potential_after": system_config.get("use_potential_after", False),
+                "potential_file_after": system_config.get("potential_file_after", ""),
+                "potential_source_after": system_config.get("potential_source_after", "file"),
+                "potential_content_after": system_config.get("potential_content_after", ""),
                 "is_enabled": True
             }]
 
@@ -87,15 +92,17 @@ class LAMMPSdeformerGenerator:
             else:
                 return {"success": False, "message": f"Invalid path type for Data Set {i+1}: {path}"}
             
-            if s_set.get("use_potential_file", False):
-                source = s_set.get("potential_source", "file")
-                if source == "file":
-                    p_file = s_set.get("potential_file", "")
-                    if not p_file or not os.path.exists(p_file):
-                        return {"success": False, "message": f"Potential file missing or invalid for Data Set {i+1}"}
-                elif source == "text":
-                    if not s_set.get("potential_content", "").strip():
-                        return {"success": False, "message": f"Potential commands missing for Data Set {i+1}"}
+            # Validate Before/After Potential Settings
+            for suffix, label in [("_before", "before"), ("_after", "after")]:
+                if s_set.get(f"use_potential{suffix}", False):
+                    source = s_set.get(f"potential_source{suffix}", "file")
+                    if source == "file":
+                        p_file = s_set.get(f"potential_file{suffix}", "")
+                        if not p_file or not os.path.exists(p_file):
+                            return {"success": False, "message": f"Potential file ({label}) missing or invalid for Data Set {i+1}"}
+                    elif source == "text":
+                        if not s_set.get(f"potential_content{suffix}", "").strip():
+                            return {"success": False, "message": f"Potential commands ({label}) missing for Data Set {i+1}"}
 
             if len(system_sets) > 1 and "name" in s_set:
                 base_name = s_set["name"]
@@ -180,8 +187,10 @@ class LAMMPSdeformerGenerator:
                 return base_settings_result
             
             all_simulations = [] 
-            synced_potential_ref = None
-            synced_potential_processed = False
+            
+            # Tracking for synced potentials
+            synced_refs = {"before": None, "after": None}
+            synced_processed = {"before": False, "after": False}
 
             for set_idx, v_set in enumerate(validated_sets):
                 set_config = v_set["config"]
@@ -189,44 +198,46 @@ class LAMMPSdeformerGenerator:
                 set_base_name = v_set["name"]
                 prefix = f"{set_base_name}_" if use_naming_prefix else ""
                 
-                potential_ref = None
-                if set_config.get("use_potential_file", False):
-                    if set_config.get("sync_potential", False):
-                        if not synced_potential_processed:
-                            source = set_config.get("potential_source", "file")
+                potential_refs = {"before": None, "after": None}
+                
+                for suffix in ["before", "after"]:
+                    if set_config.get(f"use_potential_{suffix}", False):
+                        source = set_config.get(f"potential_source_{suffix}", "file")
+                        if set_config.get(f"sync_potential_{suffix}", False):
+                            if not synced_processed[suffix]:
+                                if source == "file":
+                                    potential_file = set_config.get(f"potential_file_{suffix}", "")
+                                    if potential_file and os.path.exists(potential_file):
+                                        unique_pot_name = f"{suffix}_synced_{Path(potential_file).name}"
+                                        potential_dest = os.path.join(data_files_folder, unique_pot_name)
+                                        shutil.copy2(potential_file, potential_dest)
+                                        synced_refs[suffix] = f"_input_files/{unique_pot_name}"
+                                elif source == "text":
+                                    potential_content = set_config.get(f"potential_content_{suffix}", "")
+                                    unique_pot_name = f"{suffix}_synced_custom.potential"
+                                    potential_dest = os.path.join(data_files_folder, unique_pot_name)
+                                    with open(potential_dest, 'w') as f:
+                                        f.write(potential_content)
+                                    synced_refs[suffix] = f"_input_files/{unique_pot_name}"
+                                synced_processed[suffix] = True
+                            potential_refs[suffix] = synced_refs[suffix]
+                        else:
                             if source == "file":
-                                potential_file = set_config.get("potential_file", "")
+                                potential_file = set_config.get(f"potential_file_{suffix}", "")
                                 if potential_file and os.path.exists(potential_file):
-                                    unique_pot_name = f"synced_{Path(potential_file).name}"
+                                    pot_name = Path(potential_file).name
+                                    unique_pot_name = f"{suffix}_{prefix}{pot_name}"
                                     potential_dest = os.path.join(data_files_folder, unique_pot_name)
                                     shutil.copy2(potential_file, potential_dest)
-                                    synced_potential_ref = f"_input_files/{unique_pot_name}"
+                                    potential_refs[suffix] = f"_input_files/{unique_pot_name}"
                             elif source == "text":
-                                potential_content = set_config.get("potential_content", "")
-                                unique_pot_name = "synced_custom.potential"
+                                potential_content = set_config.get(f"potential_content_{suffix}", "")
+                                pot_name = "custom.potential"
+                                unique_pot_name = f"{suffix}_{prefix}{pot_name}"
                                 potential_dest = os.path.join(data_files_folder, unique_pot_name)
                                 with open(potential_dest, 'w') as f:
                                     f.write(potential_content)
-                                synced_potential_ref = f"_input_files/{unique_pot_name}"
-                            synced_potential_processed = True
-                        potential_ref = synced_potential_ref
-                    else:
-                        if source == "file":
-                            potential_file = set_config.get("potential_file", "")
-                            if potential_file and os.path.exists(potential_file):
-                                pot_name = Path(potential_file).name
-                                unique_pot_name = pot_name if prefix and pot_name.startswith(prefix) else f"{prefix}{pot_name}"
-                                potential_dest = os.path.join(data_files_folder, unique_pot_name)
-                                shutil.copy2(potential_file, potential_dest)
-                                potential_ref = f"_input_files/{unique_pot_name}"
-                        elif source == "text":
-                            potential_content = set_config.get("potential_content", "")
-                            pot_name = "custom.potential"
-                            unique_pot_name = pot_name if prefix and pot_name.startswith(prefix) else f"{prefix}{pot_name}"
-                            potential_dest = os.path.join(data_files_folder, unique_pot_name)
-                            with open(potential_dest, 'w') as f:
-                                f.write(potential_content)
-                            potential_ref = f"_input_files/{unique_pot_name}"
+                                potential_refs[suffix] = f"_input_files/{unique_pot_name}"
 
                 for study in deform_studies:
                     study_name = study.get("name", "study")
@@ -261,7 +272,8 @@ class LAMMPSdeformerGenerator:
                         result = self.generate_single_script(
                             system_file, model_name, study, 
                             sim_folder, data_file_relative_path,
-                            potential_ref=potential_ref,
+                            potential_before_ref=potential_refs["before"],
+                            potential_after_ref=potential_refs["after"],
                             set_config=set_config
                         )
                         
@@ -329,11 +341,11 @@ class LAMMPSdeformerGenerator:
             "message": f"Units mismatch detected in source files: {defined_units}. The generator will proceed using the units defined in the System Configuration tab ('{self.config.get('system', {}).get('units', 'unknown')}'). Please check your input data files before running the simulations!"
         }
         
-    def generate_single_script(self, data_file, model_name, deform_study, output_dir, data_file_dest, potential_ref=None, set_config=None):
+    def generate_single_script(self, data_file, model_name, deform_study, output_dir, data_file_dest, potential_before_ref=None, potential_after_ref=None, set_config=None):
         """Generate a single LAMMPS input script"""
         try:
             script_filename = os.path.join(output_dir, f"{model_name}.in")
-            script_content = self.generate_script_content(data_file_dest, model_name, deform_study, potential_ref, set_config)
+            script_content = self.generate_script_content(data_file_dest, model_name, deform_study, potential_before_ref, potential_after_ref, set_config)
             with open(script_filename, 'w') as f:
                 f.write(script_content)
             self.generated_files.append(script_filename)
@@ -341,7 +353,7 @@ class LAMMPSdeformerGenerator:
         except Exception as e:
             return {"success": False, "message": f"Error generating script: {str(e)}"}
 
-    def generate_script_content(self, data_file, model_name, deform_study, potential_ref=None, set_config=None):
+    def generate_script_content(self, data_file, model_name, deform_study, potential_before_ref=None, potential_after_ref=None, set_config=None):
         """Generate the content of a LAMMPS input script using the Call-Setup architecture"""
         try:
             system_config = self.config.get("system", {})
@@ -361,14 +373,9 @@ class LAMMPSdeformerGenerator:
                 "#------------------------", "# Base settings", "#------------------------", "include ../../base_input.in", ""
             ]
 
-            potential_include_line = ""
-            potential_position = set_config.get("potential_position", "after")
-            
-            if potential_ref:
-                potential_include_line = f"include ../../{potential_ref}"
-
-            if potential_include_line and potential_position == "before":
-                script_lines.extend([potential_include_line, ""])
+            # 1. Potential BEFORE data
+            if potential_before_ref:
+                script_lines.extend(["# Potential BEFORE data setup", f"include ../../{potential_before_ref}", ""])
 
             if enable_restart:
                 script_lines.extend([
@@ -384,8 +391,23 @@ class LAMMPSdeformerGenerator:
                 script_lines.append(f"read_data ../../{data_file}")
                 script_lines.append("")
             
-            if potential_include_line and potential_position == "after":
-                script_lines.extend([potential_include_line, ""])
+            # --- Triclinic Box Check (Directly after read_data) ---
+            deform_axis = deform_study.get("deform_axis", "x")
+            mode = deform_study.get("mode", "Deformation")
+            is_shear = deform_axis in ["xy", "xz", "yz"]
+            ensemble_config = deform_study.get("ensemble", {})
+            
+            # Check if we need to convert to triclinic
+            if (ensemble_config.get("ensemble") == "NPT" and ensemble_config.get("npt_aniso") == "tri") or is_shear:
+                if enable_restart:
+                     # Only change box if we are starting fresh (step 0), otherwise restart file has it.
+                     script_lines.extend(["if \"${curstep} == 0\" then \"change_box all triclinic\"", ""])
+                else:
+                     script_lines.extend(["change_box all triclinic", ""])
+
+            # 2. Potential AFTER data (and after potential box changes)
+            if potential_after_ref:
+                script_lines.extend(["# Potential AFTER data/box setup", f"include ../../{potential_after_ref}", ""])
                 
             if enable_restart:
                 new_lines = [
@@ -421,13 +443,6 @@ class LAMMPSdeformerGenerator:
                 ]
 
             script_lines.extend(new_lines)
-
-            deform_axis = deform_study.get("deform_axis", "x")
-            mode = deform_study.get("mode", "Deformation")
-            is_shear = deform_axis in ["xy", "xz", "yz"]
-            ensemble_config = deform_study.get("ensemble", {})
-            if (ensemble_config.get("ensemble") == "NPT" and ensemble_config.get("npt_aniso") == "tri") or is_shear:
-                script_lines.extend(["change_box all triclinic", ""])
 
             pressure = self._format_float(ensemble_config.get("pressure", 1.0))
             script_lines.extend([f"variable base_pressure equal {pressure}", ""])
@@ -541,6 +556,7 @@ class LAMMPSdeformerGenerator:
                 if uid not in processed_phases:
                     script_lines.extend(self._generate_setup_block(block, deform_study, system_config, is_shear))
                     processed_phases.add(uid)
+            script_lines.extend(["", ""])
 
             # 3. Main Execution Chunks
             script_lines.append("# --- Main Execution Loop ---")
@@ -1066,7 +1082,7 @@ class LAMMPSdeformerGenerator:
                     "SIM_DIR=$(dirname \"$input_file\")",
                     f"module load {job_config.get('module_load', 'lammps')}",
                     f"cd \"$SIM_DIR\"",
-                    f"{job_config.get('srun_cmd', 'srun')} {job_config.get('cluster_lammps_cmd', 'lmp')} -in \"$input_file\"",
+                    f"{job_config.get('srun_cmd', 'srun')} {job_config.get('cluster_lammps_cmd', 'lmp')} -in \"$input_file\" -var curstep 0",
                 ])
             
             with open(master_job_path, 'w', newline='\n') as f: f.write("\n".join(job_lines))

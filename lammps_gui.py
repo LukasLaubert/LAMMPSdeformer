@@ -769,6 +769,9 @@ class SystemSetWidget(QWidget):
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Window, QColor("#f5f5f5"))
         self.setPalette(palette)
+        
+        # Set size policy to vertically minimum (pack content) and horizontally preferred
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
 
         self.setup_ui()
         
@@ -839,57 +842,122 @@ class SystemSetWidget(QWidget):
         potential_group = InfoGroupBox("Potential Definition", "include")
         potential_layout = QVBoxLayout(potential_group)
 
-        # Header row
-        header_layout = QHBoxLayout()
-        self.use_potential_file = QCheckBox("Use separate potential definition from")
-        self.use_potential_file.setChecked(False) 
-        self.use_potential_file.stateChanged.connect(self.toggle_potential_settings)
-        self.use_potential_file.stateChanged.connect(self._on_potential_changed)
-        
-        self.potential_source_combo = QComboBox()
-        self.potential_source_combo.addItems(["file", "text"])
-        self.potential_source_combo.currentTextChanged.connect(self.update_potential_visibility)
-        self.potential_source_combo.currentTextChanged.connect(self._on_potential_changed)
-        
-        header_layout.addWidget(self.use_potential_file)
-        header_layout.addWidget(self.potential_source_combo)
-        header_layout.addWidget(QLabel("and initialize"))
-        
-        self.potential_pos_combo = QComboBox()
-        self.potential_pos_combo.addItems(["after", "before"])
-        self.potential_pos_combo.setCurrentText("after")
-        self.potential_pos_combo.currentTextChanged.connect(self._on_potential_changed)
-        header_layout.addWidget(self.potential_pos_combo)
-        
-        header_layout.addWidget(QLabel("reading atom data"))
-        header_layout.addStretch()
-        
-        # Sync potential checkbox (moved to top row, right-aligned)
-        self.sync_potential_checkbox = QCheckBox("Sync Potential across all data sets")
-        self.sync_potential_checkbox.stateChanged.connect(self._on_potential_changed)
-        header_layout.addWidget(self.sync_potential_checkbox)
-        
-        potential_layout.addLayout(header_layout)
+        # --- BEFORE Section ---
+        before_frame = QFrame()
+        before_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        before_frame.setFrameShadow(QFrame.Shadow.Raised)
+        before_layout = QVBoxLayout(before_frame)
+        before_layout.setContentsMargins(5, 5, 5, 5)
 
-        # File Mode UI
-        self.potential_file_widget = QWidget()
-        file_layout = QHBoxLayout(self.potential_file_widget)
-        file_layout.setContentsMargins(0,0,0,0)
-        self.potential_path_edit = QLineEdit()
-        self.potential_path_edit.textChanged.connect(self._on_potential_changed)
-        self.potential_path_browse = QPushButton("Browse...")
-        self.potential_path_browse.clicked.connect(self.browse_potential_file)
-        self.potential_path_edit.setToolTip("Path to the potential file")
-        file_layout.addWidget(QLabel("Path:"))
-        file_layout.addWidget(self.potential_path_edit)
-        file_layout.addWidget(self.potential_path_browse)
-        potential_layout.addWidget(self.potential_file_widget)
+        # Header Row (Before)
+        header_before = QHBoxLayout()
+        self.use_potential_before = QCheckBox("Include potential commands")
+        # Removed checkbox bold styling to keep it clean, bolding the label instead
+        self.use_potential_before.setChecked(False)
+        self.use_potential_before.stateChanged.connect(lambda s: self.toggle_potential_settings(s, "before"))
+        self.use_potential_before.stateChanged.connect(self._on_potential_changed)
 
-        # Text Mode UI
-        self.potential_text_edit = QTextEdit()
-        self.potential_text_edit.setPlaceholderText("Enter potential commands here...")
-        self.potential_text_edit.textChanged.connect(self._on_potential_changed)
-        self.main_window.set_precise_height(self.potential_text_edit, 4.3)
+        header_before.addWidget(self.use_potential_before)
+        
+        label_before = QLabel("before")
+        label_before.setStyleSheet("font-weight: bold;")
+        header_before.addWidget(label_before)
+        
+        header_before.addWidget(QLabel("reading atom data from"))
+        
+        self.potential_source_before = QComboBox()
+        self.potential_source_before.addItems(["file", "text"])
+        self.potential_source_before.currentTextChanged.connect(lambda s: self.update_potential_visibility(s, "before"))
+        self.potential_source_before.currentTextChanged.connect(self._on_potential_changed)
+        header_before.addWidget(self.potential_source_before)
+        
+        header_before.addStretch()
+        self.sync_potential_before = QCheckBox("Sync across tabs")
+        self.sync_potential_before.setToolTip("Sync 'Before' potential settings across all data sets")
+        self.sync_potential_before.stateChanged.connect(self._on_potential_changed)
+        header_before.addWidget(self.sync_potential_before)
+        
+        before_layout.addLayout(header_before)
+        
+        # File Widget (Before)
+        self.potential_file_widget_before = QWidget()
+        file_layout_before = QHBoxLayout(self.potential_file_widget_before)
+        file_layout_before.setContentsMargins(0, 0, 0, 0)
+        self.potential_file_before = QLineEdit()
+        self.potential_file_before.textChanged.connect(self._on_potential_changed)
+        self.potential_browse_before = QPushButton("Browse...")
+        self.potential_browse_before.clicked.connect(lambda: self.browse_potential_file("before"))
+        file_layout_before.addWidget(QLabel("Path:"))
+        file_layout_before.addWidget(self.potential_file_before)
+        file_layout_before.addWidget(self.potential_browse_before)
+        before_layout.addWidget(self.potential_file_widget_before)
+        
+        # Text Widget (Before)
+        self.potential_content_before = QTextEdit()
+        self.potential_content_before.setPlaceholderText("Enter potential commands here...")
+        self.potential_content_before.textChanged.connect(self._on_potential_changed)
+        self.main_window.set_precise_height(self.potential_content_before, 4.3)
+        before_layout.addWidget(self.potential_content_before)
+        
+        potential_layout.addWidget(before_frame)
+        
+        # --- AFTER Section ---
+        after_frame = QFrame()
+        after_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        after_frame.setFrameShadow(QFrame.Shadow.Raised)
+        after_layout = QVBoxLayout(after_frame)
+        after_layout.setContentsMargins(5, 5, 5, 5)
+
+        # Header Row (After)
+        header_after = QHBoxLayout()
+        self.use_potential_after = QCheckBox("Include potential commands")
+        self.use_potential_after.setChecked(False)
+        self.use_potential_after.stateChanged.connect(lambda s: self.toggle_potential_settings(s, "after"))
+        self.use_potential_after.stateChanged.connect(self._on_potential_changed)
+
+        header_after.addWidget(self.use_potential_after)
+        
+        label_after = QLabel("after")
+        label_after.setStyleSheet("font-weight: bold;")
+        header_after.addWidget(label_after)
+        
+        header_after.addWidget(QLabel("reading atom data from"))
+        
+        self.potential_source_after = QComboBox()
+        self.potential_source_after.addItems(["file", "text"])
+        self.potential_source_after.currentTextChanged.connect(lambda s: self.update_potential_visibility(s, "after"))
+        self.potential_source_after.currentTextChanged.connect(self._on_potential_changed)
+        header_after.addWidget(self.potential_source_after)
+        
+        header_after.addStretch()
+        self.sync_potential_after = QCheckBox("Sync across tabs")
+        self.sync_potential_after.setToolTip("Sync 'After' potential settings across all data sets")
+        self.sync_potential_after.stateChanged.connect(self._on_potential_changed)
+        header_after.addWidget(self.sync_potential_after)
+        
+        after_layout.addLayout(header_after)
+        
+        # File Widget (After)
+        self.potential_file_widget_after = QWidget()
+        file_layout_after = QHBoxLayout(self.potential_file_widget_after)
+        file_layout_after.setContentsMargins(0, 0, 0, 0)
+        self.potential_file_after = QLineEdit()
+        self.potential_file_after.textChanged.connect(self._on_potential_changed)
+        self.potential_browse_after = QPushButton("Browse...")
+        self.potential_browse_after.clicked.connect(lambda: self.browse_potential_file("after"))
+        file_layout_after.addWidget(QLabel("Path:"))
+        file_layout_after.addWidget(self.potential_file_after)
+        file_layout_after.addWidget(self.potential_browse_after)
+        after_layout.addWidget(self.potential_file_widget_after)
+        
+        # Text Widget (After)
+        self.potential_content_after = QTextEdit()
+        self.potential_content_after.setPlaceholderText("Enter potential commands here...")
+        self.potential_content_after.textChanged.connect(self._on_potential_changed)
+        self.main_window.set_precise_height(self.potential_content_after, 4.3)
+        after_layout.addWidget(self.potential_content_after)
+        
+        potential_layout.addWidget(after_frame)
         
         # Apply style to scrollbar
         scrollbar_style = """
@@ -908,40 +976,51 @@ class SystemSetWidget(QWidget):
                 height: 0px;
             }
         """
-        self.potential_text_edit.setStyleSheet(scrollbar_style)
-        potential_layout.addWidget(self.potential_text_edit)
-        
+        self.potential_content_before.setStyleSheet(scrollbar_style)
+        self.potential_content_after.setStyleSheet(scrollbar_style)
+
         # Initial visibility update
-        self.update_potential_visibility(self.potential_source_combo.currentText())
-        self.toggle_potential_settings(self.use_potential_file.checkState())
+        self.update_potential_visibility(self.potential_source_before.currentText(), "before")
+        self.toggle_potential_settings(self.use_potential_before.checkState(), "before")
+        self.update_potential_visibility(self.potential_source_after.currentText(), "after")
+        self.toggle_potential_settings(self.use_potential_after.checkState(), "after")
 
         layout.addWidget(potential_group)
-        # Removed layout.addStretch() to allow the tab widget to fit content
-
+        # Add stretch to push everything to the top and prevent internal expansion
+        layout.addStretch()
 
     def update_sync_visibility(self, visible):
-        """Show or hide the sync checkbox based on whether multiple tabs exist"""
-        self.sync_potential_checkbox.setVisible(visible)
+        """Show or hide the sync checkboxes based on whether multiple tabs exist"""
+        self.sync_potential_before.setVisible(visible)
+        self.sync_potential_after.setVisible(visible)
         if not visible:
-            # Ensure it's unchecked when there's only one tab
-            self.sync_potential_checkbox.blockSignals(True)
-            self.sync_potential_checkbox.setChecked(False)
-            self.sync_potential_checkbox.blockSignals(False)
+            # Ensure unchecked when only one tab
+            self.sync_potential_before.blockSignals(True)
+            self.sync_potential_before.setChecked(False)
+            self.sync_potential_before.blockSignals(False)
+            
+            self.sync_potential_after.blockSignals(True)
+            self.sync_potential_after.setChecked(False)
+            self.sync_potential_after.blockSignals(False)
 
     def _on_potential_changed(self):
         """Handle changes to potential settings or sync checkbox."""
         if hasattr(self.main_window, 'system_sets_tab_widget'):
-            sync_state = self.sync_potential_checkbox.isChecked()
-            if sync_state:
-                # Sync is enabled, propagate to all other tabs
-                self.main_window._sync_potential_settings(self)
-            else:
-                # Sync is disabled, check if this was a sync checkbox change
-                sender = self.sender()
-                if sender == self.sync_potential_checkbox:
-                    # Sync was just unchecked in this tab, uncheck it in all other tabs
-                    self.main_window._sync_potential_settings(self, force_unchecked=True)
-        
+            sender = self.sender()
+            
+            # Helper to trigger sync if a sync box is checked
+            def trigger_sync(sync_box, section_type):
+                if sync_box.isChecked():
+                    self.main_window._sync_potential_settings(self, section_type=section_type)
+                elif sender == sync_box:
+                    # Sync was just unchecked
+                    self.main_window._sync_potential_settings(self, section_type=section_type, force_unchecked=True)
+
+            # Check Before Sync
+            trigger_sync(self.sync_potential_before, "before")
+            # Check After Sync
+            trigger_sync(self.sync_potential_after, "after")
+
         self.dataChanged.emit()
 
     def set_enabled_state(self, enabled):
@@ -955,12 +1034,19 @@ class SystemSetWidget(QWidget):
         return {
             "system_path": self.system_path_edit.text(),
             "data_file_extensions": self.data_file_extensions,
-            "use_potential_file": self.use_potential_file.isChecked(),
-            "potential_file": self.potential_path_edit.text(),
-            "potential_source": self.potential_source_combo.currentText(),
-            "potential_position": self.potential_pos_combo.currentText(),
-            "potential_content": self.potential_text_edit.toPlainText(),
-            "sync_potential": self.sync_potential_checkbox.isChecked(),
+            
+            "use_potential_before": self.use_potential_before.isChecked(),
+            "potential_file_before": self.potential_file_before.text(),
+            "potential_source_before": self.potential_source_before.currentText(),
+            "potential_content_before": self.potential_content_before.toPlainText(),
+            "sync_potential_before": self.sync_potential_before.isChecked(),
+            
+            "use_potential_after": self.use_potential_after.isChecked(),
+            "potential_file_after": self.potential_file_after.text(),
+            "potential_source_after": self.potential_source_after.currentText(),
+            "potential_content_after": self.potential_content_after.toPlainText(),
+            "sync_potential_after": self.sync_potential_after.isChecked(),
+            
             "is_enabled": self.is_enabled
         }
 
@@ -976,21 +1062,49 @@ class SystemSetWidget(QWidget):
             if item.widget(): item.widget().deleteLater()
         for ext in self.data_file_extensions:
             self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
-            
-        self.use_potential_file.setChecked(state.get("use_potential_file", False))
-        self.potential_path_edit.setText(state.get("potential_file", ""))
-        self.potential_source_combo.setCurrentText(state.get("potential_source", "file"))
-        self.potential_pos_combo.setCurrentText(state.get("potential_position", "after"))
-        self.potential_text_edit.setPlainText(state.get("potential_content", ""))
-        self.sync_potential_checkbox.setChecked(state.get("sync_potential", False))
         
+        # Before Settings
+        self.use_potential_before.setChecked(state.get("use_potential_before", False))
+        self.potential_file_before.setText(state.get("potential_file_before", ""))
+        self.potential_source_before.setCurrentText(state.get("potential_source_before", "file"))
+        self.potential_content_before.setPlainText(state.get("potential_content_before", ""))
+        self.sync_potential_before.setChecked(state.get("sync_potential_before", False))
+        
+        # After Settings
+        self.use_potential_after.setChecked(state.get("use_potential_after", False))
+        self.potential_file_after.setText(state.get("potential_file_after", ""))
+        self.potential_source_after.setCurrentText(state.get("potential_source_after", "file"))
+        self.potential_content_after.setPlainText(state.get("potential_content_after", ""))
+        self.sync_potential_after.setChecked(state.get("sync_potential_after", False))
+        
+        # Legacy support (map old keys if new ones missing)
+        if "use_potential_file" in state:
+            # Map old 'use_potential_file' to 'use_potential_after' based on old default behavior (usually after)
+            pos = state.get("potential_position", "after")
+            if pos == "after":
+                self.use_potential_after.setChecked(state.get("use_potential_file", False))
+                self.potential_file_after.setText(state.get("potential_file", ""))
+                self.potential_source_after.setCurrentText(state.get("potential_source", "file"))
+                self.potential_content_after.setPlainText(state.get("potential_content", ""))
+                self.sync_potential_after.setChecked(state.get("sync_potential", False))
+            elif pos == "before":
+                self.use_potential_before.setChecked(state.get("use_potential_file", False))
+                self.potential_file_before.setText(state.get("potential_file", ""))
+                self.potential_source_before.setCurrentText(state.get("potential_source", "file"))
+                self.potential_content_before.setPlainText(state.get("potential_content", ""))
+                self.sync_potential_before.setChecked(state.get("sync_potential", False))
+
         self.is_enabled = state.get("is_enabled", True)
         self.setEnabled(self.is_enabled)
         
-        self.update_potential_visibility(self.potential_source_combo.currentText())
-        self.toggle_potential_settings(self.use_potential_file.checkState())
+        self.update_potential_visibility(self.potential_source_before.currentText(), "before")
+        self.toggle_potential_settings(self.use_potential_before.checkState(), "before")
+        self.update_potential_visibility(self.potential_source_after.currentText(), "after")
+        self.toggle_potential_settings(self.use_potential_after.checkState(), "after")
+        
         self.update_system_type()
         self.blockSignals(False)
+        self.dataChanged.emit()
 
     def _add_chip(self, text, layout, remove_callback):
         chip = Chip(text)
@@ -1050,32 +1164,68 @@ class SystemSetWidget(QWidget):
         dir_button.clicked.connect(select_dir)
         dialog.exec()
 
-    def browse_potential_file(self):
+    def browse_potential_file(self, section="after"):
         path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "Potential Files (*.potential *.txt *.in);;All Files (*)")
         if path:
-            self.potential_path_edit.setText(path)
-            if not self.use_potential_file.isChecked():
-                self.use_potential_file.setChecked(True)
+            if section == "before":
+                self.potential_file_before.setText(path)
+                if not self.use_potential_before.isChecked():
+                    self.use_potential_before.setChecked(True)
+            else:
+                self.potential_file_after.setText(path)
+                if not self.use_potential_after.isChecked():
+                    self.use_potential_after.setChecked(True)
 
-    def toggle_potential_settings(self, state):
-        is_enabled = self.use_potential_file.isChecked()
-        source = self.potential_source_combo.currentText()
-        self.potential_source_combo.setEnabled(is_enabled)
-        self.potential_pos_combo.setEnabled(is_enabled)
-        if not is_enabled:
-            self.potential_file_widget.setVisible(False)
-            self.potential_text_edit.setVisible(False)
+    def toggle_potential_settings(self, state, section="after"):
+        is_enabled = False
+        if isinstance(state, bool):
+            is_enabled = state
+        elif isinstance(state, int):
+            is_enabled = (state == Qt.CheckState.Checked.value)
         else:
-            self.update_potential_visibility(source)
+            # Handle Qt.CheckState enum directly
+            is_enabled = (state == Qt.CheckState.Checked)
+            
+        if section == "before":
+            self.potential_source_before.setEnabled(is_enabled)
+            source = self.potential_source_before.currentText()
+            if not is_enabled:
+                self.potential_file_widget_before.setVisible(False)
+                self.potential_content_before.setVisible(False)
+            else:
+                self.update_potential_visibility(source, "before")
+        else:
+            self.potential_source_after.setEnabled(is_enabled)
+            source = self.potential_source_after.currentText()
+            if not is_enabled:
+                self.potential_file_widget_after.setVisible(False)
+                self.potential_content_after.setVisible(False)
+            else:
+                self.update_potential_visibility(source, "after")
+        
+        # Trigger height update
+        self.dataChanged.emit()
 
-    def update_potential_visibility(self, source):
-        if not self.use_potential_file.isChecked(): return
-        if source == "file":
-            self.potential_file_widget.setVisible(True)
-            self.potential_text_edit.setVisible(False)
+    def update_potential_visibility(self, source, section="after"):
+        if section == "before":
+            if not self.use_potential_before.isChecked(): return
+            if source == "file":
+                self.potential_file_widget_before.setVisible(True)
+                self.potential_content_before.setVisible(False)
+            else:
+                self.potential_file_widget_before.setVisible(False)
+                self.potential_content_before.setVisible(True)
         else:
-            self.potential_file_widget.setVisible(False)
-            self.potential_text_edit.setVisible(True)
+            if not self.use_potential_after.isChecked(): return
+            if source == "file":
+                self.potential_file_widget_after.setVisible(True)
+                self.potential_content_after.setVisible(False)
+            else:
+                self.potential_file_widget_after.setVisible(False)
+                self.potential_content_after.setVisible(True)
+        
+        # Trigger height update
+        self.dataChanged.emit()
 
     def update_system_type(self):
         path = self.system_path_edit.text().strip()
@@ -1241,8 +1391,9 @@ class LAMMPSdeformerGui(QMainWindow):
         add_tab_button.setFixedSize(20, 18)
         add_tab_button.setStyleSheet("QPushButton { margin: -3px 5px 0px 0px; padding: 0px; }")
         corner_layout.addWidget(add_tab_button)
-        
+
         self.system_sets_tab_widget.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
+        self.system_sets_tab_widget.currentChanged.connect(self._update_system_tab_height)
         
         scroll_layout.addWidget(self.system_sets_tab_widget)
         
@@ -1252,6 +1403,8 @@ class LAMMPSdeformerGui(QMainWindow):
         # Initialize with one set
         self._add_system_set(is_first=True)
 
+        # --- Global Settings (Below the Tabs) ---
+        
         # Create a horizontal layout for the three widgets
         settings_layout = QHBoxLayout()
         
@@ -1269,7 +1422,7 @@ class LAMMPSdeformerGui(QMainWindow):
         basic_group.setLayout(basic_layout)
         basic_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
-        # Units selection (moved here from top)
+        # Units selection
         units_group = InfoGroupBox("Units Selection", "units")
         units_layout = QHBoxLayout()
         
@@ -1362,14 +1515,12 @@ class LAMMPSdeformerGui(QMainWindow):
         boundary_group.setLayout(main_boundary_layout)
         scroll_layout.addWidget(boundary_group)
 
-        # Ensemble settings (MOVED to deformation tab)
-        
-        # Velocity initialization & Temperature Control settings
+        # --- Velocity and Thermostating (Below everything else) ---
         init_settings_layout = QHBoxLayout()
         
         # Velocity initialization settings
         velocity_group = InfoGroupBox("Velocity Initialization", "velocity")
-        velocity_layout = QHBoxLayout() # Changed to HBox
+        velocity_layout = QHBoxLayout() 
         
         self.enable_velocity = QCheckBox("Initialize velocity")
         self.enable_velocity.setChecked(True)
@@ -1408,40 +1559,51 @@ class LAMMPSdeformerGui(QMainWindow):
         
         scroll_layout.addLayout(init_settings_layout)
         
-        # Custom Commands (formerly Neighbor Settings)
-        custom_commands_group = InfoGroupBox("Custom Commands", "neighbor", additional_docs=[("comm_modify", False)])
-        custom_commands_layout = QVBoxLayout(custom_commands_group)
-        
-        self.custom_commands_edit = QTextEdit()
-        self.custom_commands_edit.setPlaceholderText("e.g., neighbor 2.0 bin\nneigh_modify delay 5 every 1 check yes one 20000 page 200000\ncomm_modify cutoff 20.0")
-        
-        # Apply style to scrollbar
-        scrollbar_style = """
-            QScrollBar:vertical {
-                border: none;
-                background: #f0f0f0;
-                width: 10px;
-                margin: 0px 0px 0px 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c0c0c0;
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-        """
-        self.custom_commands_edit.setStyleSheet(scrollbar_style)
-        
-        # Fixed height (4 lines)
-        self.set_precise_height(self.custom_commands_edit, 4)
-        
-        custom_commands_layout.addWidget(self.custom_commands_edit)
-        scroll_layout.addWidget(custom_commands_group)
-        
-        # Add stretch at the very bottom to push everything up
+        # Add stretch at the very bottom
         scroll_layout.addStretch()
+
+    def _update_system_tab_height(self):
+        """Dynamically resize the tab widget to fit the content of the current tab."""
+        # Use a single shot timer to allow layout to settle after visibility changes
+        QTimer.singleShot(0, self._perform_tab_height_update)
+
+    def _perform_tab_height_update(self):
+        current_widget = self.system_sets_tab_widget.currentWidget()
+        if not current_widget:
+            return
+            
+        layout = current_widget.layout()
+        if not layout:
+            return
+            
+        # Ensure layout is up to date
+        layout.activate()
+        
+        # Manually calculate the required height by summing up visible widgets
+        # and accounting for margins and spacing. This avoids issues with
+        # layouts trying to expand or shrink unexpectedly.
+        total_height = layout.contentsMargins().top() + layout.contentsMargins().bottom()
+        visible_count = 0
+        
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            widget = item.widget()
+            
+            # Sum up visible widgets, ignore spacers/stretch
+            if widget and widget.isVisible():
+                total_height += widget.sizeHint().height()
+                visible_count += 1
+        
+        # Add spacing between visible widgets
+        if visible_count > 1:
+            total_height += (visible_count - 1) * layout.spacing()
+            
+        # Add tab bar height and a safe padding for frame borders
+        tab_bar_height = self.system_sets_tab_widget.tabBar().height()
+        final_height = total_height + tab_bar_height + 12
+        
+        # Set fixed height to snap. This does not affect horizontal size.
+        self.system_sets_tab_widget.setFixedHeight(final_height)
 
     def _update_system_tab_stylesheet(self):
         """Update the system tab widget stylesheet to match deformation tabs"""
@@ -1488,36 +1650,56 @@ class LAMMPSdeformerGui(QMainWindow):
         if initial_state:
             new_set.set_state(initial_state)
             
-        # Check if Sync Potential is active in any existing tab
-        sync_active = False
+        # Check if Sync Potential is active in any existing tab for Before/After
+        sync_before_active = False
+        sync_after_active = False
         sync_source = None
+        
         for i in range(self.system_sets_tab_widget.count()):
             widget = self.system_sets_tab_widget.widget(i)
-            if isinstance(widget, SystemSetWidget) and widget.sync_potential_checkbox.isChecked():
-                sync_active = True
-                sync_source = widget
-                break
-        
-        if sync_active and sync_source:
-            # Sync the new tab with existing synced settings
-            source_state = sync_source.get_state()
-            new_set.blockSignals(True)
-            new_set.use_potential_file.setChecked(source_state['use_potential_file'])
-            new_set.potential_path_edit.setText(source_state['potential_file'])
-            new_set.potential_source_combo.setCurrentText(source_state['potential_source'])
-            new_set.potential_pos_combo.setCurrentText(source_state['potential_position'])
-            new_set.potential_text_edit.setPlainText(source_state['potential_content'])
-            new_set.sync_potential_checkbox.setChecked(True)
-            new_set.update_potential_visibility(source_state['potential_source'])
-            new_set.toggle_potential_settings(new_set.use_potential_file.checkState())
-            new_set.blockSignals(False)
+            if isinstance(widget, SystemSetWidget):
+                if widget.sync_potential_before.isChecked():
+                    sync_before_active = True
+                    sync_source = widget # Any source is fine as they are synced
+                if widget.sync_potential_after.isChecked():
+                    sync_after_active = True
+                    sync_source = widget
+
+        if sync_source:
+             source_state = sync_source.get_state()
+             new_set.blockSignals(True)
+             
+             if sync_before_active:
+                new_set.use_potential_before.setChecked(source_state['use_potential_before'])
+                new_set.potential_file_before.setText(source_state['potential_file_before'])
+                new_set.potential_source_before.setCurrentText(source_state['potential_source_before'])
+                new_set.potential_content_before.setPlainText(source_state['potential_content_before'])
+                new_set.sync_potential_before.setChecked(True)
+                new_set.update_potential_visibility(source_state['potential_source_before'], "before")
+                new_set.toggle_potential_settings(new_set.use_potential_before.checkState(), "before")
+                
+             if sync_after_active:
+                new_set.use_potential_after.setChecked(source_state['use_potential_after'])
+                new_set.potential_file_after.setText(source_state['potential_file_after'])
+                new_set.potential_source_after.setCurrentText(source_state['potential_source_after'])
+                new_set.potential_content_after.setPlainText(source_state['potential_content_after'])
+                new_set.sync_potential_after.setChecked(True)
+                new_set.update_potential_visibility(source_state['potential_source_after'], "after")
+                new_set.toggle_potential_settings(new_set.use_potential_after.checkState(), "after")
+
+             new_set.blockSignals(False)
         else:
-            # If no sync is active, just ensure this one is unchecked by default
-            new_set.sync_potential_checkbox.blockSignals(True)
-            new_set.sync_potential_checkbox.setChecked(False)
-            new_set.sync_potential_checkbox.blockSignals(False)
+            # Ensure unchecked by default
+            new_set.sync_potential_before.blockSignals(True)
+            new_set.sync_potential_before.setChecked(False)
+            new_set.sync_potential_before.blockSignals(False)
+            
+            new_set.sync_potential_after.blockSignals(True)
+            new_set.sync_potential_after.setChecked(False)
+            new_set.sync_potential_after.blockSignals(False)
             
         new_set.dataChanged.connect(self._on_system_data_changed)
+        new_set.dataChanged.connect(self._update_system_tab_height)
         
         tab_index = self.system_sets_tab_widget.insertTab(insert_index, new_set, tab_name)
         self.system_sets_tab_widget.setCurrentIndex(tab_index)
@@ -1615,7 +1797,8 @@ class LAMMPSdeformerGui(QMainWindow):
 
     def _on_system_data_changed(self):
         """Handle data changes in system sets"""
-        pass
+        self._update_system_tab_colors()
+        self._update_sync_potential_visibility()
 
     def update_system_sets(self, count):
         """Update the number of system set tabs (for legacy/loading support)"""
@@ -1646,8 +1829,8 @@ class LAMMPSdeformerGui(QMainWindow):
             else:
                 self.system_sets_tab_widget.tabBar().setTabTextColor(i, QColor(0, 0, 0))  # Black
 
-    def _sync_potential_settings(self, source_set_widget, force_unchecked=False):
-        """Sync potential settings across all data set tabs"""
+    def _sync_potential_settings(self, source_set_widget, section_type, force_unchecked=False):
+        """Sync potential settings across all data set tabs for a specific section (before/after)"""
         source_state = source_set_widget.get_state()
 
         for i in range(self.system_sets_tab_widget.count()):
@@ -1656,25 +1839,47 @@ class LAMMPSdeformerGui(QMainWindow):
                 continue
 
             set_widget.blockSignals(True)
-            # Prevent potential text edit from triggering sync back
-            set_widget.potential_text_edit.blockSignals(True)
-            set_widget.sync_potential_checkbox.blockSignals(True)
+            
+            if section_type == "before":
+                # Prevent potential text edit from triggering sync back
+                set_widget.potential_content_before.blockSignals(True)
+                set_widget.sync_potential_before.blockSignals(True)
 
-            if force_unchecked:
-                set_widget.sync_potential_checkbox.setChecked(False)
-            else:
-                set_widget.use_potential_file.setChecked(source_state['use_potential_file'])
-                set_widget.potential_path_edit.setText(source_state['potential_file'])
-                set_widget.potential_source_combo.setCurrentText(source_state['potential_source'])
-                set_widget.potential_pos_combo.setCurrentText(source_state['potential_position'])
-                set_widget.potential_text_edit.setPlainText(source_state['potential_content'])
-                set_widget.sync_potential_checkbox.setChecked(source_state['sync_potential'])
-                
-                set_widget.update_potential_visibility(source_state['potential_source'])
-                set_widget.toggle_potential_settings(source_set_widget.use_potential_file.checkState())
+                if force_unchecked:
+                    set_widget.sync_potential_before.setChecked(False)
+                else:
+                    set_widget.use_potential_before.setChecked(source_state['use_potential_before'])
+                    set_widget.potential_file_before.setText(source_state['potential_file_before'])
+                    set_widget.potential_source_before.setCurrentText(source_state['potential_source_before'])
+                    set_widget.potential_content_before.setPlainText(source_state['potential_content_before'])
+                    set_widget.sync_potential_before.setChecked(source_state['sync_potential_before'])
+                    
+                    set_widget.update_potential_visibility(source_state['potential_source_before'], "before")
+                    set_widget.toggle_potential_settings(source_set_widget.use_potential_before.checkState(), "before")
 
-            set_widget.potential_text_edit.blockSignals(False)
-            set_widget.sync_potential_checkbox.blockSignals(False)
+                set_widget.potential_content_before.blockSignals(False)
+                set_widget.sync_potential_before.blockSignals(False)
+            
+            elif section_type == "after":
+                # Prevent potential text edit from triggering sync back
+                set_widget.potential_content_after.blockSignals(True)
+                set_widget.sync_potential_after.blockSignals(True)
+
+                if force_unchecked:
+                    set_widget.sync_potential_after.setChecked(False)
+                else:
+                    set_widget.use_potential_after.setChecked(source_state['use_potential_after'])
+                    set_widget.potential_file_after.setText(source_state['potential_file_after'])
+                    set_widget.potential_source_after.setCurrentText(source_state['potential_source_after'])
+                    set_widget.potential_content_after.setPlainText(source_state['potential_content_after'])
+                    set_widget.sync_potential_after.setChecked(source_state['sync_potential_after'])
+                    
+                    set_widget.update_potential_visibility(source_state['potential_source_after'], "after")
+                    set_widget.toggle_potential_settings(source_set_widget.use_potential_after.checkState(), "after")
+
+                set_widget.potential_content_after.blockSignals(False)
+                set_widget.sync_potential_after.blockSignals(False)
+
             set_widget.blockSignals(False)
 
     def adjust_text_height(self, text_edit, min_lines, max_lines):
@@ -2785,8 +2990,10 @@ class LAMMPSdeformerGui(QMainWindow):
             if set_widget.is_enabled:
                 prefix = self.system_sets_tab_widget.tabText(i)
                 paths_to_check[f"{prefix} System Path"] = set_widget.system_path_edit.text()
-                if set_widget.use_potential_file.isChecked():
-                    paths_to_check[f"{prefix} Potential Path"] = set_widget.potential_path_edit.text()
+                if set_widget.use_potential_before.isChecked():
+                    paths_to_check[f"{prefix} Potential Path (Before)"] = set_widget.potential_file_before.text()
+                if set_widget.use_potential_after.isChecked():
+                    paths_to_check[f"{prefix} Potential Path (After)"] = set_widget.potential_file_after.text()
         invalid_paths = []
         # Regex to find spaces or non-ascii characters that are not basic path separators
         invalid_char_re = re.compile(r'[\säöüÄÖÜß]')
@@ -3161,13 +3368,10 @@ class LAMMPSdeformerGui(QMainWindow):
                 # Legacy support: use first set for single-set mode or generic settings
                 "system_path": self.system_sets_tab_widget.widget(0).system_path_edit.text() if self.system_sets_tab_widget.count() > 0 else "",
                 "data_file_extensions": self.system_sets_tab_widget.widget(0).data_file_extensions if self.system_sets_tab_widget.count() > 0 else [".data"],
-
-                "use_potential_file": self.system_sets_tab_widget.widget(0).use_potential_file.isChecked() if self.system_sets_tab_widget.count() > 0 else False,
-                "potential_file": self.system_sets_tab_widget.widget(0).potential_path_edit.text() if self.system_sets_tab_widget.count() > 0 else "",
-                "potential_source": self.system_sets_tab_widget.widget(0).potential_source_combo.currentText() if self.system_sets_tab_widget.count() > 0 else "file",
-                "potential_position": self.system_sets_tab_widget.widget(0).potential_pos_combo.currentText() if self.system_sets_tab_widget.count() > 0 else "after",
-                "potential_content": self.system_sets_tab_widget.widget(0).potential_text_edit.toPlainText() if self.system_sets_tab_widget.count() > 0 else "",
                 
+                # Note: Potential settings are now fully handled within "system_sets" and have no top-level legacy fallback 
+                # to prevent ambiguity between 'before' and 'after' settings.
+
                 "atom_style": self.atom_style_combo.currentText(),
                 "units": self.units_combo.currentText(),
                 "boundary_x": self.boundary_x_combo.currentText(),
@@ -3177,7 +3381,6 @@ class LAMMPSdeformerGui(QMainWindow):
                 "initial_velocity_seed": self.initial_velocity_seed.value(),
                 "damping_factor": self.damping_factor.value(),
                 
-                "custom_commands": self.custom_commands_edit.toPlainText(),
                 "timestep": self.timestep.value(),
                 
                 # New multi-set configuration
@@ -3272,6 +3475,10 @@ class LAMMPSdeformerGui(QMainWindow):
     def load_settings(self):
         """Load settings from QSettings"""
         try:
+            # Set batch loading flag for deformation tab widget if it exists to optimize performance
+            if hasattr(self, 'deformation_tab_widget'):
+                self.deformation_tab_widget._batch_loading = True
+
             # System settings
             system_sets_data = self.settings.value("system/system_sets", "[]")
             if isinstance(system_sets_data, str):
@@ -3323,7 +3530,6 @@ class LAMMPSdeformerGui(QMainWindow):
             self.enable_velocity.setChecked(self.settings.value("system/enable_velocity", True, type=bool))
             self.initial_velocity_seed.setValue(self.settings.value("system/initial_velocity_seed", 12345, type=int))
             self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
-            self.custom_commands_edit.setPlainText(self.settings.value("system/custom_commands", ""))
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
 
             # Output settings
@@ -3401,7 +3607,6 @@ class LAMMPSdeformerGui(QMainWindow):
                 while self.deformation_tab_widget.tab_widget.count() > 0:
                     self.deformation_tab_widget.tab_widget.removeTab(0)
 
-                self.deformation_tab_widget._batch_loading = True
                 if studies:
                     for i, study in enumerate(studies):
                         self.deformation_tab_widget._add_study(is_first=(i==0))
@@ -3421,10 +3626,6 @@ class LAMMPSdeformerGui(QMainWindow):
                 else:
                     self.deformation_tab_widget._add_study(is_first=True)
 
-                self.deformation_tab_widget._batch_loading = False
-                self.deformation_tab_widget.update_summaries()
-                self.deformation_tab_widget._update_tab_colors()
-
                 current_widget = self.deformation_tab_widget.tab_widget.currentWidget()
                 if current_widget:
                     self.deformation_tab_widget.mode_combo.blockSignals(True)
@@ -3434,6 +3635,12 @@ class LAMMPSdeformerGui(QMainWindow):
                 deform_tab_index = self.settings.value("gui/active_deformation_tab_index", 0, type=int)
                 if 0 <= deform_tab_index < self.deformation_tab_widget.tab_widget.count():
                     self.deformation_tab_widget.tab_widget.setCurrentIndex(deform_tab_index)
+            
+            # Finalize batch loading and trigger single updates
+            if hasattr(self, 'deformation_tab_widget'):
+                self.deformation_tab_widget._batch_loading = False
+                self.deformation_tab_widget.update_all_graphs(self.timestep.value(), self.units_combo.currentText())
+                self.deformation_tab_widget._update_tab_colors()
             
             # Ensure visibility of averaging settings is updated after loading
             self.update_avg_settings_visibility()
@@ -3484,11 +3691,8 @@ class LAMMPSdeformerGui(QMainWindow):
                 first_set = config["system"]["system_sets"][0]
                 self.settings.setValue("system/system_path", first_set["system_path"])
                 self.settings.setValue("system/data_file_extensions", ",".join(first_set["data_file_extensions"]))
-                self.settings.setValue("system/use_potential_file", first_set["use_potential_file"])
-                self.settings.setValue("system/potential_file", first_set["potential_file"])
-                self.settings.setValue("system/potential_source", first_set["potential_source"])
-                self.settings.setValue("system/potential_position", first_set["potential_position"])
-                self.settings.setValue("system/potential_content", first_set["potential_content"])
+                # Potential settings removed from legacy top-level to prevent errors.
+                # Full configuration is preserved in "system/system_sets".
             
             self.settings.setValue("system/atom_style", config["system"]["atom_style"])
             self.settings.setValue("system/units", config["system"]["units"])
@@ -3499,7 +3703,6 @@ class LAMMPSdeformerGui(QMainWindow):
             self.settings.setValue("system/initial_velocity_seed", config["system"]["initial_velocity_seed"])
             self.settings.setValue("system/damping_factor", config["system"]["damping_factor"])
             
-            self.settings.setValue("system/custom_commands", config["system"]["custom_commands"])
             self.settings.setValue("system/timestep", config["system"]["timestep"])
             
             # Save output settings
@@ -3765,6 +3968,10 @@ class LAMMPSdeformerGui(QMainWindow):
     def apply_config(self, config):
         """Apply configuration to GUI elements"""
         try:
+            # Set batch loading flag for deformation tab widget if it exists to optimize performance
+            if hasattr(self, 'deformation_tab_widget'):
+                self.deformation_tab_widget._batch_loading = True
+
             # System configuration
             if "system" in config:
                 system = config["system"]
@@ -3815,7 +4022,6 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.initial_velocity_seed.setValue(system.get("initial_velocity_seed", 12345))
                 self.damping_factor.setValue(system.get("damping_factor", 100.0))
                 
-                self.custom_commands_edit.setPlainText(system.get("custom_commands", ""))
                 self.timestep.setValue(system.get("timestep", 0.001))
 
             # Output configuration
@@ -3887,7 +4093,6 @@ class LAMMPSdeformerGui(QMainWindow):
                 while self.deformation_tab_widget.tab_widget.count() > 0:
                     self.deformation_tab_widget.tab_widget.removeTab(0)
                 
-                self.deformation_tab_widget._batch_loading = True
                 if studies:
                     for i, study_data in enumerate(studies):
                         self.deformation_tab_widget._add_study(is_first=(i==0))
@@ -3899,15 +4104,18 @@ class LAMMPSdeformerGui(QMainWindow):
                 else:
                     self.deformation_tab_widget._add_study(is_first=True)
                 
-                self.deformation_tab_widget._batch_loading = False
-                self.deformation_tab_widget.update_summaries()
-                self.deformation_tab_widget._update_tab_colors()
-                
                 current_widget = self.deformation_tab_widget.tab_widget.currentWidget()
                 if current_widget:
                     self.deformation_tab_widget.mode_combo.blockSignals(True)
                     self.deformation_tab_widget.mode_combo.setCurrentText(current_widget.mode)
                     self.deformation_tab_widget.mode_combo.blockSignals(False)
+
+            # Finalize batch loading and trigger single updates
+            if hasattr(self, 'deformation_tab_widget'):
+                self.deformation_tab_widget._batch_loading = False
+                self.deformation_tab_widget.update_all_graphs(self.timestep.value(), self.units_combo.currentText())
+                self.deformation_tab_widget._update_tab_colors()
+
         except Exception as e:
             print(f"Error applying configuration: {e}")
         

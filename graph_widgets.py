@@ -4501,6 +4501,7 @@ class DeformationTab(QWidget):
         return modes
 
     def update_all_graphs(self, timestep, unit_key):
+        if self._batch_loading: return
         for i in range(self.tab_widget.count()):
             widget = self.tab_widget.widget(i)
             widget.graph_widget.set_timestep(timestep)
