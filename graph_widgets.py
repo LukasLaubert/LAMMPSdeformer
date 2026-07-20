@@ -315,17 +315,17 @@ class StudyWidget(QWidget):
         self.undo_button = QPushButton("↩"); self.redo_button = QPushButton("↪")
         self.generate_button = QPushButton("Generate Scheme..."); self.reset_button = QPushButton("Reset Graph")
         
-        # Add some left margin to move buttons left by about 2mm
-        self.undo_button.setStyleSheet("margin-left: 8px;")
-        self.redo_button.setStyleSheet("margin-left: 8px;")
-        self.generate_button.setStyleSheet("margin-left: 8px;")
-        self.reset_button.setStyleSheet("margin-left: 8px;")
+        # Remove all custom styles
+        self.undo_button.setStyleSheet("")
+        self.redo_button.setStyleSheet("")
+        self.generate_button.setStyleSheet("")
+        self.reset_button.setStyleSheet("")
 
         controls_layout.addWidget(QLabel("<b>Axis Controls:</b>")); controls_layout.addWidget(self.max_steps_spinbox); controls_layout.addWidget(self.min_strain_spinbox); controls_layout.addWidget(self.max_strain_spinbox); 
-        # Move buttons to the left by 2mm (approximately 8 pixels)
+        controls_layout.addStretch()  # Push buttons to the right
+        # Add buttons with right alignment
         controls_layout.addWidget(self.undo_button); controls_layout.addWidget(self.redo_button)
         controls_layout.addWidget(self.generate_button); controls_layout.addWidget(self.reset_button)
-        controls_layout.addStretch()
 
         self.graph_widget = GraphWidget(self)
 
@@ -525,8 +525,8 @@ class DeformationTab(QWidget):
         add_tab_button.setToolTip("Add a new study")
         add_tab_button.clicked.connect(self._add_study)
         add_tab_button.setFixedSize(20, 14)  # Reduced height and width
-        # Adjust position with stylesheet - move up by 3mm and left by 2mm
-        add_tab_button.setStyleSheet("QPushButton { margin: -3px 2px 0px 0px; padding: 0px; }")  # Move up and left
+        # Adjust position with stylesheet - move up by 3mm and left (negative right margin moves it left)
+        add_tab_button.setStyleSheet("QPushButton { margin: -3px 5px 0px 0px; padding: 0px; }")  # Move up and slightly left
         self.tab_widget.setCornerWidget(add_tab_button, Qt.Corner.TopRightCorner)
 
         main_layout.addWidget(self.tab_widget)
@@ -657,7 +657,7 @@ class DeformationTab(QWidget):
             study_name = self.tab_widget.tabText(i)
             
             # Add study header with separator
-            all_summaries.append(f"# --- Summary for {study_name} --- #")
+            all_summaries.append(f"--- Summary for {study_name} ---")
             
             # Add data
             points = study_widget.graph_widget.get_data_points()
