@@ -238,7 +238,7 @@ class LammpsScriptGenerator(QMainWindow):
         self.potential_path_edit = QLineEdit()
         self.potential_path_edit.setEnabled(False)
         self.potential_path_browse = QPushButton("Browse...")
-        self.potential_path_browse.setEnabled(False)
+        # Browse button should always be enabled to allow browsing and auto-checking the checkbox
         self.potential_path_browse.clicked.connect(self.browse_potential_file)
         
         # Add tooltips
@@ -1315,18 +1315,21 @@ class LammpsScriptGenerator(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Potential File", "", "Potential files (*.pot *.potential);;All files (*)")
         if file_path:
             self.potential_path_edit.setText(file_path)
+            # Automatically check the "Use separate potential file" checkbox
+            if not self.use_potential_file.isChecked():
+                self.use_potential_file.setChecked(True)
+    
+    def toggle_potential_file(self, state):
+        """Toggle potential file settings"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.potential_path_edit.setEnabled(enabled)
+        # Note: The browse button should always be enabled to allow browsing
     
     def browse_output_path(self):
         """Browse for output path"""
         dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if dir_path:
             self.output_path_edit.setText(dir_path)
-    
-    def toggle_potential_file(self, state):
-        """Toggle potential file settings"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.potential_path_edit.setEnabled(enabled)
-        self.potential_path_browse.setEnabled(enabled)
     
     def open_lammps_doc(self, command):
         """Open LAMMPS documentation for a specific command"""
@@ -1413,14 +1416,13 @@ class LammpsScriptGenerator(QMainWindow):
         instructions_text.setReadOnly(True)
         instructions_text.setMaximumHeight(100)
         instructions_text.setPlainText(
-            "• run_all.sh: Local execution script for Linux/Mac. Run with: bash run_all.sh\n"
-            "• run_all.bat: Local execution script for Windows. Run with: run_all.bat\n"
-            "• run_cluster_jobs.sh: Cluster job submission script for Linux/Mac. Run with: bash run_cluster_jobs.sh\n"
-            "• run_cluster_jobs.bat: Cluster job submission script for Windows. Run with: run_cluster_jobs.bat\n"
+            "• run_local_all.sh/.bat: OS-specific local execution script (generated based on your OS). Each simulation runs in its own terminal.\n"
+            "• run_cluster_jobs.sh: Cluster job submission script for Linux clusters only.\n"
+            "• lammps_simulation.job: Single master job file that accepts input file as argument.\n"
             "• All .in files are located in their respective study/system folders\n"
-            "• Data files are copied to the input_files folder with correct relative paths\n"
+            "• Data files are copied to the input_files folder with correct relative paths (../../input_files/)\n"
             "• Potential files are also copied to input_files folder and referenced correctly\n"
-            "• Each simulation folder contains individual .job files for cluster submission"
+            "• Output directories are created automatically in each study/system folder"
         )
         layout.addWidget(instructions_text)
         

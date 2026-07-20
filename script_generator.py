@@ -150,16 +150,6 @@ class LammpsScriptGenerator:
                     
                     if not result["success"]:
                         return result
-                    
-                    # Generate individual job file for this simulation
-                    script_filename = result.get("script_file", f"{model_name}.in")
-                    job_result = self.generate_job_file(
-                        system_file, model_name, script_filename, 
-                        root_simulation_dir, study_name, system_name
-                    )
-                    
-                    if not job_result["success"]:
-                        return job_result
             
             # Always generate both local and cluster execution scripts
             exec_script_result = self.generate_execution_script(root_simulation_dir, system_files, deform_studies, is_multi_system)
@@ -638,39 +628,140 @@ class LammpsScriptGenerator:
         
         return None
         
-    def generate_job_file(self, data_file, model_name, script_filename, root_simulation_dir, study_name, system_name):
-        """Generate a cluster job submission file"""
+    def generate_execution_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
+        """Generate execution script for sequential multi-system processing"""
         try:
-            cluster_config = self.config.get("cluster", {})
+            import platform
+            current_os = platform.system().lower()
+            
+            # Generate OS-specific script only
+            if current_os in ['linux', 'darwin']:  # Linux or Mac
+                exec_script_path = os.path.join(root_simulation_dir, "run_local_all.sh")
+                script_lines = [
+                    "#!/bin/bash",
+                    "# Sequential execution script for multiple LAMMPS simulations",
+                    "# For Linux/Mac systems - generated for " + current_os,
+                    "",
+                    "echo 'Starting sequential LAMMPS simulations...'",
+                    ""
+                ]
+                command_prefix = "gnome-terminal -- bash -c '"
+                command_suffix = "; exec bash'"  # Keep terminal open after command completes
+            else:  # Windows
+                exec_script_path = os.path.join(root_simulation_dir, "run_local_all.bat")
+                script_lines = [
+                    "@echo off",
+                    "REM Sequential execution script for multiple LAMMPS simulations",
+                    "REM For Windows systems",
+                    "",
+                    "echo 'Starting sequential LAMMPS simulations...'",
+                    ""
+                ]
+                command_prefix = "start cmd /k "
+                command_suffix = ""
+            
+            # Get execution mode
+            execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
+            
+            for study in deform_studies:
+                study_name = study.get("name", "study")
+                
+                for system_file in system_files:
+                    system_name = Path(system_file).stem
+                    model_name = f"{system_name}_{study_name}"
+                    
+                    # Always use consistent file structure: study/system/model_name.in
+                    script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
+                    sim_directory = f"{study_name}/{system_name}"
+                    
+                    if execution_mode == "local":
+                        # Local execution - change to simulation directory and run in new terminal
+                        if current_os in ['linux', 'darwin']:
+                            script_lines.extend([
+                                f"echo 'Running simulation: {model_name}'",
+                                f"cd {sim_directory}",
+                                f"{command_prefix}echo 'Running LAMMPS simulation: {model_name}' && lmp -in {model_name}.in && echo 'Completed: {model_name}' && cd ../../{command_suffix}",
+                                f"echo 'Started simulation in new terminal: {model_name}'",
+                                f"cd ../../",  # Go back to root directory
+                                ""
+                            ])
+                        else:  # Windows
+                            script_lines.extend([
+                                f"echo 'Running simulation: {model_name}'",
+                                f"cd {sim_directory}",
+                                f"{command_prefix}echo 'Running LAMMPS simulation: {model_name}' && lmp -in {model_name}.in && echo 'Completed: {model_name}' && cd ../../{command_suffix}",
+                                f"echo 'Started simulation in new terminal: {model_name}'",
+                                f"cd ../../",  # Go back to root directory
+                                ""
+                            ])
+                    else:
+                        # Cluster execution - submit master job file with input file argument
+                        if current_os in ['linux', 'darwin']:
+                            script_lines.extend([
+                                f"echo 'Submitting job: {model_name}'",
+                                f"sbatch --export=INPUT_FILE='{script_relative_path}' lammps_simulation.job",
+                                f"echo 'Job submitted: {model_name}'",
+                                ""
+                            ])
+                        else:  # Windows
+                            script_lines.extend([
+                                f"echo 'Submitting job: {model_name}'",
+                                f"sbatch --export=INPUT_FILE='{script_relative_path}' lammps_simulation.job",
+                                f"echo 'Job submitted: {model_name}'",
+                                ""
+                            ])
+            
+            if current_os in ['linux', 'darwin']:
+                script_lines.extend([
+                    "echo 'All simulation terminals started!'",
+                    "echo 'Each simulation runs in its own terminal window'",
+                    ""
+                ])
+            else:
+                script_lines.extend([
+                    "echo 'All simulation terminals started!'",
+                    "echo 'Each simulation runs in its own command prompt window'",
+                    ""
+                ])
+            
+            # Write execution script
+            with open(exec_script_path, 'w') as f:
+                f.write("\n".join(script_lines))
+            
+            # Make shell script executable for Linux/Mac
+            if current_os in ['linux', 'darwin']:
+                os.chmod(exec_script_path, 0o755)
+            
+            self.generated_files.append(exec_script_path)
+            
+            return {"success": True, "message": f"Execution script generated: {exec_script_path} (for {current_os})"}
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error generating execution script: {str(e)}"}
+    
+    def generate_cluster_submission_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
+        """Generate single master cluster job file and submission script"""
+        try:
+            # Create single master job file that accepts input file as argument
+            master_job_path = os.path.join(root_simulation_dir, "lammps_simulation.job")
             
             # Get cluster settings
+            cluster_config = self.config.get("cluster", {})
             partition = cluster_config.get("cluster_partition", "singlenode")
             nodes = cluster_config.get("cluster_nodes", 1)
             ntasks = cluster_config.get("cluster_ntasks", 72)
             cpus_per_task = cluster_config.get("cluster_cpus_per_task", 1)
             time_limit = cluster_config.get("cluster_time", "24:00:00")
             export_setting = cluster_config.get("cluster_export", "NONE")
-            output_file = cluster_config.get("cluster_output", "/dev/null")
-            error_file = cluster_config.get("cluster_error", "/dev/null")
+            output_file = cluster_config.get("cluster_output", "lammps_output_%j.txt")
+            error_file = cluster_config.get("cluster_error", "lammps_error_%j.txt")
             email = cluster_config.get("cluster_mail", "")
             mail_type = cluster_config.get("cluster_mail_type", "ALL")
             
-            # Determine job file location based on system type
-            if system_name:
-                # Multi-system: job file goes in study/system/ directory
-                job_filename = os.path.join(root_simulation_dir, study_name, system_name, f"{model_name}.job")
-                # Change to simulation directory
-                sim_directory = f"{study_name}/{system_name}"
-            else:
-                # Single-system: job file goes in study/ directory
-                job_filename = os.path.join(root_simulation_dir, study_name, f"{model_name}.job")
-                # Change to simulation directory
-                sim_directory = study_name
-            
-            # Generate job file content
+            # Generate master job file that accepts input file as argument
             job_lines = [
                 "#!/bin/bash",
-                f"#SBATCH --job-name={model_name}",
+                "#SBATCH --job-name=lammps_simulation",
                 f"#SBATCH --partition={partition}",
                 f"#SBATCH --nodes={nodes}",
                 f"#SBATCH --ntasks-per-node={ntasks}",
@@ -690,172 +781,52 @@ class LammpsScriptGenerator:
             
             job_lines.extend([
                 "",
+                "# Get input file path from first argument",
+                "INPUT_FILE=$1",
+                "if [ -z \"$INPUT_FILE\" ]; then",
+                "    echo 'Error: No input file specified'",
+                "    exit 1",
+                "fi",
+                "",
+                "# Extract study and system names from input file path",
+                "STUDY_NAME=$(dirname $(dirname \"$INPUT_FILE\"))",
+                "SYSTEM_NAME=$(basename $(dirname \"$INPUT_FILE\"))",
+                "MODEL_NAME=$(basename \"$INPUT_FILE\" .in)",
+                "",
+                "echo 'Running LAMMPS simulation: $MODEL_NAME'",
+                "echo 'Input file: $INPUT_FILE'",
+                "echo 'Study: $STUDY_NAME, System: $SYSTEM_NAME'",
+                "",
+                "# Navigate to the study/system directory",
+                "cd \"$STUDY_NAME/$SYSTEM_NAME\"",
+                "",
                 "# Load modules",
                 "module load lammps",
                 "",
-                "# Change to the simulation directory (relative to job submission location)",
-                f"cd {sim_directory}",
+                "# Run LAMMPS with the specified input file (from root directory)",
+                "srun lmp -in \"../../$INPUT_FILE\"",
                 "",
-                "# Run LAMMPS",
-                f"srun lmp -in {model_name}.in",
+                "echo 'Completed simulation: $MODEL_NAME'",
                 ""
             ])
             
-            # Write job file
-            with open(job_filename, 'w') as f:
+            # Write master job file
+            with open(master_job_path, 'w') as f:
                 f.write("\n".join(job_lines))
             
-            self.generated_files.append(job_filename)
+            os.chmod(master_job_path, 0o755)
+            self.generated_files.append(master_job_path)
             
-            return {"success": True, "message": f"Job file generated: {job_filename}"}
+            # Generate cluster submission script (Linux only - clusters are always Linux)
+            cluster_script_path = os.path.join(root_simulation_dir, "run_cluster_jobs.sh")
             
-        except Exception as e:
-            return {"success": False, "message": f"Error generating job file: {str(e)}"}
-        
-    def generate_execution_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
-        """Generate execution script for sequential multi-system processing"""
-        try:
-            # Generate both .sh (Linux/Mac) and .bat (Windows) scripts
-            exec_script_path_sh = os.path.join(root_simulation_dir, "run_all.sh")
-            exec_script_path_bat = os.path.join(root_simulation_dir, "run_all.bat")
-            
-            # Linux/Mac shell script
-            script_lines_sh = [
-                "#!/bin/bash",
-                "# Sequential execution script for multiple LAMMPS simulations",
-                "# For Linux/Mac systems",
-                "",
-                "echo 'Starting sequential LAMMPS simulations...'",
-                ""
-            ]
-            
-            # Windows batch script
-            script_lines_bat = [
-                "@echo off",
-                "REM Sequential execution script for multiple LAMMPS simulations",
-                "REM For Windows systems",
-                "",
-                "echo Starting sequential LAMMPS simulations...",
-                ""
-            ]
-            
-            # Get execution mode
-            execution_mode = self.config.get("cluster", {}).get("execution_mode", "local")
-            
-            for study in deform_studies:
-                study_name = study.get("name", "study")
-                
-                for system_file in system_files:
-                    system_name = Path(system_file).stem
-                    model_name = f"{system_name}_{study_name}"
-                    
-                    # Always use consistent file structure: study/system/model_name.in
-                    script_relative_path = f"{study_name}/{system_name}/{model_name}.in"
-                    sim_directory = f"{study_name}/{system_name}"
-                    
-                    if execution_mode == "local":
-                        # Local execution - change to simulation directory and run
-                        script_lines_sh.extend([
-                            f"echo 'Running simulation: {model_name}'",
-                            f"cd {sim_directory}",
-                            f"lmp -in {model_name}.in",
-                            f"echo 'Completed: {model_name}'",
-                            f"cd ..",  # Go back to root directory
-                            ""
-                        ])
-                        
-                        script_lines_bat.extend([
-                            f"echo Running simulation: {model_name}",
-                            f"cd {sim_directory}",
-                            f"lmp -in {model_name}.in",
-                            f"echo Completed: {model_name}",
-                            f"cd ..",  # Go back to root directory
-                            ""
-                        ])
-                    else:
-                        # Cluster execution - submit job file from root directory
-                        job_relative_path = f"{study_name}/{system_name}/{model_name}.job"
-                        script_lines_sh.extend([
-                            f"echo 'Submitting job: {model_name}'",
-                            f"sbatch {job_relative_path}",
-                            f"echo 'Job submitted: {model_name}'",
-                            ""
-                        ])
-                        
-                        script_lines_bat.extend([
-                            f"echo Submitting job: {model_name}",
-                            f"sbatch {job_relative_path}",
-                            f"echo Job submitted: {model_name}",
-                            ""
-                        ])
-            
-            script_lines_sh.extend([
-                "echo 'All simulations completed!'",
-                ""
-            ])
-            
-            script_lines_bat.extend([
-                "echo All simulations completed!",
-                ""
-            ])
-            
-            # Write shell script
-            with open(exec_script_path_sh, 'w') as f:
-                f.write("\n".join(script_lines_sh))
-            
-            # Make shell script executable
-            os.chmod(exec_script_path_sh, 0o755)
-            
-            # Write batch script
-            with open(exec_script_path_bat, 'w') as f:
-                f.write("\n".join(script_lines_bat))
-            
-            self.generated_files.extend([exec_script_path_sh, exec_script_path_bat])
-            
-            return {"success": True, "message": f"Execution scripts generated: {exec_script_path_sh} and {exec_script_path_bat}"}
-            
-        except Exception as e:
-            return {"success": False, "message": f"Error generating execution scripts: {str(e)}"}
-    
-    def generate_cluster_submission_script(self, root_simulation_dir, system_files, deform_studies, is_multi_system):
-        """Generate cluster job submission script that iterates through all simulations"""
-        try:
-            # Generate both .sh (Linux/Mac) and .bat (Windows) cluster scripts
-            cluster_script_path_sh = os.path.join(root_simulation_dir, "run_cluster_jobs.sh")
-            cluster_script_path_bat = os.path.join(root_simulation_dir, "run_cluster_jobs.bat")
-            
-            # Get cluster settings
-            cluster_config = self.config.get("cluster", {})
-            partition = cluster_config.get("cluster_partition", "singlenode")
-            nodes = cluster_config.get("cluster_nodes", 1)
-            ntasks = cluster_config.get("cluster_ntasks", 72)
-            cpus_per_task = cluster_config.get("cluster_cpus_per_task", 1)
-            time_limit = cluster_config.get("cluster_time", "24:00:00")
-            export_setting = cluster_config.get("cluster_export", "NONE")
-            output_file = cluster_config.get("cluster_output", "lammps_output_%j.txt")
-            error_file = cluster_config.get("cluster_error", "lammps_error_%j.txt")
-            email = cluster_config.get("cluster_mail", "")
-            mail_type = cluster_config.get("cluster_mail_type", "ALL")
-            
-            # Linux/Mac cluster script
-            script_lines_sh = [
+            script_lines = [
                 "#!/bin/bash",
                 "# Cluster job submission script for multiple LAMMPS simulations",
-                "# This script submits individual jobs for each simulation",
-                "# For Linux/Mac systems",
+                "# This script uses a single master job file with different input files",
+                "# For Linux cluster systems only",
                 "",
                 "echo 'Starting cluster job submissions...'",
-                ""
-            ]
-            
-            # Windows cluster script
-            script_lines_bat = [
-                "@echo off",
-                "REM Cluster job submission script for multiple LAMMPS simulations",
-                "REM This script submits individual jobs for each simulation",
-                "REM For Windows systems",
-                "",
-                "echo Starting cluster job submissions...",
                 ""
             ]
             
@@ -867,52 +838,30 @@ class LammpsScriptGenerator:
                     system_name = Path(system_file).stem
                     model_name = f"{system_name}_{study_name}"
                     
-                    # Determine job file path based on system type
-                    if is_multi_system:
-                        # Multi-system: job file is in study/system/ directory
-                        job_relative_path = f"{study_name}/{system_name}/{model_name}.job"
-                    else:
-                        # Single-system: job file is in study/ directory
-                        job_relative_path = f"{study_name}/{model_name}.job"
+                    # Determine input file path
+                    input_file_path = f"{study_name}/{system_name}/{model_name}.in"
                     
-                    script_lines_sh.extend([
-                        f"echo 'Submitting job for simulation: {model_name}'",
-                        f"sbatch {job_relative_path}",
-                        f"echo 'Job submitted for: {model_name}'",
-                        ""
-                    ])
-                    
-                    script_lines_bat.extend([
-                        f"echo Submitting job for simulation: {model_name}",
-                        f"sbatch {job_relative_path}",
-                        f"echo Job submitted for: {model_name}",
+                    script_lines.extend([
+                        "echo 'Submitting job for simulation: {model_name}'",
+                        "sbatch --export=INPUT_FILE='{input_file_path}' lammps_simulation.job",
+                        "echo 'Job submitted for: {model_name}'",
                         ""
                     ])
             
-            script_lines_sh.extend([
+            script_lines.extend([
                 "echo 'All cluster jobs submitted!'",
                 "echo 'Use squeue to monitor job status'",
                 ""
             ])
             
-            script_lines_bat.extend([
-                "echo All cluster jobs submitted!",
-                "echo Use squeue to monitor job status",
-                ""
-            ])
+            # Write cluster submission script
+            with open(cluster_script_path, 'w') as f:
+                f.write("\n".join(script_lines))
             
-            # Write cluster scripts
-            with open(cluster_script_path_sh, 'w') as f:
-                f.write("\n".join(script_lines_sh))
+            os.chmod(cluster_script_path, 0o755)
+            self.generated_files.append(cluster_script_path)
             
-            os.chmod(cluster_script_path_sh, 0o755)
-            
-            with open(cluster_script_path_bat, 'w') as f:
-                f.write("\n".join(script_lines_bat))
-            
-            self.generated_files.extend([cluster_script_path_sh, cluster_script_path_bat])
-            
-            return {"success": True, "message": f"Cluster submission scripts generated: {cluster_script_path_sh} and {cluster_script_path_bat}"}
+            return {"success": True, "message": f"Master job file: {master_job_path}, Cluster script: {cluster_script_path}"}
             
         except Exception as e:
             return {"success": False, "message": f"Error generating cluster submission scripts: {str(e)}"}
