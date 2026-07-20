@@ -29,7 +29,7 @@ try:
                                 QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate,
                                 QListWidget, QStyle)
     from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF
-    from PyQt6.QtGui import QIcon, QDesktopServices, QCursor, QPalette, QColor
+    from PyQt6.QtGui import QIcon, QDesktopServices, QCursor, QPalette, QColor, QPixmap, QPainter, QFont
     
     # Handle QRegularExpression vs QRegExp compatibility
     try:
@@ -95,7 +95,7 @@ class Chip(QFrame):
         self.remove_button.setIcon(close_icon)
         self.remove_button.setIconSize(QSize(9, 9))
         self.remove_button.setFixedSize(12, 12)
-        self.remove_button.setStyleSheet("""
+        self.remove_button.setStyleSheet(""" 
             QPushButton {
                 border: none; 
                 background-color: transparent;
@@ -114,32 +114,61 @@ class Chip(QFrame):
         self.removed.emit(self.text)
         self.deleteLater()
 
+class ClickableLabel(QLabel):
+    """A QLabel that opens a URL when clicked."""
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self.url = url
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            QDesktopServices.openUrl(self.url)
+        super().mousePressEvent(event)
+
+def create_info_icon_label(url, tooltip, color_name):
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QColor(color_name))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(0, 0, 15, 15)
+    painter.setPen(QColor("white"))
+    font = QFont("Arial", 10, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "i")
+    painter.end()
+    
+    label = ClickableLabel(url)
+    label.setPixmap(pixmap)
+    label.setFixedSize(18, 18)
+    label.setToolTip(tooltip)
+    label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+    
+    return label
+
 class InfoGroupBox(QGroupBox):
-    def __init__(self, title, doc_link, parent=None, is_external=False):
+    def __init__(self, title, doc_link, parent=None, is_external=False, is_hpc=False):
         super().__init__(title, parent)
         self.doc_link = doc_link
         self.is_external = is_external
+        self.is_hpc = is_hpc
 
-        self.info_label = QLabel("ℹ️", self)
-        self.info_label.setStyleSheet("color: blue; font-size: 14px;")
-        self.info_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         if is_external:
-            self.info_label.setToolTip(f"Click to open {doc_link}")
-        else:
-            self.info_label.setToolTip(f"Click to open LAMMPS {doc_link} documentation")
-        self.info_label.mousePressEvent = self.open_doc_link
-
-    def open_doc_link(self, event):
-        if self.is_external:
             url = QUrl(self.doc_link)
         else:
             url = QUrl(f"https://docs.lammps.org/{self.doc_link}.html")
-        QDesktopServices.openUrl(url)
+
+        color = "green" if self.is_hpc else "blue"
+        tooltip = f"Click to open {doc_link}" if is_external else f"Click to open LAMMPS {doc_link} documentation"
+        
+        self.info_label = create_info_icon_label(url, tooltip, color)
+        self.info_label.setParent(self)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # Position the icon in the top-right corner
-        self.info_label.move(self.width() - 20, 0)
+        self.info_label.move(self.width() - 22, 2)
 
 class NumericTableWidgetItem(QTableWidgetItem):
     """Custom table widget item that validates numeric input"""
@@ -1280,7 +1309,7 @@ class LammpsScriptGenerator(QMainWindow):
         scroll_layout.addWidget(local_group)
 
         # Cluster settings
-        cluster_group = InfoGroupBox("Cluster Settings", "https://hpc-wiki.info/hpc/SLURM", is_external=True)
+        cluster_group = InfoGroupBox("Cluster Settings", "https://hpc-wiki.info/hpc/SLURM", is_external=True, is_hpc=True)
         cluster_layout = QFormLayout()
 
         self.cluster_lammps_cmd = QLineEdit()
@@ -1317,6 +1346,58 @@ class LammpsScriptGenerator(QMainWindow):
         self.slurm_header_text.setToolTip("SLURM batch script header.")
         self.slurm_header_text.setMinimumHeight(300)
         cluster_layout.addRow("SLURM Header:", self.slurm_header_text)
+
+        # Restart settings
+        self.enable_restart_checkbox = QCheckBox("Enable automatic restart (24h jobs)")
+        self.enable_restart_checkbox.setToolTip("Enable automatic job restart for long simulations on clusters. This will configure the simulation to save its state periodically and automatically resubmit the job before the 24-hour walltime limit is reached.")
+        
+        restart_toggle_layout = QHBoxLayout()
+        restart_toggle_layout.setContentsMargins(0,0,0,0)
+        restart_toggle_layout.addWidget(self.enable_restart_checkbox)
+        restart_toggle_layout.addStretch()
+        
+        hpc_restart_link = "https://doc.nhr.fau.de/apps/lammps/#setting-up-lammps-restart-jobs-and-resubmitting-automatically"
+        hpc_tooltip = "Click to open HPC documentation for automatic restart jobs"
+        hpc_info_label = create_info_icon_label(QUrl(hpc_restart_link), hpc_tooltip, "green")
+        restart_toggle_layout.addWidget(hpc_info_label)
+
+        lammps_restart_link = "https://docs.lammps.org/restart.html"
+        lammps_tooltip = "Click to open LAMMPS documentation for the restart command"
+        lammps_info_label = create_info_icon_label(QUrl(lammps_restart_link), lammps_tooltip, "blue")
+        restart_toggle_layout.addWidget(lammps_info_label)
+
+        cluster_layout.addRow(restart_toggle_layout)
+
+        # Create a widget to hold the restart options so it can be hidden/shown
+        self.restart_options_widget = QWidget()
+        restart_options_layout = QFormLayout()
+        self.restart_options_widget.setLayout(restart_options_layout)
+        restart_options_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.restart_freq_spinbox = QSpinBox()
+        self.restart_freq_spinbox.setRange(100, 100000)
+        self.restart_freq_spinbox.setValue(1000)
+        self.restart_freq_spinbox.setSingleStep(100)
+        self.restart_freq_spinbox.setToolTip("Frequency (in MD steps) to write a restart file. For example, a value of 1000 will save the simulation state every 1000 steps.")
+        restart_options_layout.addRow("Restart Write Frequency:", self.restart_freq_spinbox)
+
+        self.halt_freq_spinbox = QSpinBox()
+        self.halt_freq_spinbox.setRange(10, 1000)
+        self.halt_freq_spinbox.setValue(100)
+        self.halt_freq_spinbox.setToolTip("Frequency (in MD steps) for the 'fix halt' command to check if the elapsed time has exceeded the 'maxtime' variable. This ensures the simulation stops gracefully before the walltime limit.")
+        restart_options_layout.addRow("Halt Check Frequency:", self.halt_freq_spinbox)
+
+        self.max_time_buffer_spinbox = QSpinBox()
+        self.max_time_buffer_spinbox.setRange(60, 3600)
+        self.max_time_buffer_spinbox.setValue(600)
+        self.max_time_buffer_spinbox.setSingleStep(60)
+        self.max_time_buffer_spinbox.setToolTip("A buffer time in seconds to subtract from the 24-hour walltime. This value is used to calculate the 'maxtime' variable, ensuring LAMMPS has enough time to stop smoothly and save a restart file before the job is killed by the scheduler.")
+        restart_options_layout.addRow("Max Time Buffer (s):", self.max_time_buffer_spinbox)
+
+        cluster_layout.addRow(self.restart_options_widget)
+
+        self.enable_restart_checkbox.toggled.connect(self.restart_options_widget.setVisible)
+        self.restart_options_widget.setVisible(False)  # Initially hidden
 
         cluster_group.setLayout(cluster_layout)
         scroll_layout.addWidget(cluster_group)
@@ -1448,6 +1529,10 @@ class LammpsScriptGenerator(QMainWindow):
                     self.open_lammps_doc(doc_command)
                     return True
         return super().eventFilter(obj, event)
+
+
+    
+
     
     def toggle_trajectory_settings(self, state):
         """Toggle trajectory settings based on checkbox state"""
@@ -1589,6 +1674,7 @@ class LammpsScriptGenerator(QMainWindow):
         layout.addWidget(message_label)
         
         # File structure
+        structure_lines = ["Generated Files:"]
         files_label = QLabel("Generated File Structure:")
         files_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(files_label)
@@ -1636,21 +1722,42 @@ class LammpsScriptGenerator(QMainWindow):
         if not files:
             return "No files generated."
         
-        # Get unique directories
-        directories = set()
+        # Build a tree structure from the file paths
+        tree = {}
         for file_path in files:
-            directories.add(os.path.dirname(file_path))
+            parts = file_path.split(os.sep)
+            current = tree
+            for part in parts[:-1]:  # All parts except the last (filename)
+                if part not in current:
+                    current[part] = {}
+                current = current[part]
+            
+            # Add the filename to the deepest directory
+            if None not in current:
+                current[None] = []
+            current[None].append(parts[-1])  # The filename
+        
+        def build_tree_text(tree_dict, prefix="", is_last=True):
+            lines = []
+            items = list(tree_dict.items())
+            for i, (key, value) in enumerate(items):
+                is_last_item = (i == len(items) - 1)
+                
+                if key is None:  # This is the list of files in the directory
+                    for j, filename in enumerate(value):
+                        is_last_file = (j == len(value) - 1) and is_last_item
+                        connector = "└── " if is_last_file else "├── "
+                        lines.append(f"{prefix}{connector}{filename}")
+                else:  # This is a subdirectory
+                    connector = "└── " if is_last_item else "├── "
+                    lines.append(f"{prefix}{connector}{key}/")
+                    extension = "    " if is_last_item else "│   "
+                    lines.extend(build_tree_text(value, prefix + extension, is_last_item))
+            
+            return lines
         
         structure_lines = ["Generated Files:"]
-        
-        # Add files by directory
-        for directory in sorted(directories):
-            dir_files = [f for f in files if os.path.dirname(f) == directory]
-            if dir_files:
-                structure_lines.append(f"\n{directory}/")
-                for file_path in sorted(dir_files):
-                    filename = os.path.basename(file_path)
-                    structure_lines.append(f"  └── {filename}")
+        structure_lines.extend(build_tree_text(tree))
         
         return "\n".join(structure_lines)
     
@@ -1744,27 +1851,7 @@ class LammpsScriptGenerator(QMainWindow):
             border: 1px solid #007acc;
         }
         
-        QCheckBox {
-            spacing: 6px;
-            font-size: 12px;
-        }
-        
-        QCheckBox::indicator {
-            width: 14px;
-            height: 14px;
-            border: 1px solid #cccccc;
-            border-radius: 2px;
-            background-color: white;
-        }
-        
-        QCheckBox::indicator:checked {
-            background-color: #007acc;
-            border-color: #007acc;
-        }
-        
-        QCheckBox::indicator:hover {
-            border-color: #007acc;
-        }
+        /* QCheckBox styling removed to revert to native look for visibility fix */
         
         QTableWidget {
             border: 1px solid #cccccc;
@@ -1877,7 +1964,7 @@ class LammpsScriptGenerator(QMainWindow):
                 "srun_cmd": self.srun_cmd.text() or "srun",
                 "sbatch_cmd": self.sbatch_cmd.text() or "sbatch",
                 "module_load": self.module_load_cmd.text() or "lammps",
-                "slurm_header": self.slurm_header_text.toPlainText() or """#!/bin/bash
+                "slurm_header": self.slurm_header_text.toPlainText() or '''#!/bin/bash
 #SBATCH --job-name=lammps_simulation
 #SBATCH --partition=singlenode
 #SBATCH --nodes=1
@@ -1886,7 +1973,11 @@ class LammpsScriptGenerator(QMainWindow):
 #SBATCH --time=24:00:00
 #SBATCH --export=NONE
 #SBATCH --output=lammps_output_%j.txt
-#SBATCH --error=lammps_error_%j.txt"""
+#SBATCH --error=lammps_error_%j.txt''',
+                "enable_restart": self.enable_restart_checkbox.isChecked(),
+                "restart_freq": self.restart_freq_spinbox.value(),
+                "halt_freq": self.halt_freq_spinbox.value(),
+                "max_time_buffer": self.max_time_buffer_spinbox.value()
             }
         }
         
@@ -1989,6 +2080,14 @@ class LammpsScriptGenerator(QMainWindow):
             self.sbatch_cmd.setText(self.settings.value("job_submission/sbatch_cmd", ""))
             self.module_load_cmd.setText(self.settings.value("job_submission/module_load", ""))
             self.slurm_header_text.setPlainText(self.settings.value("job_submission/slurm_header", ""))
+
+            # Restart settings
+            enable_restart = self.settings.value("job_submission/enable_restart", False, type=bool)
+            self.enable_restart_checkbox.setChecked(enable_restart)
+            self.restart_options_widget.setVisible(enable_restart)
+            self.restart_freq_spinbox.setValue(self.settings.value("job_submission/restart_freq", 1000, type=int))
+            self.halt_freq_spinbox.setValue(self.settings.value("job_submission/halt_freq", 100, type=int))
+            self.max_time_buffer_spinbox.setValue(self.settings.value("job_submission/max_time_buffer", 600, type=int))
             
             # Multi-study settings
             if hasattr(self, 'deformation_tab_widget'):
@@ -2291,6 +2390,10 @@ class LammpsScriptGenerator(QMainWindow):
                 self.sbatch_cmd.setText(job_submission.get("sbatch_cmd", "sbatch"))
                 self.module_load_cmd.setText(job_submission.get("module_load", "lammps"))
                 self.slurm_header_text.setPlainText(job_submission.get("slurm_header", ""))
+                # Load restart settings
+                enable_restart = job_submission.get("enable_restart", False)
+                self.enable_restart_checkbox.setChecked(enable_restart)
+                self.restart_options_widget.setVisible(enable_restart)
 
             # Multi-study configuration
             if "multistudy" in config and hasattr(self, 'deformation_tab_widget'):
