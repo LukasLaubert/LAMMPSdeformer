@@ -649,6 +649,7 @@ class LammpsScriptGenerator:
         deform_axis = deform_study.get("deform_axis", "x")
         ensemble_config = deform_study.get("ensemble", {})
         ensemble = ensemble_config.get("ensemble", "NVT")
+        remap_val = deform_study.get("remap", "x")
         
         segment_info = block_info.get("segment_info", {'type': 'line'})
 
@@ -661,14 +662,14 @@ class LammpsScriptGenerator:
         if segment_info.get('type') == 'sine' and mode == "Deformation":
             lines.append(f"if \"$(v_started) == 1\" then \"jump SELF segment_{block_info['user_segment_id']}_init\"")
             lines.append(f"variable sinState equal $(v_A * sin(2*PI * (step-v_phaseShift)/v_Sp) + v_Ashift)")
-            lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap x flip no")
+            lines.append(f"fix deform all deform 1 {deform_axis} variable v_displace v_rate units box remap {remap_val} flip no")
 
         elif mode == "Deformation": # This is now the 'line' segment case
             sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
             final_target_y = self._format_float(sub_end_y)
             if is_shear:
                 lines.append(f"variable tilt_target equal \"{final_target_y} * v_L0{deform_axis[1]}\"")
-                lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box remap x flip no")
+                lines.append(f"fix deform all deform 1 {deform_axis} final ${{tilt_target}} units box remap {remap_val} flip no")
             else:
                 deform_scenario = deform_study.get("deform_scenario", "symmetric")
                 if deform_scenario == "shift hi, fix lo":
@@ -677,7 +678,7 @@ class LammpsScriptGenerator:
                     lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y})"', f"variable {deform_axis}hi_target equal v_{deform_axis}hi0"])
                 else: # symmetric
                     lines.extend([f'variable {deform_axis}lo_target equal "v_{deform_axis}lo0 - (v_L0{deform_axis} * {final_target_y}) / 2"', f'variable {deform_axis}hi_target equal "v_{deform_axis}hi0 + (v_L0{deform_axis} * {final_target_y}) / 2"'])
-                lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap x flip no")
+                lines.append(f"fix deform all deform 1 {deform_axis} final ${{{deform_axis}lo_target}} ${{{deform_axis}hi_target}} units box remap {remap_val} flip no")
         
         elif mode == "Temperature":
             sub_start_y, sub_end_y = block_info['sub_start_y'], block_info['sub_end_y']
@@ -690,44 +691,56 @@ class LammpsScriptGenerator:
         
         temp_start_ens, temp_end_ens = (self._format_float(block_info.get('sub_start_y', temp)), self._format_float(block_info.get('sub_end_y', temp))) if mode == "Temperature" else (temp, temp)
         
-        if ensemble == "NVT":
-            lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
-        elif ensemble == "NPT":
-            npt_aniso = ensemble_config.get("npt_aniso", "iso")
-            
-            if mode == "Deformation":
-                # NPT in Deformation mode requires decoupling the deformed axis/tilt from pressure control.
-                press_dims = ['x', 'y', 'z']
-                
-                # For tensile deformation, remove the deformed axis from pressure control
-                if not is_shear:
-                    if deform_axis in press_dims:
-                        press_dims.remove(deform_axis)
-                
-                npt_command_parts = []
-                for dim in press_dims:
-                    npt_command_parts.append(f"{dim} {pressure} {pressure} $({1000}*dt)")
-
-                # For triclinic/shear cases, add tilt factor control
-                # 'aniso' does not control tilt, 'tri' does. We must add tilt control if shearing,
-                # or if the user explicitly selected 'tri' for a tensile case.
-                if npt_aniso == 'tri' or is_shear:
-                    tilt_dims = ['xy', 'xz', 'yz']
-                    # If shearing, remove the sheared tilt factor from NPT control
-                    if is_shear and deform_axis in tilt_dims:
-                        tilt_dims.remove(deform_axis)
-                    
-                    for dim in tilt_dims:
-                        npt_command_parts.append(f"{dim} 0.0 0.0 $({1000}*dt)")
-
-                if npt_command_parts:
-                    lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_command_parts)}")
-                else: # Fallback if no dimensions are left to control (should not happen)
-                    lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
-
-            else: # Temperature mode (no deformation)
-                # Original logic is fine for non-deforming modes
+        if mode == "Temperature":
+            if ensemble == "NVT":
+                lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
+            else: # NPT
+                npt_aniso = ensemble_config.get("npt_aniso", "iso")
                 lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {npt_aniso} {pressure} {pressure} $(1000*dt)")
+        
+        else: # Deformation Mode
+            lateral_settings = ensemble_config.get("lateral_contraction", {})
+            
+            # Backward compatibility for old saves without lateral_contraction
+            if not lateral_settings:
+                old_ensemble = ensemble_config.get("ensemble", "NVT")
+                all_axes = ['x', 'y', 'z']
+                avail_axes = []
+                if len(deform_axis) == 1: 
+                    avail_axes = [a for a in all_axes if a != deform_axis]
+                elif len(deform_axis) == 2: 
+                    avail_axes = [a for a in all_axes if a not in deform_axis]
+                
+                default_val = "free (NPT)" if old_ensemble == "NPT" else "constrained"
+                for ax in avail_axes: 
+                    lateral_settings[ax] = default_val
+
+            free_axes = [ax for ax, setting in lateral_settings.items() if setting == "free (NPT)"]
+
+            if not free_axes:
+                # No free lateral axes -> NVT
+                lines.append(f"fix ensemble all nvt temp {temp_start_ens} {temp_end_ens} $({damping}*dt)")
+            else:
+                # At least one free axis -> NPT
+                npt_parts = []
+                
+                # Add control for free normal axes
+                for ax in free_axes:
+                    npt_parts.append(f"{ax} {pressure} {pressure} $({1000}*dt)")
+                
+                # Handle Tilt/Shear controls
+                # If strictly shear, we treat it as 'tri' (control other tilts)
+                # If 'tri' selected, we control tilts
+                npt_aniso = ensemble_config.get("npt_aniso", "aniso")
+                if is_shear: 
+                    npt_aniso = "tri"
+                
+                if npt_aniso == "tri":
+                    for tilt in ['xy', 'xz', 'yz']:
+                        if tilt != deform_axis:
+                             npt_parts.append(f"{tilt} 0.0 0.0 $({1000}*dt)")
+
+                lines.append(f"fix ensemble all npt temp {temp_start_ens} {temp_end_ens} $({damping}*dt) {' '.join(npt_parts)}")
 
         lines.append(f"run {int(duration)}")
         

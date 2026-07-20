@@ -2215,7 +2215,15 @@ class StudyWidget(QWidget):
         self.deform_scenario_label = QLabel("<b>Deform Scenario:</b>")
         self.deform_scenario_combo = QComboBox()
         self.deform_scenario_combo.addItems(["symmetric", "shift hi, fix lo", "shift lo, fix hi"])
-        self.deform_scenario_combo.setStyleSheet("""
+        # Permanently hide Deform Scenario widgets as per new requirement
+        self.deform_scenario_label.setVisible(False)
+        self.deform_scenario_combo.setVisible(False)
+
+        self.remap_label = QLabel("<b>Remap:</b>")
+        self.remap_combo = QComboBox()
+        self.remap_combo.addItems(["x", "v", "none"])
+        self.remap_combo.setToolTip("Remap parameter for fix deform")
+        self.remap_combo.setStyleSheet("""
             QComboBox {
                 combobox-popup: 0;
             }
@@ -2230,8 +2238,20 @@ class StudyWidget(QWidget):
         controls_layout.addWidget(self.deform_axis_label)
         controls_layout.addWidget(self.deform_axis_combo)
         controls_layout.addSpacing(5)
+        # Add hidden scenario widgets to keep layout reference if needed, or just don't add them.
+        # Adding them but hidden ensures no layout issues if code expects them.
         controls_layout.addWidget(self.deform_scenario_label)
         controls_layout.addWidget(self.deform_scenario_combo)
+        
+        # Add new Remap controls
+        remap_url = QUrl("https://docs.lammps.org/fix_deform.html")
+        remap_tooltip = "Click to open LAMMPS documentation for fix deform (remap)"
+        self.remap_info_label = create_info_icon_label([remap_url], remap_tooltip, "blue")
+        
+        controls_layout.addWidget(self.remap_label)
+        controls_layout.addWidget(self.remap_combo)
+        controls_layout.addSpacing(5) # Added space between remap combo and info icon
+        controls_layout.addWidget(self.remap_info_label)
 
         controls_layout.addStretch()  # Push buttons to the right
         # Add buttons with right alignment
@@ -2251,21 +2271,24 @@ class StudyWidget(QWidget):
         layout.addWidget(self.graph_widget)
 
         # Ensemble Settings
-        ensemble_layout = QHBoxLayout()
-        ensemble_layout.setContentsMargins(0, 0, 0, 0)
-        ensemble_layout.setSpacing(5)
-
+        self.lateral_widgets = {}
+        self._lateral_settings_cache = {}
+        self._tensile_npt_aniso_cache = "aniso"
+        
+        self.ensemble_container = QWidget()
+        self.ensemble_layout = QHBoxLayout(self.ensemble_container)
+        self.ensemble_layout.setContentsMargins(0, 0, 0, 0)
+        self.ensemble_layout.setSpacing(5)
+        
+        # Initialize widgets
         self.ensemble_combo = QComboBox()
         self.ensemble_combo.addItems(["NVT", "NPT"])
         self.ensemble_combo.setToolTip("Select the thermodynamic ensemble for the simulation")
         self.ensemble_combo.setFixedWidth(70)
-        ensemble_layout.addWidget(QLabel("Ensemble:"))
-        ensemble_layout.addWidget(self.ensemble_combo)
 
         ensemble_urls = [QUrl("https://docs.lammps.org/fix_nvt.html"), QUrl("https://docs.lammps.org/fix_nh.html")]
         ensemble_tooltip = "Click to open LAMMPS documentation for NVT and NPT ensembles"
         self.ensemble_info_label = create_info_icon_label(ensemble_urls, ensemble_tooltip, "blue")
-        ensemble_layout.addWidget(self.ensemble_info_label)
 
         self.temp_spinbox = QDoubleSpinBox()
         self.temp_spinbox.setPrefix("Temperature: ")
@@ -2274,7 +2297,6 @@ class StudyWidget(QWidget):
         self.temp_spinbox.setSingleStep(10.0)
         self.temp_spinbox.setToolTip("Temperature for the simulation")
         self.temp_spinbox.setFixedWidth(150)
-        ensemble_layout.addWidget(self.temp_spinbox)
 
         self.pressure_spinbox = QDoubleSpinBox()
         self.pressure_spinbox.setPrefix("P: ")
@@ -2283,26 +2305,23 @@ class StudyWidget(QWidget):
         self.pressure_spinbox.setDecimals(4)
         self.pressure_spinbox.setToolTip("Target pressure for NPT ensemble")
         self.pressure_spinbox.setFixedWidth(100)
-        ensemble_layout.addWidget(self.pressure_spinbox)
 
-        # NPT Anisotropic dropdown (only visible when NPT is selected)
         self.npt_aniso_label = QLabel("NPT Aniso:")
         self.npt_aniso_combo = QComboBox()
         self.npt_aniso_combo.addItems(["iso", "aniso", "tri"])
         self.npt_aniso_combo.setToolTip("Select NPT anisotropic option for the simulation")
         self.npt_aniso_combo.setFixedWidth(70)
-        self.npt_aniso_label.setVisible(False)
-        self.npt_aniso_combo.setVisible(False)
-        ensemble_layout.addWidget(self.npt_aniso_label)
-        ensemble_layout.addWidget(self.npt_aniso_combo)
-
-        ensemble_layout.addStretch(1)
 
         self.sync_ensemble_checkbox = QCheckBox("Sync ensemble")
         self.sync_ensemble_checkbox.setToolTip("Synchronize ensemble settings across all studies")
-        ensemble_layout.addWidget(self.sync_ensemble_checkbox)
-
-        layout.addLayout(ensemble_layout)
+        
+        sync_url = QUrl("https://docs.lammps.org/fix_nh.html")
+        sync_tooltip = "Click to open LAMMPS documentation for ensembles (fix nvt/npt)"
+        self.sync_ensemble_info_label = create_info_icon_label([sync_url], sync_tooltip, "blue")
+        
+        self._rebuild_ensemble_layout()
+        
+        layout.addWidget(self.ensemble_container)
 
         # Free Text Custom Commands Controls
         # Create a horizontal layout for the text field and sync button
@@ -2404,7 +2423,7 @@ class StudyWidget(QWidget):
         self.graph_widget.dataChanged.connect(self.dataChanged)
         self.graph_widget.dataChanged.connect(self._update_deform_scenario_visibility)
         self.deform_axis_combo.currentTextChanged.connect(self._update_deform_scenario_visibility)
-        self.deform_axis_combo.currentTextChanged.connect(self._update_ensemble_ui_state)
+        self.deform_axis_combo.currentTextChanged.connect(self._rebuild_ensemble_layout)
         self.reset_button.clicked.connect(self.graph_widget.reset_graph)
         self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
@@ -2638,6 +2657,11 @@ class StudyWidget(QWidget):
         self.reset_button.setEnabled(enabled)
         self.deform_axis_combo.setEnabled(enabled)
         self.deform_scenario_combo.setEnabled(enabled)
+        self.remap_combo.setEnabled(enabled)
+        
+        for widget in self.lateral_widgets.values():
+            widget.setEnabled(enabled)
+
         self.ensemble_combo.setEnabled(enabled)
         self.temp_spinbox.setEnabled(enabled)
         # Don't set pressure_spinbox enabled state here, let _update_ensemble_ui_state handle it
@@ -2658,23 +2682,33 @@ class StudyWidget(QWidget):
         self.dataChanged.emit()
 
     def _update_deform_scenario_visibility(self):
-        """Update the visibility of the Deform Scenario label and field based on mode, sine segments, and shear"""
-        is_shear = self.deform_axis_combo.currentText() in ["xy", "xz", "yz"]
-        sine_count = self.graph_widget.count_sine_segments()
-
-        # Hide for non-deformation modes, or if there are sine segments, or if it's a shear deformation
-        if self.mode != 'Deformation' or sine_count > 0 or is_shear:
-            self.deform_scenario_label.setVisible(False)
-            self.deform_scenario_combo.setVisible(False)
-            # Set the deform scenario to symmetric as default when hidden
-            self.deform_scenario_combo.setCurrentText("symmetric")
-        else:
-            self.deform_scenario_label.setVisible(True)
-            self.deform_scenario_combo.setVisible(True)
+        """Update the visibility of Deform Scenario (hidden) and Remap controls"""
+        # Deform Scenario is now permanently hidden
+        self.deform_scenario_label.setVisible(False)
+        self.deform_scenario_combo.setVisible(False)
+        
+        # Remap is visible in Deformation mode, hidden in Temperature mode
+        is_deformation = self.mode == 'Deformation'
+        self.remap_label.setVisible(is_deformation)
+        self.remap_combo.setVisible(is_deformation)
+        self.remap_info_label.setVisible(is_deformation)
 
 
 
     def get_state(self):
+        ensemble_state = {
+            'ensemble': self.ensemble_combo.currentText(),
+            'temperature': self.temp_spinbox.value(),
+            'pressure': self.pressure_spinbox.value(),
+            'npt_aniso': self.npt_aniso_combo.currentText(),
+            'sync_ensemble': self.sync_ensemble_checkbox.isChecked(),
+            'lateral_contraction': {}
+        }
+        
+        # Capture lateral contraction settings
+        for axis, widget in self.lateral_widgets.items():
+            ensemble_state['lateral_contraction'][axis] = widget.currentText()
+
         return {
             'data_points': [[p.x(), p.y()] for p in self.graph_widget.get_data_points()],
             'max_steps': self.max_steps_spinbox.value(),
@@ -2682,21 +2716,17 @@ class StudyWidget(QWidget):
             'max_strain': self.max_strain_spinbox.value(),
             'deform_axis': self.deform_axis_combo.currentText(),
             'deform_scenario': self.deform_scenario_combo.currentText(),
+            'remap': self.remap_combo.currentText(),
             'mode': self.mode,
             'segments': copy.deepcopy(self.graph_widget.segments),
             'is_enabled': self.is_enabled,
-            'ensemble': {
-                'ensemble': self.ensemble_combo.currentText(),
-                'temperature': self.temp_spinbox.value(),
-                'pressure': self.pressure_spinbox.value(),
-                'npt_aniso': self.npt_aniso_combo.currentText(),
-                'sync_ensemble': self.sync_ensemble_checkbox.isChecked()
-            },
+            'ensemble': ensemble_state,
             'bond_commands': {
                 'commands': self.custom_commands_text.toPlainText(),
                 'sync_bond_commands': self.sync_custom_commands_checkbox.isChecked()
             }
         }
+
     def set_state(self, state):
         # Block signals to prevent feedback loops and unwanted updates
         self.max_steps_spinbox.blockSignals(True)
@@ -2710,7 +2740,7 @@ class StudyWidget(QWidget):
         self.custom_commands_text.blockSignals(True)
         self.sync_custom_commands_checkbox.blockSignals(True)
 
-        # 1. Set mode and update mode-dependent UI without triggering corrective logic
+        # 1. Set mode and update mode-dependent UI
         new_mode = state.get('mode', 'Deformation')
         if self.mode != new_mode:
             self.mode = new_mode
@@ -2740,13 +2770,50 @@ class StudyWidget(QWidget):
         self.max_strain_spinbox.setValue(max_strain)
         self.deform_axis_combo.setCurrentText(state.get('deform_axis', 'x'))
         self.deform_scenario_combo.setCurrentText(state.get('deform_scenario', 'symmetric'))
+        self.remap_combo.setCurrentText(state.get('remap', 'x'))
+
+        # Rebuild the ensemble layout before setting values (crucial for dynamic widgets)
+        self._rebuild_ensemble_layout()
 
         ensemble_state = state.get('ensemble', {})
         self.ensemble_combo.setCurrentText(ensemble_state.get('ensemble', 'NVT'))
         self.temp_spinbox.setValue(ensemble_state.get('temperature', 300.0))
         self.pressure_spinbox.setValue(ensemble_state.get('pressure', 1.0))
-        self.npt_aniso_combo.setCurrentText(ensemble_state.get('npt_aniso', 'iso'))
+        
+        npt_val = ensemble_state.get('npt_aniso', 'iso')
+        self.npt_aniso_combo.setCurrentText(npt_val)
+        # Update cache if loaded state is valid for tensile
+        if self.mode == 'Deformation' and len(self.deform_axis_combo.currentText()) == 1:
+             if npt_val in ["aniso", "tri"]:
+                 self._tensile_npt_aniso_cache = npt_val
+
         self.sync_ensemble_checkbox.setChecked(ensemble_state.get('sync_ensemble', False))
+        
+        # Handle Lateral Contraction Settings (Backward Compatibility)
+        lateral_settings = ensemble_state.get('lateral_contraction', {})
+        
+        if not lateral_settings:
+            # Backward compatibility: map old ensemble setting to new lateral settings
+            old_ensemble = ensemble_state.get('ensemble', 'NVT')
+            default_setting = "free (NPT)" if old_ensemble == "NPT" else "constrained"
+            for widget in self.lateral_widgets.values():
+                widget.blockSignals(True)
+                widget.setCurrentText(default_setting)
+                widget.blockSignals(False)
+        else:
+            # Load saved settings
+            for axis, setting in lateral_settings.items():
+                if axis in self.lateral_widgets:
+                    self.lateral_widgets[axis].blockSignals(True)
+                    self.lateral_widgets[axis].setCurrentText(setting)
+                    self.lateral_widgets[axis].blockSignals(False)
+        
+        # Update visibility based on loaded settings
+        if self.mode == 'Deformation':
+            self._update_lateral_npt_visibility()
+        
+        # Always update overall ensemble UI state (handles Pressure prefix, etc.)
+        self._update_ensemble_ui_state()
 
         # Handle custom commands loading
         if 'bond_commands' in state:
@@ -2793,20 +2860,134 @@ class StudyWidget(QWidget):
         # 7. Final UI refresh
         self.graph_widget.update()
         self.dataChanged.emit()
-        self._update_ensemble_ui_state()
         self._update_deform_scenario_visibility()
         self._update_custom_commands_height()  # Update the text field height after loading
         self.set_enabled(state.get('is_enabled', True))
 
 
+    def _rebuild_ensemble_layout(self):
+        # Cache current settings before clearing
+        for axis, widget in self.lateral_widgets.items():
+            self._lateral_settings_cache[axis] = widget.currentText()
+
+        # Clear existing layout items
+        while self.ensemble_layout.count():
+            item = self.ensemble_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
+        
+        self.lateral_widgets.clear()
+
+        if self.mode == 'Temperature':
+            self.ensemble_layout.addWidget(QLabel("Ensemble:"))
+            self.ensemble_layout.addWidget(self.ensemble_combo)
+            self.ensemble_layout.addWidget(self.ensemble_info_label)
+            self.ensemble_layout.addWidget(self.temp_spinbox)
+            self.ensemble_layout.addWidget(self.pressure_spinbox)
+            self.ensemble_layout.addWidget(self.npt_aniso_label)
+            self.ensemble_layout.addWidget(self.npt_aniso_combo)
+            self.ensemble_layout.addStretch(1)
+            self.ensemble_layout.addWidget(self.sync_ensemble_checkbox)
+            self.ensemble_layout.addWidget(self.sync_ensemble_info_label)
+            
+            # Ensure correct visibility for Temperature mode
+            self._update_ensemble_ui_state()
+
+        else: # Deformation Mode
+            deform_axis = self.deform_axis_combo.currentText()
+            all_axes = ['x', 'y', 'z']
+            
+            lateral_axes = []
+            if len(deform_axis) == 1: # x, y, z
+                lateral_axes = [axis for axis in all_axes if axis != deform_axis]
+            elif len(deform_axis) == 2: # xy, xz, yz
+                lateral_axes = [axis for axis in all_axes if axis not in deform_axis]
+            
+            self.ensemble_layout.addWidget(QLabel("Lateral contraction:"))
+            
+            for axis in lateral_axes:
+                self.ensemble_layout.addWidget(QLabel(axis))
+                combo = QComboBox()
+                combo.addItems(["constrained", "free (NPT)"])
+                combo.setFixedWidth(90)
+                combo.setEnabled(self.is_enabled) # Ensure new widgets respect enabled state
+                
+                # Restore from cache if available
+                if axis in self._lateral_settings_cache:
+                    combo.setCurrentText(self._lateral_settings_cache[axis])
+
+                combo.currentTextChanged.connect(self._on_lateral_contraction_changed)
+                self.lateral_widgets[axis] = combo
+                self.ensemble_layout.addWidget(combo)
+            
+            self.ensemble_layout.addWidget(self.pressure_spinbox)
+            self.ensemble_layout.addWidget(self.npt_aniso_label)
+            self.ensemble_layout.addWidget(self.npt_aniso_combo)
+            self.ensemble_layout.addWidget(self.temp_spinbox)
+            self.ensemble_layout.addStretch(1)
+            self.ensemble_layout.addWidget(self.sync_ensemble_checkbox)
+            self.ensemble_layout.addWidget(self.sync_ensemble_info_label)
+            
+            # Initial visibility check for Deformation mode
+            self._update_lateral_npt_visibility()
+            self._update_ensemble_ui_state()
+
+    def _on_lateral_contraction_changed(self, text):
+        self._update_lateral_npt_visibility()
+        self._on_ensemble_setting_changed()
+
+    def _update_lateral_npt_visibility(self):
+        if self.mode != 'Deformation':
+            return
+
+        has_free_npt = any(w.currentText() == "free (NPT)" for w in self.lateral_widgets.values())
+        deform_axis = self.deform_axis_combo.currentText()
+        is_shear = len(deform_axis) > 1
+
+        # NPT Aniso dropdown appears if at least one axis is free
+        # BUT if it's shear, we hide it (implicitly tri) per requirements
+        show_aniso = has_free_npt and not is_shear
+        
+        self.npt_aniso_label.setVisible(show_aniso)
+        self.npt_aniso_combo.setVisible(show_aniso)
+        
+        # Reset/Update choices based on visibility
+        self.npt_aniso_combo.blockSignals(True)
+        self.npt_aniso_combo.clear()
+        
+        if is_shear:
+             # Implicitly 'tri' for shear, but widget is hidden. 
+             # We add 'tri' so get_state retrieves it correctly if needed.
+             self.npt_aniso_combo.addItem("tri")
+             self.npt_aniso_combo.setCurrentText("tri")
+        else:
+            self.npt_aniso_combo.addItems(["aniso", "tri"])
+            # Restore from cache for tensile direction
+            self.npt_aniso_combo.setCurrentText(self._tensile_npt_aniso_cache)
+            
+        self.npt_aniso_combo.blockSignals(False)
+
     def _on_ensemble_setting_changed(self):
+        # Update cache if currently tensile and valid
+        if self.mode == 'Deformation':
+             deform_axis = self.deform_axis_combo.currentText()
+             is_shear = len(deform_axis) > 1
+             if not is_shear and self.npt_aniso_combo.isVisible():
+                 current = self.npt_aniso_combo.currentText()
+                 if current in ["aniso", "tri"]:
+                     self._tensile_npt_aniso_cache = current
+
         self._update_ensemble_ui_state()
         stacked_widget = self.parent()
         if stacked_widget is not None:
             tab_widget = stacked_widget.parent()
             if tab_widget is not None:
                 deformation_tab = tab_widget.parent()
-                if isinstance(deformation_tab, DeformationTab):
+                # Import locally to avoid circular import issues if any, 
+                # though mostly safe in methods.
+                # Assuming DeformationTab is available in scope or via import
+                if hasattr(deformation_tab, '_sync_ensemble_settings'):
                     sync_state = self.sync_ensemble_checkbox.isChecked()
                     if sync_state:
                         deformation_tab._sync_ensemble_settings(self)
@@ -2817,58 +2998,48 @@ class StudyWidget(QWidget):
         self.dataChanged.emit()
 
     def _update_ensemble_ui_state(self):
-        is_npt = self.ensemble_combo.currentText() == "NPT"
-
-        # Update the prefix based on ensemble type
-        if is_npt:
+        if self.mode == 'Temperature':
+            is_npt = self.ensemble_combo.currentText() == "NPT"
+            
             self.pressure_spinbox.setPrefix("P: ")
             self.pressure_spinbox.setFixedWidth(100)
             self.pressure_spinbox.setToolTip("Target pressure for NPT ensemble")
-        else:
-            self.pressure_spinbox.setPrefix("P (used in equilibration): ")
-            self.pressure_spinbox.setFixedWidth(200)
-            self.pressure_spinbox.setToolTip("Pressure that was used during equilibration. The vaiue entered here is used only to correct the stress measured in the system during deformation.")
+            self.pressure_spinbox.setEnabled(self.is_enabled)
 
-        # Set pressure spinbox enabled state based on whether the study is enabled
-        # If the study is not enabled, always disable the pressure field
-        # If the study is enabled, the pressure field should be available for input regardless of ensemble
-        self.pressure_spinbox.setEnabled(self.is_enabled)
+            self.npt_aniso_label.setVisible(is_npt)
+            self.npt_aniso_combo.setVisible(is_npt)
 
-        self.npt_aniso_label.setVisible(is_npt)
-        self.npt_aniso_combo.setVisible(is_npt)
-
-        if not is_npt:
-            return
-
-        is_deformation_mode = self.mode == 'Deformation'
-        is_shear = self.deform_axis_combo.currentText() in ["xy", "xz", "yz"]
-
-        current_selection = self.npt_aniso_combo.currentText()
-
-        self.npt_aniso_combo.blockSignals(True)
-        self.npt_aniso_combo.clear()
-
-        if is_deformation_mode:
-            if is_shear:
-                # For shear, only 'tri' is meaningful as the box must be triclinic
-                self.npt_aniso_combo.addItem("tri")
-                self.npt_aniso_combo.setCurrentText("tri")
-            else:
-                # For tensile deformation, 'aniso' and 'tri' are valid
-                self.npt_aniso_combo.addItems(["aniso", "tri"])
-                if current_selection == "iso" or not current_selection:
-                    self.npt_aniso_combo.setCurrentText("aniso")
+            if is_npt:
+                current_selection = self.npt_aniso_combo.currentText()
+                self.npt_aniso_combo.blockSignals(True)
+                self.npt_aniso_combo.clear()
+                self.npt_aniso_combo.addItems(["iso", "aniso", "tri"])
+                if not current_selection:
+                    self.npt_aniso_combo.setCurrentText("iso")
                 else:
                     self.npt_aniso_combo.setCurrentText(current_selection)
-        else: # Temperature mode
-            # In temperature mode, all options are valid
-            self.npt_aniso_combo.addItems(["iso", "aniso", "tri"])
-            if not current_selection:
-                self.npt_aniso_combo.setCurrentText("iso")
-            else:
-                self.npt_aniso_combo.setCurrentText(current_selection)
+                self.npt_aniso_combo.blockSignals(False)
 
-        self.npt_aniso_combo.blockSignals(False)
+        else: # Deformation Mode
+            # In Deformation mode, the pressure box logic changes
+            # It's always visible.
+            
+            # Determine if we are effectively in NPT (at least one axis free)
+            is_npt_effective = any(w.currentText() == "free (NPT)" for w in self.lateral_widgets.values())
+            
+            if is_npt_effective:
+                self.pressure_spinbox.setPrefix("P: ")
+                self.pressure_spinbox.setFixedWidth(100)
+                self.pressure_spinbox.setToolTip("Target pressure for lateral NPT control")
+            else:
+                self.pressure_spinbox.setPrefix("P (equil): ")
+                self.pressure_spinbox.setFixedWidth(120) # Slightly wider
+                self.pressure_spinbox.setToolTip("Pressure from equilibration (used for stress correction)")
+            
+            self.pressure_spinbox.setEnabled(self.is_enabled)
+            
+            # NPT Aniso visibility is handled by _update_lateral_npt_visibility. Call it to ensure updates.
+            self._update_lateral_npt_visibility()
 
     # Old method for bond breakage - no longer needed since we replaced with custom text field
     # Keeping this method for backward compatibility during transition
@@ -2929,8 +3100,8 @@ class StudyWidget(QWidget):
         
         # Update the visibility of the Deform Scenario controls based on the new mode
         self._update_deform_scenario_visibility()
-        # Update ensemble UI state to refresh NPT options based on the new mode
-        self._update_ensemble_ui_state()
+        # Rebuild ensemble layout to reflect mode change
+        self._rebuild_ensemble_layout()
 
         self.graph_widget.set_mode(mode)
         self._update_graph_controls()
@@ -3336,31 +3507,54 @@ class DeformationTab(QWidget):
 
     def _sync_ensemble_settings(self, source_study_widget, force_unchecked=False):
         source_state = source_study_widget.get_state()['ensemble']
+        source_mode = source_study_widget.mode
+
         for i in range(self.tab_widget.count()):
             target_study_widget = self.tab_widget.widget(i)
             if target_study_widget == source_study_widget:
                 continue
+            
+            # Only sync studies of the same mode
+            if target_study_widget.mode != source_mode:
+                continue
 
-            target_study_widget.ensemble_combo.blockSignals(True)
-            target_study_widget.temp_spinbox.blockSignals(True)
+            # Block signals common to all modes
             target_study_widget.pressure_spinbox.blockSignals(True)
-            target_study_widget.npt_aniso_combo.blockSignals(True)
+            target_study_widget.temp_spinbox.blockSignals(True)
             target_study_widget.sync_ensemble_checkbox.blockSignals(True)
+            target_study_widget.npt_aniso_combo.blockSignals(True)
 
             if force_unchecked:
                 target_study_widget.sync_ensemble_checkbox.setChecked(False)
             else:
-                target_study_widget.ensemble_combo.setCurrentText(source_state['ensemble'])
-                target_study_widget.temp_spinbox.setValue(source_state['temperature'])
+                # Sync common settings
                 target_study_widget.pressure_spinbox.setValue(source_state['pressure'])
-                target_study_widget.npt_aniso_combo.setCurrentText(source_state['npt_aniso'])
+                target_study_widget.temp_spinbox.setValue(source_state['temperature'])
                 target_study_widget.sync_ensemble_checkbox.setChecked(source_state['sync_ensemble'])
+                target_study_widget.npt_aniso_combo.setCurrentText(source_state['npt_aniso'])
 
-            target_study_widget.ensemble_combo.blockSignals(False)
-            target_study_widget.temp_spinbox.blockSignals(False)
+                if source_mode == 'Temperature':
+                    target_study_widget.ensemble_combo.blockSignals(True)
+                    target_study_widget.ensemble_combo.setCurrentText(source_state['ensemble'])
+                    target_study_widget.ensemble_combo.blockSignals(False)
+                
+                elif source_mode == 'Deformation':
+                    # Sync lateral contraction settings for matching axes
+                    source_lateral = source_state.get('lateral_contraction', {})
+                    for axis, widget in target_study_widget.lateral_widgets.items():
+                        if axis in source_lateral:
+                            widget.blockSignals(True)
+                            widget.setCurrentText(source_lateral[axis])
+                            widget.blockSignals(False)
+                    
+                    # Trigger visibility update for target since lateral settings changed
+                    target_study_widget._update_lateral_npt_visibility()
+
+            # Unblock signals common to all modes
             target_study_widget.pressure_spinbox.blockSignals(False)
-            target_study_widget.npt_aniso_combo.blockSignals(False)
+            target_study_widget.temp_spinbox.blockSignals(False)
             target_study_widget.sync_ensemble_checkbox.blockSignals(False)
+            target_study_widget.npt_aniso_combo.blockSignals(False)
 
             target_study_widget._update_ensemble_ui_state()
             target_study_widget.dataChanged.emit()
