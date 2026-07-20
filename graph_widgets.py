@@ -7,14 +7,66 @@ from PyQt6.QtWidgets import (
     QTextEdit, QDialogButtonBox, QFormLayout, QPushButton, QInputDialog,
     QTabWidget, QComboBox, QScrollArea, QMessageBox, QStackedWidget, QListWidget, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QUrl
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence, QPixmap, QDesktopServices, QCursor
+
+# --- Sci-Notation SpinBox ---
+class SciNotationDoubleSpinBox(QDoubleSpinBox):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setDecimals(10) # Allow high precision
+
+    def textFromValue(self, value):
+        return f"{value:.4e}"
+
+    def valueFromText(self, text):
+        try:
+            return float(text)
+        except ValueError:
+            return self.value()
 
 # --- Professional Style & Data ---
 STYLE_BACKGROUND = QColor("#FFFFFF"); STYLE_FRAME = QColor("#ADB5BD"); STYLE_LINE = QColor("#007BFF"); STYLE_HANDLE = QColor("#007BFF")
 STYLE_HANDLE_OUTLINE = QColor("#FFFFFF"); STYLE_TEXT_PRIMARY = QColor("#212529"); STYLE_TEXT_SECONDARY = QColor("#6C757D"); STYLE_SLOPE_TEXT = QColor("#E8590C")
 HANDLE_RADIUS = 7
 LAMMPS_UNITS = {"lj": "tau", "real": "fs", "metal": "ps", "si": "s", "cgs": "s", "electron": "fs", "micro": "μs", "nano": "ns"}
+
+# --- Clickable Label for Docs ---
+class ClickableLabel(QLabel):
+    """A QLabel that opens one or more URLs when clicked."""
+    def __init__(self, urls, parent=None):
+        super().__init__(parent)
+        if not isinstance(urls, list):
+            urls = [urls]
+        self.urls = urls
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            for url in self.urls:
+                QDesktopServices.openUrl(url)
+        super().mousePressEvent(event)
+
+def create_info_icon_label(urls, tooltip, color_name):
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QColor(color_name))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(0, 0, 15, 15)
+    painter.setPen(QColor("white"))
+    font = QFont("Arial", 10, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "i")
+    painter.end()
+    
+    label = ClickableLabel(urls)
+    label.setPixmap(pixmap)
+    label.setFixedSize(18, 18)
+    label.setToolTip(tooltip)
+    
+    return label
 
 # --- Custom Dialogs ---
 class PresetDialog(QDialog):
@@ -53,13 +105,13 @@ class PresetDialog(QDialog):
         return None, None
 
 class SlopeEditDialog(QDialog):
-    def __init__(self, p1, p2, timestep, parent=None):
+    def __init__(self, p1, p2, timestep, time_unit, parent=None):
         super().__init__(parent)
         is_temp_mode = parent and parent.mode == 'Temperature'
         self.setWindowTitle("Edit Temperature Change" if is_temp_mode else "Edit Slope / Strain Rate")
         self._timestep = timestep
         self._dx_steps = p2.x() - p1.x()
-        self.slope_box = QDoubleSpinBox(decimals=5); self.rate_box = QDoubleSpinBox(decimals=5)
+        self.slope_box = SciNotationDoubleSpinBox(); self.rate_box = SciNotationDoubleSpinBox()
         initial_slope = (p2.y() - p1.y()) / self._dx_steps if self._dx_steps != 0 else 0
         for box, val in [(self.slope_box, initial_slope), (self.rate_box, 0)]: box.setRange(-1e9, 1e9); box.setSingleStep(max(1e-5, abs(val) * 0.02))
         self.slope_box.setValue(initial_slope); self.slope_box.valueChanged.connect(self._slope_changed); self.rate_box.valueChanged.connect(self._rate_changed); self._slope_changed(initial_slope)
@@ -69,7 +121,12 @@ class SlopeEditDialog(QDialog):
         slope_label = f"Slope ({y_unit}/step):"
         rate_label = f"Temperature Change Rate ({y_unit}/t):" if is_temp_mode else f"Strain Rate ({y_unit}/t):"
         layout.addRow(slope_label, self.slope_box)
-        layout.addRow(rate_label, self.rate_box)
+        
+        rate_layout = QHBoxLayout()
+        rate_layout.addWidget(self.rate_box)
+        rate_layout.addWidget(QLabel(f"1/{time_unit}"))
+        layout.addRow(rate_label, rate_layout)
+
         layout.addWidget(buttons)
     def _slope_changed(self, val): self.rate_box.blockSignals(True); dx_time = self._dx_steps * self._timestep; self.rate_box.setValue(val * self._dx_steps / dx_time if dx_time != 0 else 0); self.rate_box.blockSignals(False); self.slope_box.setSingleStep(max(1e-5, abs(val) * 0.02))
     def _rate_changed(self, val): self.slope_box.blockSignals(True); dx_time = self._dx_steps * self._timestep; self.slope_box.setValue(val * dx_time / self._dx_steps if self._dx_steps != 0 else 0); self.slope_box.blockSignals(False); self.rate_box.setSingleStep(max(1e-5, abs(val) * 0.02))
@@ -395,6 +452,9 @@ class GraphWidget(QWidget):
             if self._drag_axis_lock == 'x': constrained_pos.setY(self._drag_start_pos_widget.y())
             else: constrained_pos.setX(self._drag_start_pos_widget.x())
         if self._dragged_handle_index is not None:
+            if self._dragged_handle_index == 0 and self.mode == 'Deformation':
+                return # Don't move the first handle in deformation mode
+
             # Check if this handle's x or y positions are locked
             x_locked = self._dragged_handle_index in self._locked_x_ticks
             y_locked = self._dragged_handle_index in self._locked_y_labels
@@ -764,7 +824,7 @@ class GraphWidget(QWidget):
             dialog = TimeEditDialog(p_data.x(), self._timestep, self._max_steps, self);
             if dialog.exec(): p_data.setX(float(dialog.get_step()))
         elif type == "slope":
-            dialog = SlopeEditDialog(*self.get_data_points()[index:index+2], self._timestep, self)
+            dialog = SlopeEditDialog(*self.get_data_points()[index:index+2], self._timestep, self._time_unit, self)
             if dialog.exec():
                 p1_data, p2_data = self.get_data_points()[index], self.get_data_points()[index+1]
                 p2_data.setY(max(self._min_strain, min(self._max_strain, p1_data.y() + dialog.get_slope() * (p2_data.x() - p1_data.x()))))
@@ -892,6 +952,11 @@ class StudyWidget(QWidget):
         ensemble_layout.addWidget(QLabel("Ensemble:"))
         ensemble_layout.addWidget(self.ensemble_combo)
 
+        ensemble_urls = [QUrl("https://docs.lammps.org/fix_nvt.html"), QUrl("https://docs.lammps.org/fix_npt.html")]
+        ensemble_tooltip = "Click to open LAMMPS documentation for NVT and NPT ensembles"
+        self.ensemble_info_label = create_info_icon_label(ensemble_urls, ensemble_tooltip, "blue")
+        ensemble_layout.addWidget(self.ensemble_info_label)
+
         self.temp_spinbox = QDoubleSpinBox()
         self.temp_spinbox.setPrefix("Temperature: ")
         self.temp_spinbox.setRange(0, 10000)
@@ -974,11 +1039,9 @@ class StudyWidget(QWidget):
         bond_breakage_layout.addWidget(self.prob_seed_spinbox)
 
         # Add info icon for bond breakage
-        self.bond_break_info_label = QLabel("ℹ️", self)
-        self.bond_break_info_label.setStyleSheet("color: blue; font-size: 14px;")
-        self.bond_break_info_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.bond_break_info_label.setToolTip("Click to open LAMMPS fix bond/break documentation")
-        self.bond_break_info_label.mousePressEvent = lambda event: self.parent().main_window.open_lammps_doc("fix_bond_break")
+        bond_break_url = QUrl("https://docs.lammps.org/fix_bond_break.html")
+        bond_break_tooltip = "Click to open LAMMPS fix bond/break documentation"
+        self.bond_break_info_label = create_info_icon_label(bond_break_url, bond_break_tooltip, "blue")
         bond_breakage_layout.addWidget(self.bond_break_info_label)
 
         bond_breakage_layout.addStretch(1) # Push sync button to the right
@@ -1026,13 +1089,34 @@ class StudyWidget(QWidget):
             self.graph_widget.reset_graph()
 
         self._setup_undo_redo()
-        self.max_steps_spinbox.valueChanged.connect(self._update_graph_controls); self.min_strain_spinbox.valueChanged.connect(self._update_graph_controls); self.max_strain_spinbox.valueChanged.connect(self._update_graph_controls)
+        self.max_steps_spinbox.editingFinished.connect(self._update_graph_controls)
+        self.min_strain_spinbox.editingFinished.connect(self._update_graph_controls)
+        self.max_strain_spinbox.editingFinished.connect(self._update_graph_controls)
+
+        self.min_strain_spinbox.lineEdit().editingFinished.connect(self._min_strain_cleared)
+        self.max_strain_spinbox.lineEdit().editingFinished.connect(self._max_strain_cleared)
+
         self.graph_widget.dataChanged.connect(self.dataChanged); self.reset_button.clicked.connect(self.graph_widget.reset_graph); self.generate_button.clicked.connect(self._show_preset_dialog)
         self._update_graph_controls()
         self._save_state_for_undo()
         
         # Update bond breakage UI state to ensure fields are enabled/disabled correctly on startup
         self._update_bond_breakage_ui_state()
+
+    def _min_strain_cleared(self):
+        if self.min_strain_spinbox.lineEdit().text() == "":
+            if self.mode == 'Deformation':
+                self.min_strain_spinbox.setValue(0.0)
+            else:  # Temperature
+                self.min_strain_spinbox.setValue(1.0)
+
+    def _max_strain_cleared(self):
+        if self.max_strain_spinbox.lineEdit().text() == "":
+            min_val = self.min_strain_spinbox.value()
+            if self.mode == 'Deformation':
+                self.max_strain_spinbox.setValue(min_val + 0.1)
+            else:  # Temperature
+                self.max_strain_spinbox.setValue(min_val + 1.0)
 
     def _update_graph_controls(self):
         max_steps = self.max_steps_spinbox.value()
@@ -1088,6 +1172,8 @@ class StudyWidget(QWidget):
             elif scheme == "Cyclic Loading":
                 self._last_cyclic_params = params; self.graph_widget.generate_cyclic_scheme(params['cycles'], params['relax_factor'], params['start_with'])
 
+
+
     def _setup_undo_redo(self):
         self.undo_action = QAction("Undo", self)
         self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
@@ -1104,11 +1190,6 @@ class StudyWidget(QWidget):
 
         # Use a single connection for all change events to prevent duplicate recordings
         self.graph_widget.dataChanged.connect(self._schedule_undo_save)
-        
-        # Connect editingFinished signals for spinboxes
-        self.max_steps_spinbox.editingFinished.connect(self._schedule_undo_save)
-        self.min_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
-        self.max_strain_spinbox.editingFinished.connect(self._schedule_undo_save)
         
         # Timer to debounce undo saves
         self._undo_debounce_timer = QTimer()
@@ -1515,6 +1596,8 @@ class StudyWidget(QWidget):
         self.deform_scenario_combo.setVisible(not is_temp_mode)
 
         self.graph_widget.set_mode(mode)
+
+        self._update_graph_controls()
 
         button_style = "background-color: darkorange;" if is_temp_mode else ""
         self.undo_button.setStyleSheet(button_style)

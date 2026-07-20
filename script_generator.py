@@ -598,6 +598,14 @@ class LammpsScriptGenerator:
             # Get execution mode
             job_submission_config = self.config.get("job_submission", {})
             local_lammps_cmd = job_submission_config.get("local_lammps_cmd", "lmp")
+            use_multiprocessor = job_submission_config.get("local_multiprocessor", False)
+            num_processors = job_submission_config.get("local_processors", 1)
+
+            if use_multiprocessor:
+                lammps_executable = job_submission_config.get("local_lammps_executable", "lmp_mpi")
+                full_local_cmd = f"{local_lammps_cmd} -np {num_processors} {lammps_executable}"
+            else:
+                full_local_cmd = local_lammps_cmd
             
             # Check if restart functionality is enabled
             enable_restart = job_submission_config.get("enable_restart", False)
@@ -628,9 +636,9 @@ class LammpsScriptGenerator:
                                 "# Check if restart files exist for this model",
                                 f"if [ -f \"restart_files/{model_name}.restart\" ]; then",
                                 f"  echo \"Found restart file: restart_files/{model_name}.restart\"",
-                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
+                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
                                 "else",
-                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
+                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
                                 "fi",
                                 f"echo 'Started simulation in new terminal: {model_name}'",
                                 f"cd ../../",  # Go back to root directory
@@ -642,9 +650,9 @@ class LammpsScriptGenerator:
                                 f"cd {sim_directory}",
                                 "REM Check if restart files exist for this model",
                                 f"if exist \"restart_files\\{model_name}.restart\" (",
-                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
+                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart TRUE -var maxtime {max_time}{command_suffix}",
                                 ") else (",
-                                f"  {command_prefix}{local_lammps_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
+                                f"  {command_prefix}{full_local_cmd} -in {model_name}.in -var restart FALSE -var maxtime {max_time}{command_suffix}",
                                 ")",
                                 f"echo 'Started simulation in new terminal: {model_name}'",
                                 f"cd ../../",  # Go back to root directory
@@ -656,7 +664,7 @@ class LammpsScriptGenerator:
                             script_lines.extend([
                                 f"echo 'Running simulation: {model_name}'",
                                 f"cd {sim_directory}",
-                                f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
+                                f"{command_prefix}{full_local_cmd} -in {model_name}.in{command_suffix}",
                                 f"echo 'Started simulation in new terminal: {model_name}'",
                                 f"cd ../../",  # Go back to root directory
                                 ""
@@ -665,7 +673,7 @@ class LammpsScriptGenerator:
                             script_lines.extend([
                                 f"echo 'Running simulation: {model_name}'",
                                 f"cd {sim_directory}",
-                                f"{command_prefix}{local_lammps_cmd} -in {model_name}.in{command_suffix}",
+                                f"{command_prefix}{full_local_cmd} -in {model_name}.in{command_suffix}",
                                 f"echo 'Started simulation in new terminal: {model_name}'",
                                 f"cd ../../",  # Go back to root directory
                                 ""

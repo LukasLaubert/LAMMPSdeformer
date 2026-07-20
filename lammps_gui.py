@@ -1438,13 +1438,38 @@ class LammpsGui(QMainWindow):
         local_group = QGroupBox("Local Settings")
         local_layout = QFormLayout()
 
+        multi_proc_row = QHBoxLayout()
+        self.local_multiprocessor_check = QCheckBox("Use multiple processors")
+        self.local_multiprocessor_check.toggled.connect(self.toggle_multiprocessor_settings)
+        self.local_multiprocessor_check.setFixedHeight(22)
+        multi_proc_row.addWidget(self.local_multiprocessor_check)
+
+        self.local_processors_label = QLabel("Number of processors:")
+        self.local_processors_label.setFixedHeight(22)
+        self.local_processors_spinbox = QSpinBox()
+        self.local_processors_spinbox.setRange(1, 128)
+        self.local_processors_spinbox.setValue(4)
+        self.local_processors_spinbox.setFixedHeight(22)
+        multi_proc_row.addWidget(self.local_processors_label)
+        multi_proc_row.addWidget(self.local_processors_spinbox)
+        multi_proc_row.addStretch()
+        
+        local_layout.addRow(multi_proc_row)
+
+        self.local_lammps_cmd_label = QLabel("Local LAMMPS Command:")
         self.local_lammps_cmd = QLineEdit()
         self.local_lammps_cmd.setPlaceholderText("lmp")
         self.local_lammps_cmd.setToolTip("Command to run LAMMPS locally.")
-        local_layout.addRow("Local LAMMPS Command:", self.local_lammps_cmd)
+        local_layout.addRow(self.local_lammps_cmd_label, self.local_lammps_cmd)
+
+        self.local_lammps_executable_label = QLabel("LAMMPS Executable:")
+        self.local_lammps_executable = QLineEdit("lmp_mpi")
+        local_layout.addRow(self.local_lammps_executable_label, self.local_lammps_executable)
 
         local_group.setLayout(local_layout)
         scroll_layout.addWidget(local_group)
+
+        self.toggle_multiprocessor_settings(False)
 
         # Cluster settings
         cluster_group = InfoGroupBox("Cluster Settings", "https://hpc-wiki.info/hpc/SLURM", is_external=True, is_hpc=True)
@@ -1541,6 +1566,18 @@ class LammpsGui(QMainWindow):
         scroll_layout.addWidget(cluster_group)
 
         scroll_layout.addStretch()
+
+    def toggle_multiprocessor_settings(self, checked):
+        self.local_processors_label.setVisible(checked)
+        self.local_processors_spinbox.setVisible(checked)
+        self.local_lammps_executable_label.setVisible(checked)
+        self.local_lammps_executable.setVisible(checked)
+        if checked:
+            self.local_lammps_cmd_label.setText("MPI Command:")
+            self.local_lammps_cmd.setText("mpirun")
+        else:
+            self.local_lammps_cmd_label.setText("Local LAMMPS Command:")
+            self.local_lammps_cmd.setText("lmp")
         
     def create_bottom_buttons(self):
         """Create the bottom buttons"""
@@ -2154,6 +2191,9 @@ class LammpsGui(QMainWindow):
             },
             "job_submission": {
                 "local_lammps_cmd": self.local_lammps_cmd.text() or "lmp",
+                "local_multiprocessor": self.local_multiprocessor_check.isChecked(),
+                "local_processors": self.local_processors_spinbox.value(),
+                "local_lammps_executable": self.local_lammps_executable.text() or "lmp_mpi",
                 "cluster_lammps_cmd": self.cluster_lammps_cmd.text() or "lmp",
                 "srun_cmd": self.srun_cmd.text() or "srun",
                 "sbatch_cmd": self.sbatch_cmd.text() or "sbatch",
@@ -2281,6 +2321,9 @@ class LammpsGui(QMainWindow):
                     self.write_data_combo.setCurrentText("Never")
 
             # Job submission settings
+            self.local_multiprocessor_check.setChecked(self.settings.value("job_submission/local_multiprocessor", False, type=bool))
+            self.local_processors_spinbox.setValue(self.settings.value("job_submission/local_processors", 4, type=int))
+            self.local_lammps_executable.setText(self.settings.value("job_submission/local_lammps_executable", "lmp_mpi"))
             self.local_lammps_cmd.setText(self.settings.value("job_submission/local_lammps_cmd", ""))
             self.cluster_lammps_cmd.setText(self.settings.value("job_submission/cluster_lammps_cmd", ""))
             self.srun_cmd.setText(self.settings.value("job_submission/srun_cmd", ""))
@@ -2610,6 +2653,9 @@ class LammpsGui(QMainWindow):
             # Job submission settings
             if "job_submission" in config:
                 job_submission = config["job_submission"]
+                self.local_multiprocessor_check.setChecked(job_submission.get("local_multiprocessor", False))
+                self.local_processors_spinbox.setValue(job_submission.get("local_processors", 4))
+                self.local_lammps_executable.setText(job_submission.get("local_lammps_executable", "lmp_mpi"))
                 self.local_lammps_cmd.setText(job_submission.get("local_lammps_cmd", "lmp"))
                 self.cluster_lammps_cmd.setText(job_submission.get("cluster_lammps_cmd", "lmp"))
                 self.srun_cmd.setText(job_submission.get("srun_cmd", "srun"))
