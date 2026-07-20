@@ -305,8 +305,7 @@ class StudyWidget(QWidget):
     def __init__(self, initial_state=None, parent=None):
         super().__init__(parent); 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0,5,0,0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(5,5,5,5)
         controls_layout = QHBoxLayout()
         self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
         self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-1e9, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3); self.min_strain_spinbox.setKeyboardTracking(False)
@@ -327,30 +326,30 @@ class StudyWidget(QWidget):
         controls_layout.addWidget(self.undo_button); controls_layout.addWidget(self.redo_button)
         controls_layout.addWidget(self.generate_button); controls_layout.addWidget(self.reset_button)
 
-        self.graph_widget = GraphWidget(self)
-
-        # Add bottom controls
-        bottom_controls_layout = QHBoxLayout()
+        # Add direction and thermo controls
+        deform_direc_thermo_layout = QHBoxLayout()
         
         self.deform_axis_combo = QComboBox()
         self.deform_axis_combo.addItems(["x", "y", "z"])
-        self.deform_axis_combo.setMinimumWidth(50)  # Reduce horizontal size
-        self.deform_axis_combo.setMaximumWidth(70)  # Set maximum width
-        bottom_controls_layout.addWidget(QLabel("Deformation Direction:"))
-        bottom_controls_layout.addWidget(self.deform_axis_combo)
+        self.deform_axis_combo.setMinimumWidth(40)
+        self.deform_axis_combo.setMaximumWidth(70)
+        deform_direc_thermo_layout.addWidget(QLabel("Deformation Direction:"))
+        deform_direc_thermo_layout.addWidget(self.deform_axis_combo)
         
-        bottom_controls_layout.addStretch()
-
         self.thermo_freq_spinbox = QSpinBox()
         self.thermo_freq_spinbox.setPrefix("Thermo Freq: ")
         self.thermo_freq_spinbox.setRange(1, 1000000)
         self.thermo_freq_spinbox.setValue(100)
         self.thermo_freq_spinbox.setSingleStep(100)
-        bottom_controls_layout.addWidget(self.thermo_freq_spinbox)
+        deform_direc_thermo_layout.addWidget(self.thermo_freq_spinbox)
+
+        deform_direc_thermo_layout.addStretch()
+
+        self.graph_widget = GraphWidget(self)
 
         layout.addLayout(controls_layout)
+        layout.addLayout(deform_direc_thermo_layout)
         layout.addWidget(self.graph_widget)
-        layout.addLayout(bottom_controls_layout)
 
         self._last_staircase_params = {'cycles': 5, 'factor': 1.0, 'direction': 'Tension'}
         self._last_cyclic_params = {'cycles': 3, 'relax_factor': 0.0, 'start_with': 'Tension'}

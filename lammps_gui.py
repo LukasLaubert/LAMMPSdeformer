@@ -527,7 +527,7 @@ class LammpsScriptGenerator(QMainWindow):
     def create_fixes_tab(self):
         """Create the fixes tab"""
         self.fixes_tab = QWidget()
-        self.tab_widget.addTab(self.fixes_tab, "Fixes")
+        self.tab_widget.addTab(self.fixes_tab, "Fixes && Computes")
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -625,6 +625,36 @@ class LammpsScriptGenerator(QMainWindow):
         custom_fixes_layout.addWidget(self.custom_fixes_text)
         custom_fixes_group.setLayout(custom_fixes_layout)
         scroll_layout.addWidget(custom_fixes_group)
+
+        # Custom computes
+        custom_computes_group = InfoGroupBox("Custom Computes", "compute")
+        custom_computes_layout = QVBoxLayout()
+
+        self.enable_custom_computes = QCheckBox("Enable Custom Computes")
+        self.enable_custom_computes.setChecked(False)
+        self.enable_custom_computes.setToolTip("Enable custom compute commands")
+        self.enable_custom_computes.stateChanged.connect(self.toggle_custom_computes)
+
+        # Add compute commands button - place it on the same line as the checkbox
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(self.enable_custom_computes)
+        top_layout.addStretch()
+
+        self.compute_commands_button = QPushButton("Add Compute Command")
+        self.compute_commands_button.clicked.connect(self.show_compute_commands_dialog)
+        self.compute_commands_button.setMaximumWidth(180)  # Limit button width
+        top_layout.addWidget(self.compute_commands_button)
+
+        self.custom_computes_text = QTextEdit()
+        self.custom_computes_text.setPlaceholderText("Enter custom compute commands here...")
+        self.custom_computes_text.setMaximumHeight(100)
+        self.custom_computes_text.setEnabled(False)
+        self.custom_computes_text.setToolTip("Custom LAMMPS compute commands")
+
+        custom_computes_layout.addLayout(top_layout)
+        custom_computes_layout.addWidget(self.custom_computes_text)
+        custom_computes_group.setLayout(custom_computes_layout)
+        scroll_layout.addWidget(custom_computes_group)
 
         scroll_layout.addStretch()
 
@@ -1140,36 +1170,6 @@ class LammpsScriptGenerator(QMainWindow):
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
         
-        # Custom computes
-        custom_computes_group = InfoGroupBox("Custom Computes", "compute")
-        custom_computes_layout = QVBoxLayout()
-        
-        self.enable_custom_computes = QCheckBox("Enable Custom Computes")
-        self.enable_custom_computes.setChecked(False)
-        self.enable_custom_computes.setToolTip("Enable custom compute commands")
-        self.enable_custom_computes.stateChanged.connect(self.toggle_custom_computes)
-        
-        # Add compute commands button - place it on the same line as the checkbox
-        top_layout = QHBoxLayout()
-        top_layout.addWidget(self.enable_custom_computes)
-        top_layout.addStretch()
-        
-        self.compute_commands_button = QPushButton("Add Compute Command")
-        self.compute_commands_button.clicked.connect(self.show_compute_commands_dialog)
-        self.compute_commands_button.setMaximumWidth(150)  # Limit button width
-        top_layout.addWidget(self.compute_commands_button)
-        
-        self.custom_computes_text = QTextEdit()
-        self.custom_computes_text.setPlaceholderText("Enter custom compute commands here...")
-        self.custom_computes_text.setMaximumHeight(100)
-        self.custom_computes_text.setEnabled(False)
-        self.custom_computes_text.setToolTip("Custom LAMMPS compute commands")
-        
-        custom_computes_layout.addLayout(top_layout)
-        custom_computes_layout.addWidget(self.custom_computes_text)
-        custom_computes_group.setLayout(custom_computes_layout)
-        scroll_layout.addWidget(custom_computes_group)
-        
         # Custom dumps
         custom_dumps_group = InfoGroupBox("Custom Dumps", "dump")
         custom_dumps_layout = QVBoxLayout()
@@ -1192,11 +1192,6 @@ class LammpsScriptGenerator(QMainWindow):
         
         # Add stretch to push everything up
         scroll_layout.addStretch()
-        
-    def toggle_custom_computes(self, state):
-        """Toggle custom computes text box based on checkbox state"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.custom_computes_text.setEnabled(enabled)
         
     def toggle_custom_dumps(self, state):
         """Toggle custom dumps text box based on checkbox state"""
