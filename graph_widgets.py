@@ -314,10 +314,18 @@ class StudyWidget(QWidget):
 
         self.undo_button = QPushButton("↩"); self.redo_button = QPushButton("↪")
         self.generate_button = QPushButton("Generate Scheme..."); self.reset_button = QPushButton("Reset Graph")
+        
+        # Add some left margin to move buttons left by about 2mm
+        self.undo_button.setStyleSheet("margin-left: 8px;")
+        self.redo_button.setStyleSheet("margin-left: 8px;")
+        self.generate_button.setStyleSheet("margin-left: 8px;")
+        self.reset_button.setStyleSheet("margin-left: 8px;")
 
-        controls_layout.addWidget(QLabel("<b>Axis Controls:</b>")); controls_layout.addWidget(self.max_steps_spinbox); controls_layout.addWidget(self.min_strain_spinbox); controls_layout.addWidget(self.max_strain_spinbox); controls_layout.addStretch()
+        controls_layout.addWidget(QLabel("<b>Axis Controls:</b>")); controls_layout.addWidget(self.max_steps_spinbox); controls_layout.addWidget(self.min_strain_spinbox); controls_layout.addWidget(self.max_strain_spinbox); 
+        # Move buttons to the left by 2mm (approximately 8 pixels)
         controls_layout.addWidget(self.undo_button); controls_layout.addWidget(self.redo_button)
         controls_layout.addWidget(self.generate_button); controls_layout.addWidget(self.reset_button)
+        controls_layout.addStretch()
 
         self.graph_widget = GraphWidget(self)
 
@@ -516,7 +524,9 @@ class DeformationTab(QWidget):
         add_tab_button = QPushButton("+")
         add_tab_button.setToolTip("Add a new study")
         add_tab_button.clicked.connect(self._add_study)
-        add_tab_button.setFixedHeight(18)  # Reduce height to prevent overlap
+        add_tab_button.setFixedSize(20, 14)  # Reduced height and width
+        # Adjust position with stylesheet - move up by 3mm and left by 2mm
+        add_tab_button.setStyleSheet("QPushButton { margin: -3px 2px 0px 0px; padding: 0px; }")  # Move up and left
         self.tab_widget.setCornerWidget(add_tab_button, Qt.Corner.TopRightCorner)
 
         main_layout.addWidget(self.tab_widget)
@@ -525,13 +535,13 @@ class DeformationTab(QWidget):
         self._add_study(is_first=True)
 
     def _create_summary_area(self, layout):
+        # Use a single scrollable text area for all summaries
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        self.summary_container = QWidget()
-        self.summary_layout = QVBoxLayout(self.summary_container)
-        self.summary_layout.setSpacing(0)  # Remove all spacing
-        self.summary_layout.setContentsMargins(0, 0, 0, 0)  # Remove all margins
-        scroll_area.setWidget(self.summary_container)
+        self.summary_text = QTextEdit()
+        self.summary_text.setReadOnly(True)
+        self.summary_text.setFont(QFont("Courier New", 10))
+        scroll_area.setWidget(self.summary_text)
         layout.addWidget(scroll_area)
 
     def _add_study(self, is_first=False):
@@ -546,9 +556,29 @@ class DeformationTab(QWidget):
 
         new_study.dataChanged.connect(self.update_summaries)
         new_study.graph_widget.dataChanged.connect(self.update_summaries)  # Add this line for real-time updates
+        # Connect mouse move event for real-time updates
+        original_mouse_move = new_study.graph_widget.mouseMoveEvent
+        new_study.graph_widget.mouseMoveEvent = lambda event: self._wrapped_mouse_move_event(original_mouse_move, event, new_study.graph_widget)
+        # Also connect mouse release event for final updates
+        original_mouse_release = new_study.graph_widget.mouseReleaseEvent
+        new_study.graph_widget.mouseReleaseEvent = lambda event: self._wrapped_mouse_release_event(original_mouse_release, event, new_study.graph_widget)
         tab_name = f"Study{self._get_next_default_study_number():02d}"
         tab_index = self.tab_widget.addTab(new_study, tab_name); self.tab_widget.setCurrentIndex(tab_index)
         self.update_summaries()
+
+    def _wrapped_mouse_move_event(self, original_mouse_move_event, event, graph_widget):
+        # Call the original mouse move event
+        result = original_mouse_move_event(event)
+        # Trigger real-time summary updates during mouse movement
+        self.update_summaries()
+        return result
+        
+    def _wrapped_mouse_release_event(self, original_mouse_release_event, event, graph_widget):
+        # Call the original mouse release event
+        result = original_mouse_release_event(event)
+        # Trigger final summary update when mouse is released
+        self.update_summaries()
+        return result
 
     def _get_next_default_study_number(self):
         num = 1
@@ -611,32 +641,30 @@ class DeformationTab(QWidget):
         self.update_summaries()
 
     def update_summaries(self):
-        while self.summary_layout.count():
-            item = self.summary_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
-
         timestep = 0
+        unit_key = "s"
         if self.tab_widget.count() > 0:
-            # A bit of a hack to get the timestep, since it's not stored here.
-            # Assumes all graphs have the same timestep.
+            # Get timestep and unit from first widget
             first_widget = self.tab_widget.widget(0)
             if first_widget:
                 timestep = first_widget.graph_widget._timestep
                 unit_key = first_widget.graph_widget._time_unit
 
+        # Build all summaries in one text area
+        all_summaries = []
         for i in range(self.tab_widget.count()):
             study_widget = self.tab_widget.widget(i)
-            summary_header = QLabel(f"<b>Summary for {self.tab_widget.tabText(i)}</b>")
-            summary_header.setContentsMargins(0, 0, 0, 0)  # Remove margins
-            self.summary_layout.addWidget(summary_header)
-            # Use QLabel instead of QTextEdit to avoid scrolling issues
-            summary_label = QLabel()
-            summary_label.setFont(QFont("Courier New", 10))
-            summary_label.setWordWrap(True)
-            summary_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            study_name = self.tab_widget.tabText(i)
+            
+            # Add study header with separator
+            all_summaries.append(f"# --- Summary for {study_name} --- #")
+            
+            # Add data
             points = study_widget.graph_widget.get_data_points()
             header = "{:<10} | {:<18} | {:<18} | {:<18} | {:<20} | {}".format("Segment", "Time Step", "Time", "Strain", "Slope (ε/step)", "Strain Rate (ε/t)")
-            lines = [header, "-" * (len(header)+2)]
+            all_summaries.append(header)
+            all_summaries.append("-" * len(header))
+            
             for j in range(len(points) - 1):
                 p1, p2 = points[j], points[j+1]
                 p1_t = p1.x() * timestep
@@ -648,18 +676,14 @@ class DeformationTab(QWidget):
                     if val == unit_key:
                         time_unit = key
                         break
-                lines.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
-            summary_label.setText("\n".join(lines))
-            # Set size policy to expand
-            summary_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            # Calculate height based on number of lines
-            font_metrics = QFontMetrics(summary_label.font())
-            line_height = font_metrics.lineSpacing()
-            total_height = line_height * (len(lines) + 2)  # +2 for padding
-            summary_label.setFixedHeight(total_height)
-            summary_label.setContentsMargins(0, 0, 0, 0)  # Remove margins
-            self.summary_layout.addWidget(summary_label)
-        self.summary_layout.addStretch()
+                all_summaries.append(f"{j+1:<10} | {f'[{p1.x():.0f}, {p2.x():.0f}]':<18} | {f'[{p1_t:.2f}, {p2_t:.2f}] {unit_key}':<18} | {f'[{p1.y():.3f}, {p2.y():.3f}]':<18} | {f'{slope:.4e}':<20} | {rate:.4e}")
+            
+            # Add blank line between studies (except for the last one)
+            if i < self.tab_widget.count() - 1:
+                all_summaries.append("")
+
+        # Set the text
+        self.summary_text.setText("\n".join(all_summaries))
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
