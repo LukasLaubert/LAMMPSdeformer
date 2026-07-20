@@ -399,10 +399,7 @@ class LammpsScriptGenerator:
                 initial_temp = points[0][1] if points else 300.0
                 script_lines.extend([f"variable set_temp equal {initial_temp}", ""])
 
-            fixes_computes_lines, final_thermo_style = self._generate_fixes_computes_section(deform_study, output_config, fixes_config, mode, deform_axis, is_shear)
-            if fixes_computes_lines:
-                script_lines.extend(["#------------------------", "# Fixes & Computes", "#------------------------", *fixes_computes_lines])
-            
+            # --- Initial Velocity (Moved BEFORE Fixes) ---
             if system_config.get("enable_velocity", True):
                 initial_temp = points[0][1] if mode == "Temperature" and points else ensemble_config.get("temperature", 300.0)
                 velocity_command = f"velocity all create {initial_temp} {system_config.get('initial_velocity_seed', 12345)} mom yes rot yes dist gaussian"
@@ -420,6 +417,11 @@ class LammpsScriptGenerator:
                         ""
                     ])
 
+            # --- Fixes & Computes ---
+            fixes_computes_lines, final_thermo_style = self._generate_fixes_computes_section(deform_study, output_config, fixes_config, mode, deform_axis, is_shear)
+            if fixes_computes_lines:
+                script_lines.extend(["#------------------------", "# Fixes & Computes", "#------------------------", *fixes_computes_lines])
+            
             # Handle the new bond commands functionality - if the new field exists, use it
             bond_commands_config = deform_study.get("bond_commands", {})
             bond_commands_text = bond_commands_config.get("commands", "").strip()
@@ -773,24 +775,38 @@ class LammpsScriptGenerator:
         """Generates the full string for the Fixes & Computes section, including time-averaging."""
         lines = []
         
+        # 1. Base Thermo Style
         base_thermo_style = output_config.get("thermo_style", "step ...")
         thermo_style_parts = base_thermo_style.split()
+        
         ensemble_config = deform_study.get("ensemble", {})
-        pressure = self._format_float(ensemble_config.get("pressure", 1.0))
+        
+        # Define Maps
+        strain_map = {'εxx': 'strain_xx', 'εyy': 'strain_yy', 'εzz': 'strain_zz', 
+                      'εxy': 'strain_xy', 'εxz': 'strain_xz', 'εyz': 'strain_yz'}
+        stress_map = {'σxx': 'cauchy_xx', 'σyy': 'cauchy_yy', 'σzz': 'cauchy_zz', 
+                      'σxy': 'cauchy_xy', 'σxz': 'cauchy_xz', 'σyz': 'cauchy_yz', 
+                      'von Mises': 'vMises', 'hydrostatic': 'hydrostatic'}
 
         # --- Add selected strains/stresses to thermo output ---
         if mode == "Deformation":
-            strain_map = {'εxx': 'strain_xx', 'εyy': 'strain_yy', 'εzz': 'strain_zz', 'εxy': 'strain_xy', 'εxz': 'strain_xz', 'εyz': 'strain_yz'}
             for strain in output_config.get("eng_strains", []):
-                if strain == 'deformation direction':
+                # Handle distinct label
+                if strain == 'strain deformation direction':
+                    axis_suffix = deform_axis if is_shear else deform_axis * 2
+                    thermo_style_parts.append(f"v_strain_{axis_suffix}")
+                elif strain == 'deformation direction': # Legacy fallback
                     axis_suffix = deform_axis if is_shear else deform_axis * 2
                     thermo_style_parts.append(f"v_strain_{axis_suffix}")
                 elif strain in strain_map:
                     thermo_style_parts.append(f"v_{strain_map[strain]}")
             
-            stress_map = {'σxx': 'cauchy_xx', 'σyy': 'cauchy_yy', 'σzz': 'cauchy_zz', 'σxy': 'cauchy_xy', 'σxz': 'cauchy_xz', 'σyz': 'cauchy_yz', 'von Mises': 'vMises', 'hydrostatic': 'hydrostatic'}
             for stress in output_config.get("cauchy_stresses", []):
-                if stress == 'deformation direction':
+                # Handle distinct label
+                if stress == 'stress deformation direction':
+                     axis_suffix = deform_axis if is_shear else deform_axis * 2
+                     thermo_style_parts.append(f"v_cauchy_{axis_suffix}")
+                elif stress == 'deformation direction': # Legacy fallback
                      axis_suffix = deform_axis if is_shear else deform_axis * 2
                      thermo_style_parts.append(f"v_cauchy_{axis_suffix}")
                 elif stress in stress_map:
@@ -802,17 +818,24 @@ class LammpsScriptGenerator:
 
         # --- Time Averaging Logic ---
         averaged_quantities = output_config.get("averaged_quantities", [])
+        
         if averaged_quantities:
             nevery = output_config.get("avg_nevery", 10)
             nrepeat = output_config.get("avg_nrepeat", 100)
             nfreq = nevery * nrepeat
-            lines.append("# --- Time Averaging Computes ---")
-            processed_vars = set() # Keep track of variables we've already processed
+            lines.append("# --- Time Averaging ---")
+            
+            # Keep track of variables we've already processed to avoid duplicates
+            processed_vars = set() 
 
+            # 1. Pressure Tensor Terms
             pressure_terms = {'press', 'pxx', 'pyy', 'pzz', 'pxy', 'pxz', 'pyz'}
-            if any(term in averaged_quantities for term in pressure_terms):
+            requested_press = [q for q in averaged_quantities if q in pressure_terms]
+            
+            if requested_press:
                 lines.append("compute press_tensor all pressure thermo_temp")
                 lines.append(f"fix ave_press all ave/time {nevery} {nrepeat} {nfreq} c_press_tensor[*]")
+                
                 lines.extend([
                     "variable press_avg equal f_ave_press",
                     "variable pxx_avg equal f_ave_press[1]",
@@ -822,66 +845,90 @@ class LammpsScriptGenerator:
                     "variable pxz_avg equal f_ave_press[5]",
                     "variable pyz_avg equal f_ave_press[6]"
                 ])
-                if 'press' in averaged_quantities: thermo_style_parts.append("v_press_avg")
-                if 'pxx' in averaged_quantities: thermo_style_parts.append("v_pxx_avg")
-                if 'pyy' in averaged_quantities: thermo_style_parts.append("v_pyy_avg")
-                if 'pzz' in averaged_quantities: thermo_style_parts.append("v_pzz_avg")
-                if 'pxy' in averaged_quantities: thermo_style_parts.append("v_pxy_avg")
-                if 'pxz' in averaged_quantities: thermo_style_parts.append("v_pxz_avg")
-                if 'pyz' in averaged_quantities: thermo_style_parts.append("v_pyz_avg")
+                
+                for term in requested_press:
+                    var_name = f"{term}_avg"
+                    thermo_style_parts.append(f"v_{var_name}")
+                    processed_vars.add(term)
 
+            # 2. Standard Computes (Temp, KE, PE)
             if 'temp' in averaged_quantities:
                 lines.append("compute avg_temp_compute all temp")
                 lines.append(f"fix avg_temp all ave/time {nevery} {nrepeat} {nfreq} c_avg_temp_compute")
                 lines.append("variable temp_avg equal f_avg_temp")
                 thermo_style_parts.append("v_temp_avg")
+                processed_vars.add('temp')
+
             if 'ke' in averaged_quantities:
                 lines.append("compute avg_ke_total_compute all reduce sum ke")
                 lines.append(f"fix avg_ke all ave/time {nevery} {nrepeat} {nfreq} c_avg_ke_total_compute")
                 lines.append("variable ke_avg equal f_avg_ke")
                 thermo_style_parts.append("v_ke_avg")
+                processed_vars.add('ke')
+
             if 'pe' in averaged_quantities:
                 lines.append("compute avg_pe_total_compute all reduce sum pe")
                 lines.append(f"fix avg_pe all ave/time {nevery} {nrepeat} {nfreq} c_avg_pe_total_compute")
                 lines.append("variable pe_avg equal f_avg_pe")
                 thermo_style_parts.append("v_pe_avg")
+                processed_vars.add('pe')
             
-            # Averaging for selected strains and stresses
-            if 'strain' in averaged_quantities and mode == "Deformation":
-                for strain in output_config.get("eng_strains", []):
-                    var_name = None
-                    if strain == 'deformation direction':
+            # 3. Individual Strains, Stresses, and Generic Quantities
+            for item in averaged_quantities:
+                # Skip if already handled by complex logic above
+                if item in processed_vars: continue
+                
+                var_name = None
+                
+                # Check Strains
+                if item == 'strain deformation direction':
+                    if mode == "Deformation":
                         axis_suffix = deform_axis if is_shear else deform_axis * 2
                         var_name = f"strain_{axis_suffix}"
-                    elif strain in strain_map:
-                        var_name = strain_map[strain]
-                    
-                    if var_name and var_name not in processed_vars:
-                        lines.append(f"fix avg_{var_name} all ave/time {nevery} {nrepeat} {nfreq} v_{var_name}")
-                        lines.append(f"variable {var_name}_avg equal f_avg_{var_name}")
-                        thermo_style_parts.append(f"v_{var_name}_avg")
-                        processed_vars.add(var_name)
-            
-            if 'stress' in averaged_quantities and mode == "Deformation":
-                for stress in output_config.get("cauchy_stresses", []):
-                    var_name = None
-                    if stress == 'deformation direction':
+                # Check Stresses
+                elif item == 'stress deformation direction':
+                    if mode == "Deformation":
                         axis_suffix = deform_axis if is_shear else deform_axis * 2
                         var_name = f"cauchy_{axis_suffix}"
-                    elif stress in stress_map:
-                        var_name = stress_map[stress]
-
-                    if var_name and var_name not in processed_vars:
+                # Legacy fallback
+                elif item == 'deformation direction':
+                    if mode == "Deformation":
+                        axis_suffix = deform_axis if is_shear else deform_axis * 2
+                        var_name = f"strain_{axis_suffix}"
+                # Maps
+                elif item in strain_map:
+                    if mode == "Deformation": var_name = strain_map[item]
+                elif item in stress_map:
+                    if mode == "Deformation": var_name = stress_map[item]
+                
+                # If identified as a specific Strain/Stress variable
+                if var_name:
+                    if var_name not in processed_vars:
                         lines.append(f"fix avg_{var_name} all ave/time {nevery} {nrepeat} {nfreq} v_{var_name}")
                         lines.append(f"variable {var_name}_avg equal f_avg_{var_name}")
                         thermo_style_parts.append(f"v_{var_name}_avg")
                         processed_vars.add(var_name)
+                        processed_vars.add(item) # Mark original text as processed
+                else:
+                    # 4. Generic Fallback for Standard Keywords (e.g. density, vol, step, etc.)
+                    # Create a variable to wrap the keyword so it can be averaged
+                    lines.append(f"variable {item}_input equal {item}")
+                    lines.append(f"fix ave_{item} all ave/time {nevery} {nrepeat} {nfreq} v_{item}_input")
+                    lines.append(f"variable {item}_avg equal f_ave_{item}")
+                    thermo_style_parts.append(f"v_{item}_avg")
+                    processed_vars.add(item)
             
             lines.append("")
 
+        # Remove duplicates from thermo_style while preserving order
+        seen = set()
+        final_thermo_style_list = []
+        for x in thermo_style_parts:
+            if x not in seen:
+                final_thermo_style_list.append(x)
+                seen.add(x)
 
-
-        final_thermo_style = " ".join(dict.fromkeys(thermo_style_parts))
+        final_thermo_style = " ".join(final_thermo_style_list)
         
         return lines, final_thermo_style
 

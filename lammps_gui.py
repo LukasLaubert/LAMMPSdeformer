@@ -27,9 +27,11 @@ try:
                                 QSplitter, QMessageBox, QProgressBar, QDialog, QGridLayout,
                                 QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
                                 QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate,
-                                QListWidget, QStyle)
-    from PyQt6.QtCore import Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF
-    from PyQt6.QtGui import QIcon, QDesktopServices, QCursor, QPalette, QColor, QPixmap, QPainter, QFont
+                                QListWidget, QStyle, QLayout)
+    from PyQt6.QtCore import (Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF, 
+                             QRect, QPoint, QMimeData, QObject, QEvent)
+    from PyQt6.QtGui import (QIcon, QDesktopServices, QCursor, QPalette, QColor, QPixmap, 
+                            QPainter, QFont, QDrag, QAction, QStandardItemModel, QStandardItem)
     
     # Handle QRegularExpression vs QRegExp compatibility
     try:
@@ -227,6 +229,532 @@ class NumericTableWidgetItem(QTableWidgetItem):
                 return
         else:
             super().setData(role, value)
+
+class FlowLayout(QLayout):
+    """Standard FlowLayout for PyQt6 to arrange chips."""
+    def __init__(self, parent=None, margin=0, hSpacing=2, vSpacing=2):
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self._item_list = []
+        self._h_space = hSpacing
+        self._v_space = vSpacing
+
+    def __del__(self):
+        item = self.takeAt(0)
+        while item:
+            item = self.takeAt(0)
+
+    def addItem(self, item):
+        self._item_list.append(item)
+
+    def horizontalSpacing(self):
+        return self._h_space
+
+    def verticalSpacing(self):
+        return self._v_space
+
+    def count(self):
+        return len(self._item_list)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        height = self._do_layout(QRect(0, 0, width, 0), True)
+        return height
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._item_list:
+            size = size.expandedTo(item.minimumSize())
+        size += QSize(2 * self.contentsMargins().top(), 2 * self.contentsMargins().top())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        x = rect.x()
+        y = rect.y()
+        line_height = 0
+        spacing = self.horizontalSpacing()
+
+        for item in self._item_list:
+            style = item.widget().style()
+            layout_spacing_x = style.layoutSpacing(QSizePolicy.ControlType.PushButton, QSizePolicy.ControlType.PushButton, Qt.Orientation.Horizontal)
+            layout_spacing_y = style.layoutSpacing(QSizePolicy.ControlType.PushButton, QSizePolicy.ControlType.PushButton, Qt.Orientation.Vertical)
+            space_x = spacing + layout_spacing_x
+            space_y = self.verticalSpacing() + layout_spacing_y
+            
+            next_x = x + item.sizeHint().width() + space_x
+            if next_x - space_x > rect.right() and line_height > 0:
+                x = rect.x()
+                y = y + line_height + space_y
+                next_x = x + item.sizeHint().width() + space_x
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+
+            x = next_x
+            line_height = max(line_height, item.sizeHint().height())
+
+        return y + line_height - rect.y()
+    
+    def indexOf(self, widget):
+        for i, item in enumerate(self._item_list):
+            if item.widget() == widget:
+                return i
+        return -1
+        
+    def moveItem(self, from_index, to_index):
+        if 0 <= from_index < len(self._item_list) and 0 <= to_index < len(self._item_list):
+            item = self._item_list.pop(from_index)
+            self._item_list.insert(to_index, item)
+            self.invalidate()
+
+class DraggableChip(QFrame):
+    """A chip that can be dragged, styled exactly like the original Chip."""
+    removed = pyqtSignal(str)
+
+    def __init__(self, text, category="standard", parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.category = category
+        self.is_struck = False
+        self.is_enabled_visual = True
+        
+        # Match original Chip layout EXACTLY
+        self.setLayout(QHBoxLayout())
+        self.layout().setContentsMargins(2, 0, 2, 0)
+        self.layout().setSpacing(2)
+        self.layout().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(18) # Original height
+
+        self.label = QLabel(text)
+        self.label.setStyleSheet("font-size: 9px; border: none; background: transparent;")
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents) 
+        self.layout().addWidget(self.label)
+
+        self.remove_button = QPushButton()
+        # Use standard icon like original
+        close_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
+        self.remove_button.setIcon(close_icon)
+        self.remove_button.setIconSize(QSize(9, 9))
+        self.remove_button.setFixedSize(12, 12)
+        self.remove_button.setCursor(Qt.CursorShape.ArrowCursor)
+        self.remove_button.setStyleSheet(""" 
+            QPushButton {
+                border: none; 
+                background-color: transparent;
+            }
+            QPushButton:hover {
+                background-color: #d3d3d3;
+                border-radius: 6px;
+            }
+        """)
+        self.remove_button.clicked.connect(self.request_remove)
+        self.layout().addWidget(self.remove_button)
+
+        self.update_style()
+
+    def update_style(self):
+        # Background Colors
+        if self.category == "strain":
+            bg = "#ffebee" # Light Red
+            border = "#ef9a9a"
+        elif self.category == "stress":
+            bg = "#e3f2fd" # Light Blue
+            border = "#90caf9"
+        else:
+            bg = "#e0e0e0" # Original Grey
+            border = "#bdbdbd"
+
+        # Text Color logic
+        if self.is_struck:
+            text_color = "gray"
+        elif not self.is_enabled_visual:
+            text_color = "gray"
+        elif self.category == "strain":
+            text_color = "#c62828" # Red
+        elif self.category == "stress":
+            text_color = "#1565c0" # Blue
+        else:
+            text_color = "black"
+
+        self.setStyleSheet(f"background-color: {bg}; border-radius: 8px;")
+        self.label.setStyleSheet(f"font-size: 10px; color: {text_color}; border: none; background: transparent;")
+    
+    def set_enabled_visuals(self, enabled):
+        self.is_enabled_visual = enabled
+        self.update_style()
+        # Disable remove button if disabled
+        self.remove_button.setEnabled(enabled)
+
+    def set_struck(self, struck):
+        self.is_struck = struck
+        self.update_style()
+        self.update() 
+        self.setAcceptDrops(not struck)
+
+    def request_remove(self):
+        self.removed.emit(self.text)
+        self.deleteLater()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self.is_struck and self.is_enabled_visual:
+            self.drag_start_position = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or self.is_struck or not self.is_enabled_visual:
+            return
+        if (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(self.text)
+        mime.setData("application/x-chip-widget", b"") 
+        drag.setMimeData(mime)
+        pixmap = self.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(event.pos())
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.is_struck:
+            painter = QPainter(self)
+            painter.setPen(QColor("gray"))
+            y = self.height() // 2
+            painter.drawLine(4, y, self.width() - 16, y)
+
+class MouseFilter(QObject):
+    def __init__(self, combo):
+        super().__init__()
+        self.combo = combo
+
+    def eventFilter(self, obj, event):
+        if event.type() == event.Type.MouseButtonPress:
+            if self.combo.isEnabled():
+                self.combo.showPopup()
+                return True
+            return False
+        return False
+
+class LineEditFilter(QObject):
+    """Filter to handle clicks on the LineEdit to toggle the popup."""
+    def __init__(self, parent_widget):
+        super().__init__()
+        self.widget = parent_widget # OutputSelectorWidget
+        self.combo = parent_widget.combo
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if self.combo.isEnabled():
+                # Check if the popup was just closed (e.g. by this click)
+                # If it closed < 200ms ago, do not re-open it.
+                if time.time() - self.widget._popup_closed_time < 0.2:
+                    return True
+                
+                # Standard Toggle Logic
+                if self.combo.view().isVisible():
+                    self.combo.hidePopup()
+                else:
+                    self.combo.showPopup()
+                return True
+        return False
+
+class DropdownViewFilter(QObject):
+    """Filter to keep the dropdown open, handle row clicks, and track close time."""
+    def __init__(self, parent_widget):
+        super().__init__()
+        self.widget = parent_widget # OutputSelectorWidget
+        self.view = parent_widget.combo.view()
+
+    def eventFilter(self, obj, event):
+        # Track when popup closes to prevent immediate re-opening by LineEdit click
+        if event.type() == QEvent.Type.Hide:
+            self.widget._popup_closed_time = time.time()
+            return False
+
+        # Handle Mouse Release to toggle items without closing
+        if event.type() == QEvent.Type.MouseButtonRelease:
+            index = self.view.indexAt(event.pos())
+            if index.isValid():
+                item = self.widget.model.itemFromIndex(index)
+                if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                    # Toggle state
+                    new_state = Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
+                    item.setCheckState(new_state)
+                    
+                    text = item.text()
+                    category = item.data(Qt.ItemDataRole.UserRole)
+                    if new_state == Qt.CheckState.Checked:
+                        self.widget.add_chip(text, category)
+                    else:
+                        self.widget.remove_chip(text)
+                    
+                    return True # Eat event -> Keep Open
+        
+        # Handle Key Press
+        if event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Enter, Qt.Key.Key_Return):
+                index = self.view.currentIndex()
+                if index.isValid():
+                    item = self.widget.model.itemFromIndex(index)
+                    if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                        new_state = Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
+                        item.setCheckState(new_state)
+                        text = item.text()
+                        category = item.data(Qt.ItemDataRole.UserRole)
+                        if new_state == Qt.CheckState.Checked:
+                            self.widget.add_chip(text, category)
+                        else:
+                            self.widget.remove_chip(text)
+                        return True
+
+        return False
+
+class OutputSelectorWidget(QWidget):
+    # Static definitions
+    STD_THERMO = "step, elapsed, elaplong, dt, time, cpu, tpcpu, spcpu, cpuuse, cpuremain, part, timeremain, atoms, temp, press, pe, ke, etotal, evdwl, ecoul, epair, ebond, eangle, edihed, eimp, emol, elong, etail, enthalpy, ecouple, econserve, vol, density, xlo, xhi, ylo, yhi, zlo, zhi, xy, xz, yz, avecx, avecy, avecz, bvecx, bvecy, bvecz, cvecx, cvecy, cvecz, lx, ly, lz, xlat, ylat, zlat, cella, cellb, cellc, cellalpha, cellbeta, cellgamma, pxx, pyy, pzz, pxy, pxz, pyz, bonds, angles, dihedrals, impropers, fmax, fnorm, nbuild, ndanger".split(", ")
+    STD_TRAJ = "id, mol, proc, procp1, type, element, mass, x, y, z, xs, ys, zs, xu, yu, zu, xsu, ysu, zsu, ix, iy, iz, vx, vy, vz, fx, fy, fz, q, mux, muy, muz, mu, radius, diameter, omegax, omegay, omegaz, angmomx, angmomy, angmomz, tqx, tqy, tqz".split(", ")
+    STRAINS = ['strain deformation direction', 'εxx', 'εyy', 'εzz', 'εxy', 'εxz', 'εyz']
+    STRESSES = ['stress deformation direction', 'σxx', 'σyy', 'σzz', 'σxy', 'σxz', 'σyz', 'von Mises', 'hydrostatic']
+
+    selectionChanged = pyqtSignal()
+
+    def __init__(self, mode="thermo", parent=None):
+        super().__init__(parent)
+        self.mode = mode
+        self.deformation_active = False
+        self.chips = {}
+        self.is_enabled = True
+        self._popup_closed_time = 0.0 # Track close time
+
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0,0,0,0)
+        self.main_layout.setSpacing(2)
+        
+        self.combo = QComboBox()
+        self.combo.setEditable(True)
+        self.combo.lineEdit().setReadOnly(True)
+        self.combo.setFixedHeight(22)
+        
+        # 1. Filter for the LineEdit (Click to Open/Close)
+        self._line_filter = LineEditFilter(self)
+        self.combo.lineEdit().installEventFilter(self._line_filter)
+
+        self.model = QStandardItemModel()
+        self.combo.setModel(self.model)
+        
+        # 2. Filter for the View (Keep open, track hide)
+        self._view_filter = DropdownViewFilter(self)
+        self.combo.view().installEventFilter(self._view_filter)
+        self.combo.view().viewport().installEventFilter(self._view_filter)
+        
+        # 3. Force placeholder text persistence
+        self.combo.currentTextChanged.connect(self._force_placeholder)
+        
+        self.populate_model()
+        self.main_layout.addWidget(self.combo)
+        
+        self.chip_container = QWidget()
+        self.flow_layout = FlowLayout(self.chip_container)
+        self.chip_container.setLayout(self.flow_layout)
+        self.chip_container.setAcceptDrops(True)
+        self.chip_container.dragEnterEvent = self.dragEnterEvent
+        self.chip_container.dropEvent = self.dropEvent
+        self.main_layout.addWidget(self.chip_container)
+
+    def setPlaceholderText(self, text):
+        self.combo.lineEdit().setPlaceholderText(text)
+        self._force_placeholder()
+
+    def _force_placeholder(self):
+        """Clears text so placeholder is visible."""
+        if self.combo.currentText() != "":
+            self.combo.setEditText("")
+
+    def populate_model(self):
+        if self.mode == "thermo":
+            items = self.STD_THERMO
+        else:
+            items = self.STD_TRAJ
+        for text in items:
+            self.add_check_item(text, "standard")
+            
+        if self.mode != "trajectory":
+            self.add_header_item("Engineering Strains", QColor("#ffebee"), QColor("#c62828"))
+            for text in self.STRAINS:
+                self.add_check_item(text, "strain")
+            self.add_header_item("Cauchy Stresses", QColor("#e3f2fd"), QColor("#1565c0"))
+            for text in self.STRESSES:
+                self.add_check_item(text, "stress")
+
+    def add_header_item(self, text, bg_color, text_color):
+        item = QStandardItem(text)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setBackground(bg_color)
+        item.setForeground(text_color)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        self.model.appendRow(item)
+
+    def add_check_item(self, text, category):
+        item = QStandardItem(text)
+        item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        item.setData(Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        item.setData(category, Qt.ItemDataRole.UserRole)
+        self.model.appendRow(item)
+        
+    def add_chip(self, text, category):
+        if text in self.chips: return
+        chip = DraggableChip(text, category)
+        chip.removed.connect(self.on_chip_removed)
+        chip.set_enabled_visuals(self.is_enabled)
+        
+        self.flow_layout.addWidget(chip)
+        self.chips[text] = chip
+        if category in ["strain", "stress"]:
+            chip.set_struck(not self.deformation_active)
+        
+        self.selectionChanged.emit()
+            
+    def remove_chip(self, text):
+        if text in self.chips:
+            chip = self.chips.pop(text)
+            
+            # Explicitly remove from layout immediately so count() updates synchronously
+            idx = self.flow_layout.indexOf(chip)
+            if idx != -1:
+                item = self.flow_layout.takeAt(idx)
+                # Ensure the widget is deleted
+                if item.widget():
+                    item.widget().deleteLater()
+            else:
+                # Fallback if not found in layout for some reason
+                chip.deleteLater()
+                
+            # Uncheck in model
+            items = self.model.findItems(text)
+            if items:
+                items[0].setCheckState(Qt.CheckState.Unchecked)
+            
+            self.selectionChanged.emit()
+
+    def on_chip_removed(self, text):
+        self.remove_chip(text)
+        
+    def set_deformation_active(self, active):
+        self.deformation_active = active
+        for text, chip in self.chips.items():
+            if chip.category in ["strain", "stress"]:
+                chip.set_struck(not active)
+        for row in range(self.model.rowCount()):
+            item = self.model.item(row)
+            category = item.data(Qt.ItemDataRole.UserRole)
+            if category in ["strain", "stress"]:
+                if active:
+                    item.setEnabled(True)
+                    item.setForeground(QColor("black"))
+                else:
+                    item.setEnabled(False)
+                    item.setForeground(QColor("gray"))
+
+    def setEnabled(self, enabled):
+        super().setEnabled(enabled)
+        self.is_enabled = enabled
+        self.combo.setEnabled(enabled)
+        for chip in self.chips.values():
+            chip.set_enabled_visuals(enabled)
+
+    # Drag and Drop
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat("application/x-chip-widget"):
+            event.accept()
+        else:
+            event.ignore()
+            
+    def dropEvent(self, event):
+        source_chip = event.source()
+        if not isinstance(source_chip, DraggableChip): return
+        drop_pos = event.position().toPoint()
+        min_dist = 999999
+        best_idx = -1
+        count = self.flow_layout.count()
+        if count == 0: return
+        for i in range(count):
+            item = self.flow_layout.itemAt(i)
+            widget = item.widget()
+            center = widget.geometry().center()
+            dist = (center - drop_pos).manhattanLength()
+            if dist < min_dist:
+                min_dist = dist
+                best_idx = i
+        if best_idx != -1:
+            from_idx = self.flow_layout.indexOf(source_chip)
+            self.flow_layout.moveItem(from_idx, best_idx)
+
+    def get_selected_items(self):
+        items = []
+        # iterate layout items
+        for i in range(self.flow_layout.count()):
+            item = self.flow_layout.itemAt(i)
+            if not item: continue
+            
+            widget = item.widget()
+            # Double check widget is valid and in our active dictionary
+            if isinstance(widget, DraggableChip) and widget.text in self.chips:
+                if not widget.is_struck:
+                    items.append(widget.text)
+        return items
+
+    def set_items(self, item_list):
+        self.blockSignals(True)
+        while self.flow_layout.count():
+            item = self.flow_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        self.chips.clear()
+        
+        for row in range(self.model.rowCount()):
+            item = self.model.item(row)
+            if item.isCheckable(): item.setCheckState(Qt.CheckState.Unchecked)
+            
+        for text in item_list:
+            if text == "deformation direction": text = "strain deformation direction"
+            category = "standard"
+            if text in self.STRAINS: category = "strain"
+            elif text in self.STRESSES: category = "stress"
+            model_items = self.model.findItems(text)
+            if model_items:
+                model_items[0].setCheckState(Qt.CheckState.Checked)
+                self.add_chip(text, category)
+            else:
+                self.add_chip(text, "standard")
+        self.blockSignals(False)
+        self.selectionChanged.emit()
 
 class LammpsGui(QMainWindow):
     """Main application window for LAMMPS script generation"""
@@ -666,8 +1194,6 @@ class LammpsGui(QMainWindow):
         padding = 12 # Consistent padding
         height = int(num_lines * line_height + padding)
         text_edit.setFixedHeight(height)
-        
-
 
     def toggle_potential_settings(self, state):
         """Toggle potential definition widgets."""
@@ -778,30 +1304,6 @@ class LammpsGui(QMainWindow):
         self._re_add_item_to_combo(text, self.averaged_quantities_combo, self.all_avg_quantities)
         # Schedule update after event loop to ensure chip is removed
         QTimer.singleShot(0, self._update_averaging_spinboxes_state)
-
-    def _update_averaging_spinboxes_state(self):
-        """Enable/disable averaging spinboxes based on whether chips exist."""
-        has_chips = self.avg_chips_layout.count() > 0
-        
-        self.avg_nevery_spinbox.setEnabled(has_chips)
-        self.avg_nrepeat_spinbox.setEnabled(has_chips)
-        
-        color = "black" if has_chips else "gray"
-        style = f"color: {color};"
-        
-        if hasattr(self, 'avg_label_every'):
-            self.avg_label_every.setStyleSheet(style)
-        if hasattr(self, 'avg_label_timesteps'):
-            self.avg_label_timesteps.setStyleSheet(style)
-        if hasattr(self, 'avg_label_values'):
-            self.avg_label_values.setStyleSheet(style)
-        
-        if not has_chips:
-             self.avg_nevery_spinbox.setStyleSheet("color: gray;")
-             self.avg_nrepeat_spinbox.setStyleSheet("color: gray;")
-        else:
-             self.avg_nevery_spinbox.setStyleSheet("")
-             self.avg_nrepeat_spinbox.setStyleSheet("")
 
     def add_eng_strain_chip(self, index):
         """Add a chip for the selected engineering strain."""
@@ -1305,91 +1807,96 @@ class LammpsGui(QMainWindow):
             return
 
         modes = self.deformation_tab_widget.get_study_modes()
-        
         has_deformation_study = "Deformation" in modes
         has_temperature_study = "Temperature" in modes
 
-        self.eng_strains_widget.setVisible(has_deformation_study)
-        self.cauchy_stresses_widget.setVisible(has_deformation_study)
+        # Pass active state to selectors to handle Strikethrough/Greying out
+        self.thermo_selector.set_deformation_active(has_deformation_study)
+        self.avg_selector.set_deformation_active(has_deformation_study)
+        
         self.target_temp_widget.setVisible(has_temperature_study)
+
+    def toggle_trajectory_settings(self, state):
+        """Toggle trajectory settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.traj_freq_spinbox.setEnabled(enabled)
+        self.traj_format.setEnabled(enabled)
+        self.traj_selector.setEnabled(enabled)
+    
+    def toggle_thermo_settings(self, state):
+        """Toggle thermo settings based on checkbox state"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.thermo_freq_spinbox.setEnabled(enabled)
+        self.thermo_selector.setEnabled(enabled)
+        self.add_target_to_thermo_check.setEnabled(enabled)
+        self.avg_selector.setEnabled(enabled)
+        self.avg_nevery_spinbox.setEnabled(enabled)
+        self.avg_nrepeat_spinbox.setEnabled(enabled)
+        
+    def _update_averaging_spinboxes_state(self):
+        """Update enabling of averaging spinboxes (called by checks, here just ensure defaults)"""
+        # Logic moved to general toggle, but keeping method for compatibility if needed
+        pass
 
     def create_output_tab(self):
         """Create the output options tab"""
         self.output_tab = QWidget()
         self.tab_widget.addTab(self.output_tab, "Output Options")
         
-        # Create scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
         scroll.setWidget(scroll_widget)
         
-        # Main layout for output tab
         output_layout = QVBoxLayout(self.output_tab)
         output_layout.addWidget(scroll)
         
-        # Output path settings
+        # Path Settings
         path_group = QGroupBox("Output Path Settings")
         path_layout = QFormLayout()
-        
         self.output_path_edit = QLineEdit()
         self.output_path_browse = QPushButton("Browse...")
         self.output_path_browse.clicked.connect(self.browse_output_path)
-        
-        # Add tooltips
         self.output_path_edit.setToolTip("Directory where output files will be saved")
-        self.output_path_browse.setToolTip("Browse for output directory")
-        
-        # Add to widget references for focus jumping
         self.widget_references['output_path'] = self.output_path_edit
         
         output_path_layout = QHBoxLayout()
         output_path_layout.addWidget(self.output_path_edit)
         output_path_layout.addWidget(self.output_path_browse)
-        
         path_layout.addRow("Output Path:", output_path_layout)
         path_group.setLayout(path_layout)
         scroll_layout.addWidget(path_group)
         
-        # Write data at end setting - moved to top position
-        write_data_group = InfoGroupBox("Write Data", "write_data")
+        # Write Data
+        write_data_group = InfoGroupBox("Write Atom Data", "write_data")
         write_data_layout = QVBoxLayout()
-
         self.write_data_combo = QComboBox()
-        self.write_data_combo.addItems([
-            "Never",
-            "After each deformation/temperature step",
-            "At the end of the simulation"
-        ])
+        self.write_data_combo.addItems(["Never", "After each deformation/temperature step", "At the end of the simulation"])
         self.write_data_combo.setToolTip("Select when to write atom data.")
-        
         write_data_layout.addWidget(self.write_data_combo)
         write_data_group.setLayout(write_data_layout)
         scroll_layout.addWidget(write_data_group)
         
-        # Thermo output settings
+        # Thermo Output
         thermo_group = InfoGroupBox("Thermo Output Settings", "thermo_style")
         thermo_layout = QVBoxLayout()
 
-        # Top row layout
+        # Row 1: Enable | Freq | Target Temp
         thermo_top_layout = QHBoxLayout()
-
         self.enable_thermo = QCheckBox("Enable Thermo Output")
         self.enable_thermo.setChecked(True)
-        self.enable_thermo.setToolTip("Enable thermodynamic output")
         self.enable_thermo.stateChanged.connect(self.toggle_thermo_settings)
         thermo_top_layout.addWidget(self.enable_thermo, 1)
 
         thermo_freq_layout = QHBoxLayout()
-        thermo_freq_label = QLabel("Thermo Freq:")
+        thermo_freq_label = QLabel("Thermo Output Frequency:")
         self.thermo_freq_spinbox = QSpinBox()
-        self.thermo_freq_spinbox.setRange(1, 999999999)
+        self.thermo_freq_spinbox.setRange(1, 2147483647) 
         self.thermo_freq_spinbox.setValue(100)
         self.thermo_freq_spinbox.setSingleStep(100)
-        self.thermo_freq_spinbox.setToolTip("Frequency of thermodynamic output")
         self.thermo_freq_spinbox.setMinimumWidth(150)
-        self.thermo_freq_spinbox.valueChanged.connect(self.validate_and_round_nevery) # Connect to validation cascade
+        self.thermo_freq_spinbox.valueChanged.connect(self.validate_and_round_nevery)
         thermo_freq_layout.addWidget(thermo_freq_label)
         thermo_freq_layout.addWidget(self.thermo_freq_spinbox)
         thermo_freq_layout.addStretch()
@@ -1399,170 +1906,141 @@ class LammpsGui(QMainWindow):
         target_temp_layout = QHBoxLayout(self.target_temp_widget)
         target_temp_layout.setContentsMargins(0,0,0,0)
         self.add_target_to_thermo_check = QCheckBox("Add target temperature to thermo output")
-        self.add_target_to_thermo_check.setToolTip("If checked, adds the target temperature for the current study step to the thermo output.")
         target_temp_layout.addWidget(self.add_target_to_thermo_check)
         thermo_top_layout.addWidget(self.target_temp_widget, 2)
-
         thermo_layout.addLayout(thermo_top_layout)
 
-        # Thermo Style
+        # Row 2: Thermo Style Selector
+        # Using HBox to align immediately after label
         thermo_style_layout = QHBoxLayout()
         thermo_style_label = QLabel("Thermo Style:")
-        self.thermo_style = QLineEdit()
-        self.thermo_style.setText("step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
-        self.thermo_style.setToolTip("Thermo style specification")
+        thermo_style_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        thermo_style_label.setStyleSheet("margin-top: 3px;") 
+        
+        self.thermo_selector = OutputSelectorWidget(mode="thermo")
+        self.thermo_selector.setPlaceholderText("Add quantities to be logged...")
+        default_thermo = "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density".split()
+        self.thermo_selector.set_items(default_thermo)
+        
         thermo_style_layout.addWidget(thermo_style_label)
-        thermo_style_layout.addWidget(self.thermo_style)
+        thermo_style_layout.addWidget(self.thermo_selector, 1) # Selector stretches
+        thermo_layout.addLayout(thermo_style_layout)
         
-        # Engineering Strains
-        self.eng_strains_widget = QWidget()
-        eng_strains_layout_main = QHBoxLayout(self.eng_strains_widget)
-        eng_strains_layout_main.setContentsMargins(0, 0, 0, 0)
-        eng_strains_label = QLabel("Engineering strains:")
-        self.eng_strains_combo = QComboBox()
-        self.eng_strains_chips_layout = QHBoxLayout(); self.eng_strains_chips_layout.setSpacing(2)
-        eng_strains_layout_main.addWidget(eng_strains_label)
-        eng_strains_layout_main.addLayout(self.eng_strains_chips_layout)
-        eng_strains_layout_main.addWidget(self.eng_strains_combo, 1)
-        self.all_eng_strains = ['deformation direction', 'εxx', 'εyy', 'εzz', 'εxy', 'εxz', 'εyz']
-        self.eng_strains_combo.addItem("Add quantity...")
-        self.eng_strains_combo.addItems(self.all_eng_strains)
-        self.eng_strains_combo.activated.connect(self.add_eng_strain_chip)
-
-        # Cauchy Stresses
-        self.cauchy_stresses_widget = QWidget()
-        cauchy_stresses_layout_main = QHBoxLayout(self.cauchy_stresses_widget)
-        cauchy_stresses_layout_main.setContentsMargins(0, 0, 0, 0)
-        cauchy_stresses_label = QLabel("Cauchy stresses:")
-        self.cauchy_stresses_combo = QComboBox()
-        self.cauchy_stresses_chips_layout = QHBoxLayout(); self.cauchy_stresses_chips_layout.setSpacing(2)
-        cauchy_stresses_layout_main.addWidget(cauchy_stresses_label)
-        cauchy_stresses_layout_main.addLayout(self.cauchy_stresses_chips_layout)
-        cauchy_stresses_layout_main.addWidget(self.cauchy_stresses_combo, 1)
-        self.all_cauchy_stresses = ['deformation direction', 'σxx', 'σyy', 'σzz', 'σxy', 'σxz', 'σyz', 'von Mises', 'hydrostatic']
-        self.cauchy_stresses_combo.addItem("Add quantity...")
-        self.cauchy_stresses_combo.addItems(self.all_cauchy_stresses)
-        self.cauchy_stresses_combo.activated.connect(self.add_cauchy_stress_chip)
+        # Row 3: Average Selector
+        avg_layout = QHBoxLayout()
+        avg_label = QLabel("Average:")
+        avg_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        avg_label.setStyleSheet("margin-top: 3px;")
         
-        # Time averaged thermo styles
-        time_averaged_layout = QHBoxLayout()
-        time_averaged_label = QLabel("Average")
-        self.averaged_quantities_combo = QComboBox()
-        self.avg_chips_layout = QHBoxLayout()
-        self.avg_chips_layout.setSpacing(2)
+        self.avg_selector = OutputSelectorWidget(mode="thermo")
+        self.avg_selector.setPlaceholderText("Add thermo style quantities to be averaged and logged additionally...")
+        
+        avg_layout.addWidget(avg_label)
+        avg_layout.addWidget(self.avg_selector, 1)
+        thermo_layout.addLayout(avg_layout)
 
+        # Row 4: Average Settings (Container for visibility toggling)
+        self.avg_settings_widget = QWidget()
+        avg_settings_layout = QHBoxLayout(self.avg_settings_widget)
+        avg_settings_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Indent slightly to visually group with average selector
+        avg_settings_layout.addWidget(QLabel("Average every"))
+        
         self.avg_nevery_spinbox = QSpinBox()
-        self.avg_nevery_spinbox.setToolTip("nevery")
-        self.avg_nevery_spinbox.setRange(1, 10000)
+        self.avg_nevery_spinbox.setRange(1, 10000000)
         self.avg_nevery_spinbox.setValue(10)
         self.avg_nevery_spinbox.setFixedWidth(80)
         self.avg_nevery_spinbox.editingFinished.connect(self.validate_and_round_nevery)
-
+        avg_settings_layout.addWidget(self.avg_nevery_spinbox)
+        
+        avg_settings_layout.addWidget(QLabel("timesteps and consider"))
+        
         self.avg_nrepeat_spinbox = QSpinBox()
-        self.avg_nrepeat_spinbox.setToolTip("nrepeat")
-        self.avg_nrepeat_spinbox.setRange(1, 100000)
-        self.avg_nrepeat_spinbox.setValue(10) # Default changed to make it consistent with default thermo_freq and nevery
+        self.avg_nrepeat_spinbox.setRange(1, 10000000)
+        self.avg_nrepeat_spinbox.setValue(10)
         self.avg_nrepeat_spinbox.setFixedWidth(80)
         self.avg_nrepeat_spinbox.editingFinished.connect(self.validate_nrepeat)
-
-        time_averaged_layout.addWidget(time_averaged_label)
-        time_averaged_layout.addLayout(self.avg_chips_layout)
-        time_averaged_layout.addWidget(self.averaged_quantities_combo, 1)
-        time_averaged_layout.addStretch(0)
-        self.avg_label_every = QLabel("every")
-        time_averaged_layout.addWidget(self.avg_label_every)
-        time_averaged_layout.addWidget(self.avg_nevery_spinbox)
-        self.avg_label_timesteps = QLabel("timesteps and consider")
-        time_averaged_layout.addWidget(self.avg_label_timesteps)
-        time_averaged_layout.addWidget(self.avg_nrepeat_spinbox)
-        self.avg_label_values = QLabel("values before thermo ouput")
-        time_averaged_layout.addWidget(self.avg_label_values)
+        avg_settings_layout.addWidget(self.avg_nrepeat_spinbox)
+        
+        avg_settings_layout.addWidget(QLabel("values before each thermo ouput"))
         
         avg_time_url = QUrl("https://docs.lammps.org/fix_ave_time.html")
-        avg_time_tooltip = "Click to open LAMMPS documentation for fix ave/time"
-        self.avg_time_info_label = create_info_icon_label(avg_time_url, avg_time_tooltip, "blue")
-        time_averaged_layout.addWidget(self.avg_time_info_label)
+        self.avg_time_info_label = create_info_icon_label(avg_time_url, "fix ave/time docs", "blue")
+        avg_settings_layout.addWidget(self.avg_time_info_label)
+        avg_settings_layout.addStretch()
+        
+        thermo_layout.addWidget(self.avg_settings_widget)
+        
+        # Connect visibility toggle
+        self.avg_selector.selectionChanged.connect(self.update_avg_settings_visibility)
+        # Initialize visibility
+        self.update_avg_settings_visibility()
 
-        self.all_avg_quantities = ['temp', 'press', 'pxx', 'pyy', 'pzz', 'pxy', 'pxz', 'pyz', 'ke', 'pe', 'stress', 'strain']
-        self.averaged_quantities_combo.addItem("Add quantity...")
-        self.averaged_quantities_combo.addItems(self.all_avg_quantities)
-        self.averaged_quantities_combo.activated.connect(self.add_averaged_quantity_chip)
-
-        thermo_layout.addLayout(thermo_style_layout)
-        thermo_layout.addWidget(self.eng_strains_widget)
-        thermo_layout.addWidget(self.cauchy_stresses_widget)
-        thermo_layout.addLayout(time_averaged_layout)
         thermo_group.setLayout(thermo_layout)
         scroll_layout.addWidget(thermo_group)
-        self._update_averaging_spinboxes_state()
 
-        # Trajectory output settings
+        # Trajectory Output
         traj_group = InfoGroupBox("Trajectory Output Settings", "dump")
         traj_layout = QVBoxLayout()
 
-        # Top row layout
         traj_top_layout = QHBoxLayout()
-
         self.enable_trajectory = QCheckBox("Enable Trajectory Output")
         self.enable_trajectory.setChecked(True)
-        self.enable_trajectory.setToolTip("Enable trajectory file output")
         self.enable_trajectory.stateChanged.connect(self.toggle_trajectory_settings)
-        traj_top_layout.addWidget(self.enable_trajectory, 1) # 1/5
+        traj_top_layout.addWidget(self.enable_trajectory, 1)
 
-        # Trajectory Freq
         traj_freq_layout = QHBoxLayout()
-        traj_freq_label = QLabel("Trajectory Freq:")
+        traj_freq_label = QLabel("Trajectory Write Frequency:")
         self.traj_freq_spinbox = QSpinBox()
-        self.traj_freq_spinbox.setRange(1, 999999999)
+        self.traj_freq_spinbox.setRange(1, 2147483647)
         self.traj_freq_spinbox.setValue(100)
         self.traj_freq_spinbox.setSingleStep(100)
-        self.traj_freq_spinbox.setToolTip("Frequency of trajectory output")
         self.traj_freq_spinbox.setMinimumWidth(150)
         traj_freq_layout.addWidget(traj_freq_label)
         traj_freq_layout.addWidget(self.traj_freq_spinbox)
         traj_freq_layout.addStretch()
-        traj_top_layout.addLayout(traj_freq_layout, 2) # 2/5
+        traj_top_layout.addLayout(traj_freq_layout, 2)
 
-        # Trajectory Format
         traj_format_layout = QHBoxLayout()
         traj_format_label = QLabel("Trajectory Format:")
         self.traj_format = QComboBox()
         self.traj_format.addItems(["lammpstrj", "xyz", "dcd"])
-        self.traj_format.setToolTip("Format for trajectory files")
-        self.traj_format.setMinimumWidth(150)
         traj_format_layout.addWidget(traj_format_label)
         traj_format_layout.addWidget(self.traj_format)
         traj_format_layout.addStretch()
-        traj_top_layout.addLayout(traj_format_layout, 2) # 2/5
-
+        traj_top_layout.addLayout(traj_format_layout, 2)
         traj_layout.addLayout(traj_top_layout)
 
-        # Output Items
-        traj_form_layout = QFormLayout()
-        self.trj_output_items = QLineEdit()
-        self.trj_output_items.setText("id type x y z fx fy fz")
-        self.trj_output_items.setToolTip("Items to include in trajectory output")
-        traj_form_layout.addRow("Output Items:", self.trj_output_items)
+        # Output Items Selector
+        traj_selector_layout = QHBoxLayout()
+        traj_sel_label = QLabel("Output Items:")
+        traj_sel_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        traj_sel_label.setStyleSheet("margin-top: 3px;")
         
-        traj_layout.addLayout(traj_form_layout)
+        self.traj_selector = OutputSelectorWidget(mode="trajectory")
+        self.traj_selector.setPlaceholderText("Add output items...")
+        default_traj = "id type x y z vx vy vz".split()
+        self.traj_selector.set_items(default_traj)
+        
+        traj_selector_layout.addWidget(traj_sel_label)
+        traj_selector_layout.addWidget(self.traj_selector, 1)
+        traj_layout.addLayout(traj_selector_layout)
+        
         traj_group.setLayout(traj_layout)
         scroll_layout.addWidget(traj_group)
         
-        # Custom dumps
+        # Custom Dumps
         custom_dumps_group = InfoGroupBox("Custom Dumps", "dump")
         custom_dumps_layout = QVBoxLayout()
-        
         self.custom_dumps_text = QTextEdit()
         self.custom_dumps_text.setPlaceholderText("Enter custom dump commands here...")
-        self.custom_dumps_text.setMaximumHeight(100)  # Reduced height (about 4 lines)
-        self.custom_dumps_text.setToolTip("Custom LAMMPS dump commands")
-        
+        self.custom_dumps_text.setMaximumHeight(100)
         custom_dumps_layout.addWidget(self.custom_dumps_text)
         custom_dumps_group.setLayout(custom_dumps_layout)
         custom_dumps_group.setMaximumHeight(112)
         scroll_layout.addWidget(custom_dumps_group)
         
-        # Add stretch to push everything up
         scroll_layout.addStretch()
         
     def create_job_submission_tab(self):
@@ -1907,8 +2385,6 @@ class LammpsGui(QMainWindow):
             if obj == self.extensions_input and event.key() in [Qt.Key.Key_Comma, Qt.Key.Key_Space, Qt.Key.Key_Semicolon, Qt.Key.Key_Colon]:
                 self._add_data_extension_chip()
                 return True # Eat the event
-            
-
 
         if event.type() == event.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             for widget, doc_command in self.groupbox_doc_links.items():
@@ -1916,31 +2392,11 @@ class LammpsGui(QMainWindow):
                     self.open_lammps_doc(doc_command)
                     return True
         return super().eventFilter(obj, event)
-
-
-    
-
-    
-    def toggle_trajectory_settings(self, state):
-        """Toggle trajectory settings based on checkbox state"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.traj_freq_spinbox.setEnabled(enabled)
-        self.traj_format.setEnabled(enabled)
-        self.trj_output_items.setEnabled(enabled)
-    
-    def toggle_thermo_settings(self, state):
-        """Toggle thermo settings based on checkbox state"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.thermo_freq_spinbox.setEnabled(enabled)
-        self.thermo_style.setEnabled(enabled)
     
     def toggle_stress_settings(self, state):
         """Toggle stress settings based on checkbox state"""
         enabled = state == Qt.CheckState.Checked.value
         # Stress calculations don't have additional settings currently, but added for consistency
-    
-
-
 
     def toggle_custom_dumps(self, state):
         """Toggle custom dumps settings based on checkbox state"""
@@ -2309,6 +2765,28 @@ class LammpsGui(QMainWindow):
     
     def collect_config(self, for_saving=False):
         """Collect configuration from all GUI elements"""
+        # --- Helper to categorize items from selectors ---
+        def split_thermo_items(items):
+            std = []
+            strains = []
+            stresses = []
+            for item in items:
+                if item in OutputSelectorWidget.STRAINS:
+                    strains.append(item)
+                elif item in OutputSelectorWidget.STRESSES:
+                    stresses.append(item)
+                else:
+                    std.append(item)
+            return " ".join(std), strains, stresses
+
+        thermo_items = self.thermo_selector.get_selected_items()
+        thermo_style_str, eng_strains, cauchy_stresses = split_thermo_items(thermo_items)
+        
+        traj_items = self.traj_selector.get_selected_items()
+        traj_items_str = " ".join(traj_items)
+
+        avg_items = self.avg_selector.get_selected_items()
+
         config = {
             "system": {
                 "system_path": self.system_path_edit.text(),
@@ -2338,13 +2816,13 @@ class LammpsGui(QMainWindow):
                 "enable_trajectory": self.enable_trajectory.isChecked(),
                 "traj_freq": self.traj_freq_spinbox.value(),
                 "traj_format": self.traj_format.currentText(),
-                "trj_output_items": self.trj_output_items.text(),
+                "trj_output_items": traj_items_str,
                 "enable_thermo": self.enable_thermo.isChecked(),
                 "thermo_freq": self.thermo_freq_spinbox.value(),
-                "thermo_style": self.thermo_style.text(),
-                "eng_strains": [self.eng_strains_chips_layout.itemAt(i).widget().text for i in range(self.eng_strains_chips_layout.count()) if isinstance(self.eng_strains_chips_layout.itemAt(i).widget(), Chip)],
-                "cauchy_stresses": [self.cauchy_stresses_chips_layout.itemAt(i).widget().text for i in range(self.cauchy_stresses_chips_layout.count()) if isinstance(self.cauchy_stresses_chips_layout.itemAt(i).widget(), Chip)],
-                "averaged_quantities": [self.avg_chips_layout.itemAt(i).widget().text for i in range(self.avg_chips_layout.count()) if isinstance(self.avg_chips_layout.itemAt(i).widget(), Chip)],
+                "thermo_style": thermo_style_str,
+                "eng_strains": eng_strains,
+                "cauchy_stresses": cauchy_stresses,
+                "averaged_quantities": avg_items,
                 "avg_nevery": self.avg_nevery_spinbox.value(),
                 "avg_nrepeat": self.avg_nrepeat_spinbox.value(),
                 "add_target_to_thermo": self.add_target_to_thermo_check.isChecked(),
@@ -2385,7 +2863,7 @@ class LammpsGui(QMainWindow):
             }
         }
         
-        # Collect deformation studies from the graphical UI
+        # Collect deformation studies
         if hasattr(self, 'deformation_tab_widget'):
             for i in range(self.deformation_tab_widget.tab_widget.count()):
                 study_widget = self.deformation_tab_widget.tab_widget.widget(i)
@@ -2395,11 +2873,10 @@ class LammpsGui(QMainWindow):
                     continue
                 
                 if for_saving or study_widget.is_enabled:
-                    # Get the full state from the study widget
                     study_state = study_widget.get_state()
-                    study_state["name"] = study_name # Add the name to the state
-
-                    # Pre-process segments to add detailed sine parameters
+                    study_state["name"] = study_name
+                    
+                    # Process segments (same as before)
                     graph = study_widget.graph_widget
                     raw_segments = study_state.get('segments', [])
                     processed_segments = []
@@ -2407,18 +2884,14 @@ class LammpsGui(QMainWindow):
                         if segment.get('type') == 'sine':
                             sine_params = graph.get_sine_segment_info(i)
                             if sine_params:
-                                # Merge original segment info with new calculated params
                                 processed_segment = {**segment, **sine_params}
                                 processed_segments.append(processed_segment)
                             else:
-                                # Handle error or fallback
                                 processed_segments.append(segment)
                         else:
                             processed_segments.append(segment)
                     
-                    # Replace original segments with processed ones
                     study_state['segments'] = processed_segments
-                    
                     config["multistudy"]["deform_studies"].append(study_state)
 
         return config
@@ -2431,24 +2904,18 @@ class LammpsGui(QMainWindow):
             if system_path:
                 self.system_path_edit.setText(system_path)
 
-            # Load custom extensions
             extensions = self.settings.value("system/data_file_extensions", [".data"])
-            if isinstance(extensions, str): # QSettings might return a string
+            if isinstance(extensions, str):
                 extensions = extensions.split(',')
-
             self.data_file_extensions = []
-            # Clear existing chips
             for i in reversed(range(self.chips_layout.count())):
-                widget = self.chips_layout.itemAt(i).widget()
-                if widget is not None:
-                    widget.setParent(None)
+                if self.chips_layout.itemAt(i).widget():
+                    self.chips_layout.itemAt(i).widget().setParent(None)
             for ext in extensions:
                 if ext and ext not in self.data_file_extensions:
                     self.data_file_extensions.append(ext)
                     self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
 
-
-            
             self.use_potential_file.setChecked(self.settings.value("system/use_potential_file", False, type=bool))
             self.potential_path_edit.setText(self.settings.value("system/potential_file", ""))
             self.potential_source_combo.setCurrentText(self.settings.value("system/potential_source", "file"))
@@ -2463,38 +2930,45 @@ class LammpsGui(QMainWindow):
             self.enable_velocity.setChecked(self.settings.value("system/enable_velocity", True, type=bool))
             self.initial_velocity_seed.setValue(self.settings.value("system/initial_velocity_seed", 12345, type=int))
             self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
-            
-            self.damping_factor.setValue(self.settings.value("system/damping_factor", 100.0, type=float))
-            
             self.custom_commands_edit.setPlainText(self.settings.value("system/custom_commands", ""))
             self.timestep.setValue(self.settings.value("system/timestep", 0.001, type=float))
-            
 
-            
             # Output settings
             self.output_path_edit.setText(self.settings.value("output/output_path", ""))
             self.enable_trajectory.setChecked(self.settings.value("output/enable_trajectory", True, type=bool))
             self.traj_freq_spinbox.setValue(self.settings.value("output/traj_freq", 100, type=int))
             self.traj_format.setCurrentText(self.settings.value("output/traj_format", "lammpstrj"))
-            self.trj_output_items.setText(self.settings.value("output/trj_output_items", "id type x y z fx fy fz"))
+            
+            # Trajectory Items
+            trj_items_str = self.settings.value("output/trj_output_items", "id type x y z vx vy vz")
+            self.traj_selector.set_items(trj_items_str.split())
+
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
-            self.thermo_style.setText(self.settings.value("output/thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
             
-            # Load new chip fields
-            self.apply_chips_from_settings('output/eng_strains', self.eng_strains_chips_layout, self.all_eng_strains, self.eng_strains_combo, self.remove_eng_strain_chip)
-            self.apply_chips_from_settings('output/cauchy_stresses', self.cauchy_stresses_chips_layout, self.all_cauchy_stresses, self.cauchy_stresses_combo, self.remove_cauchy_stress_chip)
-            self.apply_chips_from_settings('output/averaged_quantities', self.avg_chips_layout, self.all_avg_quantities, self.averaged_quantities_combo, self.remove_averaged_quantity_chip)
+            # Thermo Items (Merge standard + strains + stresses)
+            thermo_std = self.settings.value("output/thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density").split()
+            
+            def get_list(key):
+                val = self.settings.value(key, [])
+                if isinstance(val, str): return [x.strip() for x in val.split(',') if x.strip()]
+                return val
+            
+            strains = get_list("output/eng_strains")
+            stresses = get_list("output/cauchy_stresses")
+            self.thermo_selector.set_items(thermo_std + strains + stresses)
+            
+            # Averaged Items
+            avg_items = get_list("output/averaged_quantities")
+            self.avg_selector.set_items(avg_items)
+            
             self._update_averaging_spinboxes_state()
 
             self.avg_nevery_spinbox.setValue(self.settings.value('output/avg_nevery', 10, type=int))
             self.avg_nrepeat_spinbox.setValue(self.settings.value('output/avg_nrepeat', 100, type=int))
-
             self.add_target_to_thermo_check.setChecked(self.settings.value("output/add_target_to_thermo", False, type=bool))
 
-
             self.custom_dumps_text.setPlainText(self.settings.value("output/custom_dumps", ""))
-            # For backward compatibility, handle the old boolean setting
             if self.settings.contains("output/write_data_option"):
                 self.write_data_combo.setCurrentText(self.settings.value("output/write_data_option", "Never", type=str))
             elif self.settings.contains("output/enable_write_data"):
@@ -2516,7 +2990,6 @@ class LammpsGui(QMainWindow):
             self.module_load_cmd.setText(self.settings.value("job_submission/module_load", ""))
             self.slurm_header_text.setPlainText(self.settings.value("job_submission/slurm_header", ""))
 
-            # Restart settings
             enable_restart = self.settings.value("job_submission/enable_restart", False, type=bool)
             self.enable_restart_checkbox.setChecked(enable_restart)
             self.restart_options_widget.setVisible(enable_restart)
@@ -2533,23 +3006,17 @@ class LammpsGui(QMainWindow):
                     try:
                         studies = json.loads(studies_data)
                     except (json.JSONDecodeError, TypeError):
-                        studies = [] # If data is corrupted, start fresh
-
-                # Clear existing tabs (created in DeformationTab constructor)
+                        studies = []
                 while self.deformation_tab_widget.tab_widget.count() > 0:
                     self.deformation_tab_widget.tab_widget.removeTab(0)
 
-                # Enable batch loading mode to optimize performance
                 self.deformation_tab_widget._batch_loading = True
-
                 if studies:
                     for i, study in enumerate(studies):
                         self.deformation_tab_widget._add_study(is_first=(i==0))
                         study_widget = self.deformation_tab_widget.tab_widget.widget(i)
                         original_name = study.get("name", f"Study_{i+1}")
                         sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '_', original_name)
-
-                        # Ensure uniqueness
                         final_name = sanitized_name
                         suffix = 1
                         while any(final_name == self.deformation_tab_widget.tab_widget.tabText(j) for j in range(self.deformation_tab_widget.tab_widget.count()) if j != i):
@@ -2557,45 +3024,34 @@ class LammpsGui(QMainWindow):
                             suffix += 1
 
                         self.deformation_tab_widget.tab_widget.setTabText(i, final_name)
-
-                        # Restore the state of the study widget, blocking signals to prevent premature updates
                         study_widget.blockSignals(True)
                         study_widget.set_state(study)
                         study_widget.blockSignals(False)
                 else:
-                    # No studies in settings, or settings were corrupted. Create a default one.
                     self.deformation_tab_widget._add_study(is_first=True)
 
-                # Disable batch loading mode and perform a single update
                 self.deformation_tab_widget._batch_loading = False
                 self.deformation_tab_widget.update_summaries()
                 self.deformation_tab_widget._update_tab_colors()
 
-                # After loading all tabs, ensure the mode dropdown reflects the current tab's mode
                 current_widget = self.deformation_tab_widget.tab_widget.currentWidget()
                 if current_widget:
                     self.deformation_tab_widget.mode_combo.blockSignals(True)
                     self.deformation_tab_widget.mode_combo.setCurrentText(current_widget.mode)
                     self.deformation_tab_widget.mode_combo.blockSignals(False)
 
-                # Restore active deformation tab
                 deform_tab_index = self.settings.value("gui/active_deformation_tab_index", 0, type=int)
                 if 0 <= deform_tab_index < self.deformation_tab_widget.tab_widget.count():
                     self.deformation_tab_widget.tab_widget.setCurrentIndex(deform_tab_index)
 
-                # Plus tab is handled by the corner widget button, no need to add it here
-                pass
-
         except Exception as e:
             print(f"Error loading settings: {e}")
 
-        # Restore active main tab at the very end
         main_tab_index = self.settings.value("gui/active_main_tab_index", 0, type=int)
         if 0 <= main_tab_index < self.tab_widget.count():
             self.tab_widget.setCurrentIndex(main_tab_index)
             
         self._update_output_tab_visibility()
-
 
     def apply_chips_from_settings(self, settings_key, chips_layout, all_items_list, combo_box, remove_slot):
         """Helper to load chip selections from QSettings."""
@@ -2919,18 +3375,15 @@ class LammpsGui(QMainWindow):
                 system = config["system"]
                 self.system_path_edit.setText(system.get("system_path", ""))
 
-                # Load custom extensions
                 extensions = system.get("data_file_extensions", [".data"])
                 self.data_file_extensions = []
-                # Clear existing chips
                 for i in reversed(range(self.chips_layout.count())):
-                    self.chips_layout.itemAt(i).widget().setParent(None)
+                    if self.chips_layout.itemAt(i).widget():
+                        self.chips_layout.itemAt(i).widget().setParent(None)
                 for ext in extensions:
                     if ext not in self.data_file_extensions:
                         self.data_file_extensions.append(ext)
                         self._add_chip(ext, self.chips_layout, self._remove_data_extension_chip)
-
-
 
                 self.use_potential_file.setChecked(system.get("use_potential_file", False))
                 self.potential_path_edit.setText(system.get("potential_file", ""))
@@ -2950,8 +3403,6 @@ class LammpsGui(QMainWindow):
                 self.custom_commands_edit.setPlainText(system.get("custom_commands", ""))
                 self.timestep.setValue(system.get("timestep", 0.001))
 
-
-
             # Output configuration
             if "output" in config:
                 output = config["output"]
@@ -2959,21 +3410,29 @@ class LammpsGui(QMainWindow):
                 self.enable_trajectory.setChecked(output.get("enable_trajectory", True))
                 self.traj_freq_spinbox.setValue(output.get("traj_freq", 100))
                 self.traj_format.setCurrentText(output.get("traj_format", "lammpstrj"))
-                self.trj_output_items.setText(output.get("trj_output_items", "id type x y z fx fy fz"))
+                
+                # Trajectory Items
+                trj_items_str = output.get("trj_output_items", "id type x y z vx vy vz")
+                self.traj_selector.set_items(trj_items_str.split())
+
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_freq_spinbox.setValue(output.get("thermo_freq", 100))
-                self.thermo_style.setText(output.get("thermo_style", "step etotal pe ke epair ebond evdwl ecoul elong temp press pxx pyy pzz pxy pxz pyz lx ly lz density"))
                 
-                self.apply_chips_from_config(output, 'eng_strains', self.eng_strains_chips_layout, self.all_eng_strains, self.eng_strains_combo, self.remove_eng_strain_chip)
-                self.apply_chips_from_config(output, 'cauchy_stresses', self.cauchy_stresses_chips_layout, self.all_cauchy_stresses, self.cauchy_stresses_combo, self.remove_cauchy_stress_chip)
-                self.apply_chips_from_config(output, 'averaged_quantities', self.avg_chips_layout, self.all_avg_quantities, self.averaged_quantities_combo, self.remove_averaged_quantity_chip)
+                # Thermo Items (Merge standard + strains + stresses)
+                thermo_std = output.get("thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density").split()
+                strains = output.get("eng_strains", [])
+                stresses = output.get("cauchy_stresses", [])
+                self.thermo_selector.set_items(thermo_std + strains + stresses)
+                
+                # Averaged Items
+                avg_items = output.get("averaged_quantities", [])
+                self.avg_selector.set_items(avg_items)
 
                 self.avg_nevery_spinbox.setValue(output.get('avg_nevery', 10))
                 self.avg_nrepeat_spinbox.setValue(output.get('avg_nrepeat', 100))
                 self.add_target_to_thermo_check.setChecked(output.get("add_target_to_thermo", False))
 
                 self.custom_dumps_text.setPlainText(output.get("custom_dumps", ""))
-                # For backward compatibility, handle the old boolean setting
                 if "write_data_option" in output:
                     self.write_data_combo.setCurrentText(output.get("write_data_option", "Never"))
                 elif "enable_write_data" in output:
@@ -2996,7 +3455,6 @@ class LammpsGui(QMainWindow):
                 self.sbatch_cmd.setText(job_submission.get("sbatch_cmd", "sbatch"))
                 self.module_load_cmd.setText(job_submission.get("module_load", "lammps"))
                 self.slurm_header_text.setPlainText(job_submission.get("slurm_header", ""))
-                # Load restart settings
                 enable_restart = job_submission.get("enable_restart", False)
                 self.enable_restart_checkbox.setChecked(enable_restart)
                 self.restart_options_widget.setVisible(enable_restart)
@@ -3009,34 +3467,25 @@ class LammpsGui(QMainWindow):
             if "multistudy" in config and hasattr(self, 'deformation_tab_widget'):
                 multistudy = config["multistudy"]
                 studies = multistudy.get("deform_studies", [])
-
-                # Clear existing tabs
                 while self.deformation_tab_widget.tab_widget.count() > 0:
                     self.deformation_tab_widget.tab_widget.removeTab(0)
-
-                # Enable batch loading mode to optimize performance
+                
                 self.deformation_tab_widget._batch_loading = True
-
                 if studies:
                     for i, study_data in enumerate(studies):
                         self.deformation_tab_widget._add_study(is_first=(i==0))
                         study_widget = self.deformation_tab_widget.tab_widget.widget(i)
                         self.deformation_tab_widget.tab_widget.setTabText(i, study_data.get("name", f"Study {i+1}"))
-
-                        # Restore the state of the study widget, blocking signals
                         study_widget.blockSignals(True)
                         study_widget.set_state(study_data)
                         study_widget.blockSignals(False)
                 else:
-                    # if no studies, create a default one
                     self.deformation_tab_widget._add_study(is_first=True)
-
-                # Disable batch loading mode and perform a single update
+                
                 self.deformation_tab_widget._batch_loading = False
                 self.deformation_tab_widget.update_summaries()
                 self.deformation_tab_widget._update_tab_colors()
-
-                # After loading all tabs, ensure the mode dropdown reflects the current tab's mode
+                
                 current_widget = self.deformation_tab_widget.tab_widget.currentWidget()
                 if current_widget:
                     self.deformation_tab_widget.mode_combo.blockSignals(True)
@@ -3079,6 +3528,11 @@ class LammpsGui(QMainWindow):
             return {"success": True, "message": f"Settings saved to: {settings_file}"}
         except Exception as e:
             return {"success": False, "message": f"Error saving settings: {str(e)}"}
+
+    def update_avg_settings_visibility(self):
+        """Show/Hide average settings based on whether items are selected."""
+        has_items = len(self.avg_selector.get_selected_items()) > 0
+        self.avg_settings_widget.setVisible(has_items)
 
 
 def main():
