@@ -516,6 +516,10 @@ class GraphWidget(QWidget):
         for i in range(len(new_points_data)):
             new_points_data[i].setX(round(new_points_data[i].x()))
         self.points_norm = [self._data_to_norm(p) for p in new_points_data]
+        # Handles were rescaled/clamped, so every sine has to be re-fitted to them and
+        # re-checked against the new strain range - otherwise its curve detaches.
+        for seg_idx in range(len(self.segments)):
+            self._resync_sine_amplitude(seg_idx)
         self.update(); self.dataChanged.emit()
     def set_timestep(self, s): self._timestep = s; self.update(); self.dataChanged.emit()
     def set_time_unit(self, u): self._time_unit = u; self.update()
@@ -1402,11 +1406,11 @@ class GraphWidget(QWidget):
             for region, type, index in self._clickable_regions:
                 if region.contains(pos):
                     if type == "slope":
-                        # Toggle fixed state for slope segments
-                        if index in self._fixed_segments:
-                            self._fixed_segments.remove(index)
-                        else:
-                            self._fixed_segments.add(index)
+                        # Slope locking is handled exactly once, in contextMenuEvent.
+                        # Qt delivers BOTH a right-button press and a context-menu event
+                        # for a single right-click, so toggling here as well used to leave
+                        # a stale entry in the legacy _fixed_segments set after unlocking.
+                        return
                     elif type == "x_val":
                         # Toggle locked state for x-axis tick labels
                         if index in self._locked_x_ticks:
@@ -1609,25 +1613,18 @@ class GraphWidget(QWidget):
                 target_p_norm.setX(self.points_norm[i].x())
             if i in self._locked_y_labels:
                 target_p_norm.setY(self.points_norm[i].y())
-            
+
             # Also respect Drag constraints (e.g. if Shift is held, or specific axis locks)
             # (Assuming simplified logic for now, standard dragging)
-            
-            # --- Determine Moving Handles (Rigid Group / Constraints) ---
-            rigid_offsets = {i: 0.0}
-            left_anchor = None # (anchor_idx, seg_idx_connecting_to_group)
-            right_anchor = None
-            
-            # Temporary X coordinates for offset calculation
-            current_xs = {}
-            for idx in range(len(self.points_norm)):
-                if idx == i:
-                    raw_x = self._norm_to_data(target_p_norm).x()
-                    # Snap to integer to ensure Slope/Y calculations match the final Rendered X
-                    current_xs[idx] = round(raw_x)
-                else:
-                    current_xs[idx] = self._norm_to_data(self.points_norm[idx]).x()
-            
+
+            # --- Resolve the dragged handle's final X up front ---
+            # Every slope/offset calculation below derives dy from dx, so it has to see
+            # the X that is actually going to be applied. Resolving it afterwards (as was
+            # done before) let the boundary/neighbour clamps silently change dx and thereby
+            # break fixed slopes.
+            new_x_i = self._resolve_dragged_handle_x(i, self._norm_to_data(target_p_norm).x())
+            p_current_data = self._norm_to_data(target_p_norm)
+
             # Helper to check rigidity
             def is_rigid(idx):
                 return self._is_segment_rigid_vertical(idx)
@@ -1635,363 +1632,241 @@ class GraphWidget(QWidget):
             # Helper to calculate dy based on dx and segment properties
             # For segments with fixed_slope: calculate dy from slope equation
             # For implicitly rigid segments (full cycles): dy = 0 (endpoints at same Y)
-            def calculate_dy(seg_idx, dx):
-                seg = self.segments[seg_idx]
-                
-                # Only calculate dy from slope if segment has explicit fixed_slope
-                if not seg.get('fixed_slope', False):
-                    # Implicitly rigid segment (e.g., full cycle sine) - dy is always 0
-                    # Do NOT modify amplitude for these segments!
-                    return 0
-                
-                m = seg.get('fixed_slope_value', 0)
-                
-                if seg['type'] == 'line':
-                    return m * dx
-                    
-                elif seg['type'] == 'sine':
-                    # Sine Slope Logic - only for explicitly fixed slope
-                    phi_start = 0
-                    if "Alternating" in seg['scheme']:
-                        phi_start = math.pi if "compressive" in seg['scheme'] else 0
-                    elif "Pulsating" in seg['scheme']:
-                        phi_start = -math.pi/2 if "tensile" in seg['scheme'] else math.pi/2
-                    
-                    k = seg['num_cycles'] * 2 * math.pi / dx if dx != 0 else 0
-                    
-                    n = 0
-                    first_zero_x_offset = -1
-                    while True:
-                        x_offset = (n * math.pi - phi_start) / k if k != 0 else -1
-                        if x_offset >= -1e-9 and x_offset <= dx + 1e-9:
-                            first_zero_x_offset = x_offset
+            calculate_dy = self._fixed_slope_dy
+
+            def solve(x_i):
+                """Rigid group and clamped Y for the dragged handle placed at x_i.
+
+                Returns (offsets, y, hit_frame) where hit_frame reports that the wanted Y
+                had to be pulled back to keep the group inside the top/bottom of the frame.
+                """
+                # --- Determine Moving Handles (Rigid Group / Constraints) ---
+                rigid_offsets = {i: 0.0}
+                left_anchor = None # (anchor_idx, seg_idx_connecting_to_group)
+                right_anchor = None
+
+                # Temporary X coordinates for offset calculation
+                current_xs = {}
+                for idx in range(len(self.points_norm)):
+                    if idx == i:
+                        current_xs[idx] = x_i
+                    else:
+                        current_xs[idx] = self._norm_to_data(self.points_norm[idx]).x()
+
+                # Propagate Left
+                curr = i
+                while curr > 0:
+                    seg_idx = curr - 1
+                    neighbor_idx = curr - 1
+
+                    # Check for Locks (Anchors)
+                    neighbor_locked = (neighbor_idx in self._locked_y_labels) or \
+                                      (neighbor_idx == 0 and self.mode == 'Deformation')
+
+                    if is_rigid(seg_idx):
+                        if neighbor_locked:
+                            left_anchor = (neighbor_idx, seg_idx)
                             break
-                        n += 1
-                        if n > 1000: break
-                    
-                    if first_zero_x_offset != -1 and k != 0:
-                        phase_at_zero = k * first_zero_x_offset + phi_start
-                        cos_val = math.cos(phase_at_zero)
-                        if abs(cos_val) > 1e-9:
-                            A = m / (k * cos_val)
-                            # Update amplitude to maintain fixed slope
-                            seg['amplitude'] = A
-                            
-                            end_angle = seg['num_cycles'] * 2 * math.pi + phi_start
-                            ds = math.sin(end_angle) - math.sin(phi_start)
-                            return A * ds
-                return 0
 
-            # Propagate Left
-            curr = i
-            while curr > 0:
-                seg_idx = curr - 1
-                neighbor_idx = curr - 1
-                
-                # Check for Locks (Anchors)
-                neighbor_locked = (neighbor_idx in self._locked_y_labels) or \
-                                  (neighbor_idx == 0 and self.mode == 'Deformation')
-                
-                if is_rigid(seg_idx):
-                    if neighbor_locked:
-                        left_anchor = (neighbor_idx, seg_idx)
-                        break
-                    
-                    dx = current_xs[curr] - current_xs[curr-1]
-                    dy = calculate_dy(seg_idx, dx)
-                    
-                    # Relation: Y_curr = Y_prev + dy => Y_prev = Y_curr - dy
-                    rigid_offsets[curr-1] = rigid_offsets[curr] - dy
-                    curr -= 1
-                else:
-                    break
-            
-            # Propagate Right
-            curr = i
-            while curr < len(self.points_norm) - 1:
-                seg_idx = curr
-                neighbor_idx = curr + 1
-                
-                # Check for Locks (Anchors)
-                neighbor_locked = (neighbor_idx in self._locked_y_labels)
-                
-                if is_rigid(seg_idx):
-                    if neighbor_locked:
-                        right_anchor = (neighbor_idx, seg_idx)
-                        break
-                        
-                    dx = current_xs[curr+1] - current_xs[curr]
-                    dy = calculate_dy(seg_idx, dx)
-                    
-                    # Relation: Y_next = Y_curr + dy
-                    rigid_offsets[curr+1] = rigid_offsets[curr] + dy
-                    curr += 1
-                else:
-                    break
+                        dx = current_xs[curr] - current_xs[curr-1]
+                        dy = calculate_dy(seg_idx, dx)
 
-            # --- Calculate Safe Y Range using Helper ---
-            min_y, max_y = self._get_safe_y_range_for_moving_handles(rigid_offsets)
-            
-            # --- Apply Anchor Constraints ---
-            # If constrained by anchors via rigid segments, the valid Y range likely collapses to a single value.
-            
-            if left_anchor:
-                a_idx, seg_idx = left_anchor
-                # Calculate required Y for the handle NEXT to the anchor (which is a_idx + 1)
-                # Relation: y_{a+1} = y_a + dy
-                # But 'a' is locked, so y_a is fixed.
-                y_anchor = self._norm_to_data(self.points_norm[a_idx]).y()
-                dx = current_xs[a_idx+1] - current_xs[a_idx]
-                dy = calculate_dy(seg_idx, dx)
-                
-                target_y_next = y_anchor + dy
-                
-                # We know 'a_idx + 1' is in rigid_offsets.
-                # rigid_offsets maps idx -> offset_from_i.  y_idx = y_i + offset_idx
-                # So y_{a+1} = y_i + offset_{a+1} = target_y_next
-                # y_i = target_y_next - offset_{a+1}
-                
-                required_y_i = target_y_next - rigid_offsets[a_idx+1]
-                
-                # Use exact value, clamped to global bounds
-                min_y = max(min_y, required_y_i)
-                max_y = min(max_y, required_y_i)
-            
-            if right_anchor:
-                a_idx, seg_idx = right_anchor
-                # Relation: y_a = y_{a-1} + dy
-                # y_{a-1} = y_a - dy
-                y_anchor = self._norm_to_data(self.points_norm[a_idx]).y()
-                dx = current_xs[a_idx] - current_xs[a_idx-1]
-                dy = calculate_dy(seg_idx, dx)
-                
-                target_y_prev = y_anchor - dy
-                
-                # y_{a-1} = y_i + offset_{a-1}
-                # y_i = target_y_prev - offset_{a-1}
-                
-                required_y_i = target_y_prev - rigid_offsets[a_idx-1]
-                
-                # Use exact value, clamped to global bounds
-                min_y = max(min_y, required_y_i)
-                max_y = min(max_y, required_y_i)
-            
-            # --- Apply Clamping ---
-            p_current_data = self._norm_to_data(target_p_norm)
-            
-            # If dragged handle has Y locked, use the locked Y value directly
-            # (bypass clamping which might conflict with sine geometry constraints)
-            if i in self._locked_y_labels:
-                clamped_y = self._norm_to_data(self.points_norm[i]).y()
-            # If anchors constrained us to a single Y value, use it exactly
-            elif abs(max_y - min_y) < 1e-9:
-                clamped_y = (min_y + max_y) / 2  # Use midpoint (they're nearly equal)
-            else:
-                clamped_y = max(min_y, min(max_y, p_current_data.y()))
-            
+                        # Relation: Y_curr = Y_prev + dy => Y_prev = Y_curr - dy
+                        rigid_offsets[curr-1] = rigid_offsets[curr] - dy
+                        curr -= 1
+                    else:
+                        break
+
+                # Propagate Right
+                curr = i
+                while curr < len(self.points_norm) - 1:
+                    seg_idx = curr
+                    neighbor_idx = curr + 1
+
+                    # Check for Locks (Anchors)
+                    neighbor_locked = (neighbor_idx in self._locked_y_labels)
+
+                    if is_rigid(seg_idx):
+                        if neighbor_locked:
+                            right_anchor = (neighbor_idx, seg_idx)
+                            break
+
+                        dx = current_xs[curr+1] - current_xs[curr]
+                        dy = calculate_dy(seg_idx, dx)
+
+                        # Relation: Y_next = Y_curr + dy
+                        rigid_offsets[curr+1] = rigid_offsets[curr] + dy
+                        curr += 1
+                    else:
+                        break
+
+                # --- Calculate Safe Y Range using Helper ---
+                min_y, max_y = self._get_safe_y_range_for_moving_handles(rigid_offsets)
+                anchored = False
+
+                # --- Apply Anchor Constraints ---
+                # If constrained by anchors via rigid segments, the valid Y range likely collapses to a single value.
+
+                if left_anchor:
+                    a_idx, seg_idx = left_anchor
+                    # Calculate required Y for the handle NEXT to the anchor (which is a_idx + 1)
+                    # Relation: y_{a+1} = y_a + dy
+                    # But 'a' is locked, so y_a is fixed.
+                    y_anchor = self._norm_to_data(self.points_norm[a_idx]).y()
+                    dx = current_xs[a_idx+1] - current_xs[a_idx]
+                    dy = calculate_dy(seg_idx, dx)
+
+                    target_y_next = y_anchor + dy
+
+                    # We know 'a_idx + 1' is in rigid_offsets.
+                    # rigid_offsets maps idx -> offset_from_i.  y_idx = y_i + offset_idx
+                    # So y_{a+1} = y_i + offset_{a+1} = target_y_next
+                    # y_i = target_y_next - offset_{a+1}
+
+                    required_y_i = target_y_next - rigid_offsets[a_idx+1]
+
+                    # Use exact value, clamped to global bounds
+                    min_y = max(min_y, required_y_i)
+                    max_y = min(max_y, required_y_i)
+                    anchored = True
+
+                if right_anchor:
+                    a_idx, seg_idx = right_anchor
+                    # Relation: y_a = y_{a-1} + dy
+                    # y_{a-1} = y_a - dy
+                    y_anchor = self._norm_to_data(self.points_norm[a_idx]).y()
+                    dx = current_xs[a_idx] - current_xs[a_idx-1]
+                    dy = calculate_dy(seg_idx, dx)
+
+                    target_y_prev = y_anchor - dy
+
+                    # y_{a-1} = y_i + offset_{a-1}
+                    # y_i = target_y_prev - offset_{a-1}
+
+                    required_y_i = target_y_prev - rigid_offsets[a_idx-1]
+
+                    # Use exact value, clamped to global bounds
+                    min_y = max(min_y, required_y_i)
+                    max_y = min(max_y, required_y_i)
+                    anchored = True
+
+                # Is the group held together by a slope the user locked? An anchored
+                # group is tied through the anchoring segment, which is not itself part
+                # of the group, so it has to be checked separately.
+                slope_locked = self._drag_group_has_slope_lock(rigid_offsets)
+                for anchor in (left_anchor, right_anchor):
+                    if anchor and self._is_slope_locked(anchor[1]):
+                        slope_locked = True
+
+                # --- Apply Clamping ---
+                # If dragged handle has Y locked, use the locked Y value directly
+                # (bypass clamping which might conflict with sine geometry constraints)
+                if i in self._locked_y_labels:
+                    return rigid_offsets, self._norm_to_data(self.points_norm[i]).y(), False, slope_locked
+                # If anchors constrained us to a single Y value, use it exactly
+                if anchored or abs(max_y - min_y) < 1e-9:
+                    y = (min_y + max_y) / 2
+                    # The anchor dictates Y for this X. If that puts any handle of the
+                    # group outside the frame, this X is simply not reachable.
+                    outside = any(not (self._min_strain - 1e-9 <= y + off <= self._max_strain + 1e-9)
+                                  for off in rigid_offsets.values())
+                    return rigid_offsets, y, outside, slope_locked
+
+                wanted_y = p_current_data.y()
+                clamped_y = max(min_y, min(max_y, wanted_y))
+                return rigid_offsets, clamped_y, abs(clamped_y - wanted_y) > 1e-12, slope_locked
+
+            rigid_offsets, clamped_y, hit_frame, slope_locked = solve(new_x_i)
+
+            # A locked slope must not be traded away just because the group ran into the
+            # top or bottom of the frame. Once it touches, the drag stops instead of
+            # sliding along the edge (sliding keeps its slope but silently reshapes the
+            # profile, because the locked segment gets shorter or longer as it goes).
+            if hit_frame and slope_locked:
+                new_x_i = round(self._norm_to_data(self.points_norm[i]).x())
+                rigid_offsets, clamped_y, hit_frame, slope_locked = solve(new_x_i)
+                if hit_frame:
+                    return   # already hard against the edge - nothing may move
+
             # --- Update All Moving Handles ---
             for idx, offset in rigid_offsets.items():
                 p_idx_data = self._norm_to_data(self.points_norm[idx])
                 p_idx_data.setY(clamped_y + offset)
                 
                 if idx == i:
-                    new_x = p_current_data.x()
-                    # Clamp X to neighbors
-                    if i > 0:
-                         prev_x = self._norm_to_data(self.points_norm[i-1]).x()
-                         new_x = max(prev_x + self._timestep, new_x)
-                    if i < len(self.points_norm) - 1:
-                         next_x = self._norm_to_data(self.points_norm[i+1]).x()
-                         new_x = min(next_x - self._timestep, new_x)
-                    
-                    # Snap to integer steps
-                    new_x = round(new_x)
-                    p_idx_data.setX(new_x)
-                
+                    # X was already resolved (endpoints pinned, neighbour-clamped and
+                    # snapped to integer steps) before the slope propagation above.
+                    p_idx_data.setX(new_x_i)
+
                 self.points_norm[idx] = self._data_to_norm(p_idx_data)
             
             # Ensure sorting/consistency
             self._sort_points()
             
             # Update Sine Amplitudes for Connected Segments (if handles moved)
-            def update_segment_amplitude(idx):
-                seg = self.segments[idx]
-                if seg['type'] != 'sine': return
-                
-                is_even_alt = abs((seg['num_cycles'] * 4) % 2) < 1e-9 and "Alternating" in seg['scheme']
-                is_full_puls = abs((seg['num_cycles'] * 4) % 4) < 1e-9 and "Pulsating" in seg['scheme']
-                
-                if not (is_even_alt or is_full_puls):
-                    p1 = self._norm_to_data(self.points_norm[idx])
-                    p2 = self._norm_to_data(self.points_norm[idx+1])
-                    
-                    # 1. Calculate implied amplitude (signed)
-                    new_amp, _, _ = self._get_sine_parameters(p1, p2, seg)
-                    
-                    if new_amp is not None:
-                        # 2. Check for Mode Switching (Mirroring)
-                        if new_amp < 0:
-                            current_scheme = seg['scheme']
-                            new_scheme = current_scheme
-                            
-                            if "Alternating" in current_scheme:
-                                if "tensile start" in current_scheme:
-                                    new_scheme = current_scheme.replace("tensile start", "compressive start")
-                                elif "compressive start" in current_scheme:
-                                    new_scheme = current_scheme.replace("compressive start", "tensile start")
-                            elif "Pulsating" in current_scheme:
-                                if "tensile" in current_scheme:
-                                    new_scheme = current_scheme.replace("tensile", "compressive")
-                                elif "compressive" in current_scheme:
-                                    new_scheme = current_scheme.replace("compressive", "tensile")
-                            
-                            if new_scheme != current_scheme:
-                                seg['scheme'] = new_scheme
-                                # Recalculate with new scheme to get positive amplitude
-                                new_amp, _, _ = self._get_sine_parameters(p1, p2, seg)
-                        
-                        # 3. Clamp to safe limits
-                        try:
-                             # Ensure stored amplitude is valid for bounds
-                            max_safe = self._calculate_max_safe_amplitude(seg['scheme'], seg['num_cycles'], p1.y())
-                            seg['amplitude'] = min(abs(new_amp), max_safe)
-                        except:
-                            seg['amplitude'] = abs(new_amp)
-
-            if i > 0: update_segment_amplitude(i-1)
-            if i < len(self.segments): update_segment_amplitude(i)
+            self._resync_adjacent_sines(i)
 
             self.dataChanged.emit()
         elif self._dragged_segment_index is not None:
             i = self._dragged_segment_index
-            
-            # Check if this segment is fixed
-            is_segment_fixed = self._dragged_segment_index in self._fixed_segments
-            
-            # Check if adjacent segments are fixed
-            prev_segment_fixed = (i - 1) in self._fixed_segments if i > 0 else False
-            next_segment_fixed = (i + 1) in self._fixed_segments if i < len(self.points_norm) - 2 else False
-            
-            # If this segment is fixed, check if it can be moved
-            if is_segment_fixed:
-                # Cannot move fixed segment if any adjacent segment is also fixed
-                if prev_segment_fixed or next_segment_fixed:
-                    return
-                # Otherwise, fixed segment can be moved (no adjacent fixed segments)
-            
-            # If adjacent segments are fixed, we need to preserve their slopes while allowing movement
-            # BUT we must preserve the slope of the dragged segment itself
-            if prev_segment_fixed or next_segment_fixed:
-                # Get original positions
-                original_p1_data = self._norm_to_data(self.points_norm[i])
-                original_p2_data = self._norm_to_data(self.points_norm[i+1])
-                
-                # Calculate the original slope and length of the dragged segment
-                original_delta_x = original_p2_data.x() - original_p1_data.x()
-                original_delta_y = original_p2_data.y() - original_p1_data.y()
-                
-                # Calculate the new position based on mouse movement
-                target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
-                target_p1_data = self._norm_to_data(self._widget_to_norm(target_p1_w))
-                
-                # Calculate the offset (delta) from original position
-                delta_x = target_p1_data.x() - original_p1_data.x()
-                delta_y = target_p1_data.y() - original_p1_data.y()
-                
-                # Start with unconstrained new positions
-                new_p1_data = QPointF(original_p1_data.x() + delta_x, original_p1_data.y() + delta_y)
-                new_p2_data = QPointF(original_p2_data.x() + delta_x, original_p2_data.y() + delta_y)
-                
-                # During dragging, enforce INTEGER time step values for x-coordinates
-                new_p1_data.setX(round(new_p1_data.x()))
-                new_p2_data.setX(round(new_p2_data.x()))
-                
-                # Clamp y values to min/max strain
-                new_p1_data.setY(max(self._min_strain, min(self._max_strain, new_p1_data.y())))
-                new_p2_data.setY(max(self._min_strain, min(self._max_strain, new_p2_data.y())))
-                
-                # Handle constraints based on which neighbors are fixed
-                # IMPORTANT: We preserve the ORIGINAL slope of the dragged segment, not calculate new slopes
-                if prev_segment_fixed and next_segment_fixed:
-                    # Both neighbors fixed - this case should have been caught earlier, but handle gracefully
-                    # Preserve both neighbor slopes by adjusting the connecting points
-                    if i > 1:
-                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
-                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
-                        if prev_point_data.x() != prev_prev_point_data.x():
-                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
-                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
-                    if i + 2 < len(self.points_norm):
-                        next_point_data = self._norm_to_data(self.points_norm[i+1])
-                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
-                        if next_next_point_data.x() != next_point_data.x():
-                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
-                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
-                    # Preserve the original slope of the dragged segment
-                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
-                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
-                elif prev_segment_fixed:
-                    # Previous neighbor fixed - preserve its slope
-                    if i > 1:
-                        prev_prev_point_data = self._norm_to_data(self.points_norm[i-2])
-                        prev_point_data = self._norm_to_data(self.points_norm[i-1])
-                        if prev_point_data.x() != prev_prev_point_data.x():
-                            original_slope = (prev_point_data.y() - prev_prev_point_data.y()) / (prev_point_data.x() - prev_prev_point_data.x())
-                            new_p1_data.setY(prev_prev_point_data.y() + original_slope * (new_p1_data.x() - prev_prev_point_data.x()))
-                    # Preserve the original slope of the dragged segment by maintaining delta
-                    new_p2_data.setX(new_p1_data.x() + original_delta_x)
-                    new_p2_data.setY(new_p1_data.y() + original_delta_y)
-                elif next_segment_fixed:
-                    # Next neighbor fixed - preserve its slope
-                    if i + 2 < len(self.points_norm):
-                        next_point_data = self._norm_to_data(self.points_norm[i+1])
-                        next_next_point_data = self._norm_to_data(self.points_norm[i+2])
-                        if next_next_point_data.x() != next_point_data.x():
-                            original_slope = (next_next_point_data.y() - next_point_data.y()) / (next_next_point_data.x() - next_point_data.x())
-                            new_p2_data.setY(next_point_data.y() + original_slope * (new_p2_data.x() - next_point_data.x()))
-                    # Preserve the original slope of the dragged segment by maintaining delta
-                    new_p1_data.setX(new_p2_data.x() - original_delta_x)
-                    new_p1_data.setY(new_p2_data.y() - original_delta_y)
-                
-                # Convert to normalized coordinates
-                new_p1_norm = self._data_to_norm(new_p1_data)
-                new_p2_norm = self._data_to_norm(new_p2_data)
-                
-                # Check bounds constraints
-                p_prev = self.points_norm[i-1] if i > 0 else None
-                p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
-                if (p_prev is None or new_p1_norm.x() >= p_prev.x()) and (p_next is None or new_p2_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [new_p1_norm, new_p2_norm]):
-                    self.points_norm[i] = new_p1_norm
-                    self.points_norm[i+1] = new_p2_norm
+
+            # A locked neighbour has to keep its slope, so the handle this segment shares
+            # with it may only travel ALONG that neighbour's line: the segment then slides
+            # as a whole with dy = slope * dx. With both neighbours locked there is no such
+            # direction left, so the segment cannot be moved at all.
+            prev_locked = self._is_slope_locked(i - 1) if i > 0 else False
+            next_locked = self._is_slope_locked(i + 1) if (i + 2) < len(self.points_norm) else False
+            if prev_locked and next_locked:
+                return
+
+            if i == 0:
+                p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
+                p1_new_norm.setX(0)  # Ensure first point stays at x=0
+                self.points_norm[i] = p1_new_norm
             else:
-                # Normal segment dragging when no adjacent segments are fixed
-                if i == 0:
-                    p1_new_norm = self._data_to_norm(self._norm_to_data(self._widget_to_norm(constrained_pos - self._drag_mouse_to_p1_offset)))
-                    p1_new_norm.setX(0)  # Ensure first point stays at x=0
-                    self.points_norm[i] = p1_new_norm
+                target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
+                p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
+                # During dragging, enforce INTEGER time step values for x-coordinate
+                p1_new_data.setX(round(p1_new_data.x()))
+                p1_new_norm = self._data_to_norm(p1_new_data)
+
+                # Special handling for the last segment to mimic first segment behavior (mirrored)
+                # Ensure the right-most point stays at x=max (normalized 1.0)
+                if i == len(self.points_norm) - 2:
+                    p1_new_norm.setX(1.0 - self._segment_drag_offset_norm.x())
+                    p1_new_data = self._norm_to_data(p1_new_norm) # Sync data for subsequent Y clamping
+
+                if prev_locked or next_locked:
+                    # Ride the locked neighbour's line. Nothing is clamped here on purpose:
+                    # nudging the segment back into the frame would tilt that neighbour, so
+                    # a move that does not fit is refused and the segment stops instead.
+                    if prev_locked:
+                        anchor = self._norm_to_data(self.points_norm[i-1])
+                        slope = self._locked_slope_value(i-1)
+                        p1_new_data.setY(anchor.y() + slope * (p1_new_data.x() - anchor.x()))
+                        p1_new_norm = self._data_to_norm(p1_new_data)
+                        p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
+                    else:
+                        anchor = self._norm_to_data(self.points_norm[i+2])
+                        slope = self._locked_slope_value(i+1)
+                        p2_new_data = self._norm_to_data(p1_new_norm + self._segment_drag_offset_norm)
+                        p2_new_data.setY(anchor.y() - slope * (anchor.x() - p2_new_data.x()))
+                        p2_new_norm = self._data_to_norm(p2_new_data)
+                        p1_new_norm = p2_new_norm - self._segment_drag_offset_norm
+
+                    if not self._segment_within_frame(i, p1_new_norm, p2_new_norm):
+                        return
                 else:
-                    target_p1_w = constrained_pos - self._drag_mouse_to_p1_offset
-                    p1_new_data = self._norm_to_data(self._widget_to_norm(target_p1_w))  # Don't snap while dragging
-                    # During dragging, enforce INTEGER time step values for x-coordinate
-                    p1_new_data.setX(round(p1_new_data.x()))
-                    p1_new_norm = self._data_to_norm(p1_new_data)
-                    
-                    # Special handling for the last segment to mimic first segment behavior (mirrored)
-                    # Ensure the right-most point stays at x=max (normalized 1.0)
-                    if i == len(self.points_norm) - 2:
-                        p1_new_norm.setX(1.0 - self._segment_drag_offset_norm.x())
-                        p1_new_data = self._norm_to_data(p1_new_norm) # Sync data for subsequent Y clamping
-                    
                     # --- Start: NEW logic for boundary clamping for SINE segments ---
                     p2_new_norm = p1_new_norm + self._segment_drag_offset_norm
                     p2_new_data = self._norm_to_data(p2_new_norm)
                     min_y_data = min(p1_new_data.y(), p2_new_data.y())
                     max_y_data = max(p1_new_data.y(), p2_new_data.y())
-                    
+
                     if self.segments[i]['type'] == 'sine':
                         # Use the improved method that handles stored amplitude appropriately
                         amp, y_center, _ = self._get_sine_parameters_with_stored_amp(p1_new_data, p2_new_data, self.segments[i], i)
-                        
+
                         # Use exact unit wave excursions for precise bounds checking
                         min_ex, max_ex = self._get_unit_wave_excursions(self.segments[i]['scheme'], self.segments[i]['num_cycles'])
                         if amp is not None:
@@ -2000,7 +1875,7 @@ class GraphWidget(QWidget):
                             # y_val = y_start + Amp * unit_val
                             # So min_y = y_start + Amp * min_ex
                             # max_y = y_start + Amp * max_ex
-                            
+
                             min_y_data = p1_new_data.y() + abs(amp) * min_ex
                             max_y_data = p1_new_data.y() + abs(amp) * max_ex
 
@@ -2021,10 +1896,11 @@ class GraphWidget(QWidget):
                     p2_new_data = self._norm_to_data(p2_new_norm)
                     p2_new_data.setY(max(self._min_strain, min(self._max_strain, p2_new_data.y())))
                     p2_new_norm = self._data_to_norm(p2_new_data)
-                    p_prev = self.points_norm[i-1] if i > 0 else None
-                    p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
-                    if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(0.0 <= p.y() <= 1.0 for p in [p1_new_norm, p2_new_norm]):
-                        self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
+
+                p_prev = self.points_norm[i-1] if i > 0 else None
+                p_next = self.points_norm[i+2] if i < len(self.points_norm) - 2 else None
+                if (p_prev is None or p1_new_norm.x() >= p_prev.x()) and (p_next is None or p2_new_norm.x() <= p_next.x()) and all(-1e-9 <= p.y() <= 1.0 + 1e-9 for p in [p1_new_norm, p2_new_norm]):
+                    self.points_norm[i], self.points_norm[i+1] = p1_new_norm, p2_new_norm
         self.update()
 
     def mouseReleaseEvent(self, event): 
@@ -2414,15 +2290,18 @@ class GraphWidget(QWidget):
 
     def _toggle_fixed_slope(self, seg_idx):
         currently_fixed = self.segments[seg_idx].get('fixed_slope', False)
-        
+
+        # The legacy _fixed_segments set is superseded by the per-segment
+        # 'fixed_slope' flag. Drop any entry in both directions so a stale one can
+        # never re-enable the old constraint path (which does not pin the last handle).
+        if hasattr(self, '_fixed_segments'):
+            self._fixed_segments.discard(seg_idx)
+
         if not currently_fixed:
             # Locking the slope
             current_slope = self._calculate_segment_slope(seg_idx)
             self.segments[seg_idx]['fixed_slope'] = True
             self.segments[seg_idx]['fixed_slope_value'] = current_slope
-            # Remove legacy if present
-            if hasattr(self, '_fixed_segments') and seg_idx in self._fixed_segments:
-                self._fixed_segments.remove(seg_idx)
         else:
             # Unlocking
             self.segments[seg_idx]['fixed_slope'] = False
@@ -2674,20 +2553,26 @@ class GraphWidget(QWidget):
             title = "Set Temperature" if self.mode == 'Temperature' else "Set Strain"
             label = "New Temperature Value:" if self.mode == 'Temperature' else "New Strain Value:"
             new_val, ok = QInputDialog.getDouble(self, title, label, p_data.y(), self._min_strain, self._max_strain, 4, flags=Qt.WindowType.Dialog, step=max(0.001, abs(p_data.y())*0.02) if p_data.y() != 0 else 0.001)
-            if ok: p_data.setY(new_val)
+            if not ok: return
+            p_data.setY(new_val)
+            # Carry locked neighbours along instead of silently breaking their slope.
+            self.points_norm[index] = self._data_to_norm(p_data)
+            self._apply_fixed_slope_chain(index, new_val)
+            p_data = self._norm_to_data(self.points_norm[index])
         elif type == "x_val" and 0 < index < len(self.points_norm) - 1:
             dialog = TimeEditDialog(p_data.x(), self._timestep, self._max_steps, self);
-            if dialog.exec(): p_data.setX(float(dialog.get_step()))
+            if not dialog.exec(): return
+            p_data.setX(float(dialog.get_step()))
+            # A locked segment keeps its slope, so its new length moves the far endpoint.
+            self.points_norm[index] = self._data_to_norm(p_data)
+            self._apply_fixed_slope_chain(index, p_data.y())
+            p_data = self._norm_to_data(self.points_norm[index])
         elif type == "slope":
             dialog = SlopeEditDialog(*self.get_data_points()[index:index+2], self._timestep, self._time_unit, self)
             if dialog.exec():
-                p1_data, p2_data = self.get_data_points()[index], self.get_data_points()[index+1]
-                p2_data.setY(max(self._min_strain, min(self._max_strain, p1_data.y() + dialog.get_slope() * (p2_data.x() - p1_data.x()))))
-                # Ensure first point stays at x=0
-                if index == 0:
-                    p1_data.setX(0)
-                self.points_norm[index] = self._data_to_norm(p1_data)
-                self.points_norm[index+1] = self._data_to_norm(p2_data)
+                self._apply_slope_from_dialog(index, dialog.get_slope())
+                self._sort_points(); self.update(); self.dataChanged.emit()
+            return
         elif type == "amplitude_label":
             if index < len(self.segments) and self.segments[index]['type'] == 'sine':
                 p1_d = self._norm_to_data(self.points_norm[index])
@@ -2748,7 +2633,11 @@ class GraphWidget(QWidget):
                     if is_even_multiple_alternating or is_integer_full_period_pulsating:
                         # This is the left handle of the sine segment, update the right handle to match y
                         self.points_norm[right_segment_idx + 1].setY(self._data_to_norm(p_data).y())
-        
+
+        # The wave is drawn from the stored amplitude, so it has to be re-derived from
+        # the handles that just moved - otherwise the curve detaches from them.
+        self._resync_adjacent_sines(index)
+
         self._sort_points(); self.update(); self.dataChanged.emit()
     def _show_set_coords_dialog(self, index):
         p_data = self._norm_to_data(self.points_norm[index])
@@ -2762,7 +2651,12 @@ class GraphWidget(QWidget):
             if index == len(self.points_norm) - 1:
                 new_p_data.setX(float(self._max_steps))
             self.points_norm[index] = self._data_to_norm(new_p_data)
-            
+
+            # Both coordinates may have changed, so locked neighbours have to follow
+            # (their slope is kept over the new segment length).
+            self._apply_fixed_slope_chain(index, new_p_data.y())
+            new_p_data = self._norm_to_data(self.points_norm[index])
+
             # Check if this handle is part of a sine segment with even multiple in alternating mode
             # If so, synchronize the other handle
             # Check left segment (index > 0)
@@ -2787,7 +2681,10 @@ class GraphWidget(QWidget):
                     if is_even_multiple and is_alternating_mode:
                         # This is the left handle of the sine segment, update the right handle to match y
                         self.points_norm[right_segment_idx + 1].setY(self._data_to_norm(new_p_data).y())
-            
+
+            # Keep the adjacent waves attached to the handle that just moved.
+            self._resync_adjacent_sines(index)
+
             self._sort_points()
             self.update()
             self.dataChanged.emit()
@@ -2807,6 +2704,337 @@ class GraphWidget(QWidget):
 
             self.update()
             self.dataChanged.emit()
+
+    def _resolve_dragged_handle_x(self, i, raw_x):
+        """Final X (data coordinates) for the handle currently being dragged.
+
+        The first and the last handle are anchored to the start/end of the profile and
+        may only be moved vertically; every other handle is kept between its neighbours.
+        The result is snapped to whole time steps so that slope/Y calculations agree
+        with the rendered X.
+        """
+        if i <= 0:
+            return 0.0
+        if i >= len(self.points_norm) - 1:
+            return float(self._max_steps)
+        if i in self._locked_x_ticks:
+            return round(self._norm_to_data(self.points_norm[i]).x())
+
+        prev_x = self._norm_to_data(self.points_norm[i - 1]).x()
+        next_x = self._norm_to_data(self.points_norm[i + 1]).x()
+        new_x = max(prev_x + self._timestep, raw_x)
+        new_x = min(next_x - self._timestep, new_x)
+        return round(new_x)
+
+    def _fixed_slope_dy(self, seg_idx, dx):
+        """Height change over a segment of length dx that keeps its locked slope.
+
+        Only segments carrying an explicit 'fixed_slope' impose a slope; implicitly
+        rigid segments (e.g. full-cycle sines) return 0, i.e. their endpoints stay at
+        the same height and their amplitude must not be touched.
+        """
+        seg = self.segments[seg_idx]
+
+        if not seg.get('fixed_slope', False):
+            return 0
+
+        m = seg.get('fixed_slope_value', 0)
+
+        if seg['type'] == 'line':
+            return m * dx
+
+        elif seg['type'] == 'sine':
+            # Sine Slope Logic - only for explicitly fixed slope
+            phi_start = 0
+            if "Alternating" in seg['scheme']:
+                phi_start = math.pi if "compressive" in seg['scheme'] else 0
+            elif "Pulsating" in seg['scheme']:
+                phi_start = -math.pi/2 if "tensile" in seg['scheme'] else math.pi/2
+
+            k = seg['num_cycles'] * 2 * math.pi / dx if dx != 0 else 0
+
+            n = 0
+            first_zero_x_offset = -1
+            while True:
+                x_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+                if x_offset >= -1e-9 and x_offset <= dx + 1e-9:
+                    first_zero_x_offset = x_offset
+                    break
+                n += 1
+                if n > 1000: break
+
+            if first_zero_x_offset != -1 and k != 0:
+                phase_at_zero = k * first_zero_x_offset + phi_start
+                cos_val = math.cos(phase_at_zero)
+                if abs(cos_val) > 1e-9:
+                    A = m / (k * cos_val)
+                    # Update amplitude to maintain fixed slope
+                    seg['amplitude'] = A
+
+                    end_angle = seg['num_cycles'] * 2 * math.pi + phi_start
+                    ds = math.sin(end_angle) - math.sin(phi_start)
+                    return A * ds
+        return 0
+
+    def _resync_sine_amplitude(self, seg_idx):
+        """Re-derive a sine segment's stored amplitude from its two handles.
+
+        The wave is drawn from the *stored* amplitude, so whenever a handle moves the
+        stored value has to follow - otherwise the curve no longer starts and ends on
+        its handles. Dragging always did this; direct (dialog) edits did not.
+        """
+        if seg_idx < 0 or seg_idx >= len(self.segments): return
+        # set_state() rescales the axes before it swaps in the new segments, so the two
+        # lists can briefly disagree in length.
+        if seg_idx + 1 >= len(self.points_norm): return
+        seg = self.segments[seg_idx]
+        if seg.get('type') != 'sine': return
+
+        is_even_alt = abs((seg['num_cycles'] * 4) % 2) < 1e-9 and "Alternating" in seg['scheme']
+        is_full_puls = abs((seg['num_cycles'] * 4) % 4) < 1e-9 and "Pulsating" in seg['scheme']
+
+        p1 = self._norm_to_data(self.points_norm[seg_idx])
+        p2 = self._norm_to_data(self.points_norm[seg_idx+1])
+
+        if is_even_alt or is_full_puls:
+            # Both handles sit at the same height for these schemes, so they carry no
+            # amplitude information. Keep the user's amplitude, but make sure it still
+            # fits in the frame now that the baseline may have moved.
+            stored = seg.get('amplitude')
+            if stored is not None:
+                try:
+                    max_safe = self._calculate_max_safe_amplitude(seg['scheme'], seg['num_cycles'], p1.y())
+                    if abs(stored) > max_safe + 1e-12:
+                        seg['amplitude'] = math.copysign(max_safe, stored)
+                except Exception:
+                    pass
+            return
+
+        # 1. Calculate implied amplitude (signed)
+        new_amp, _, _ = self._get_sine_parameters(p1, p2, seg)
+
+        if new_amp is not None:
+            # 2. Check for Mode Switching (Mirroring)
+            if new_amp < 0:
+                current_scheme = seg['scheme']
+                new_scheme = current_scheme
+
+                if "Alternating" in current_scheme:
+                    if "tensile start" in current_scheme:
+                        new_scheme = current_scheme.replace("tensile start", "compressive start")
+                    elif "compressive start" in current_scheme:
+                        new_scheme = current_scheme.replace("compressive start", "tensile start")
+                elif "Pulsating" in current_scheme:
+                    if "tensile" in current_scheme:
+                        new_scheme = current_scheme.replace("tensile", "compressive")
+                    elif "compressive" in current_scheme:
+                        new_scheme = current_scheme.replace("compressive", "tensile")
+
+                if new_scheme != current_scheme:
+                    seg['scheme'] = new_scheme
+                    # Recalculate with new scheme to get positive amplitude
+                    new_amp, _, _ = self._get_sine_parameters(p1, p2, seg)
+
+            # 3. Clamp to safe limits
+            try:
+                 # Ensure stored amplitude is valid for bounds
+                max_safe = self._calculate_max_safe_amplitude(seg['scheme'], seg['num_cycles'], p1.y())
+                seg['amplitude'] = min(abs(new_amp), max_safe)
+            except:
+                seg['amplitude'] = abs(new_amp)
+
+    def _resync_adjacent_sines(self, handle_idx):
+        """Keep the sine segments on both sides of a moved handle attached to it."""
+        if handle_idx > 0: self._resync_sine_amplitude(handle_idx - 1)
+        if handle_idx < len(self.segments): self._resync_sine_amplitude(handle_idx)
+
+    def _fixed_slope_offsets(self, index):
+        """Handles tied to `index` by explicit 'Fix Slope/Rate' locks.
+
+        Returns {handle_idx: dy relative to `index`}: moving `index` by some amount
+        has to move every handle in that chain by the same amount plus this offset.
+        """
+        offsets = {index: 0.0}
+        xs = [self._norm_to_data(p).x() for p in self.points_norm]
+
+        curr = index
+        while curr > 0 and self.segments[curr - 1].get('fixed_slope', False):
+            dy = self._fixed_slope_dy(curr - 1, xs[curr] - xs[curr - 1])
+            offsets[curr - 1] = offsets[curr] - dy
+            curr -= 1
+
+        curr = index
+        while curr < len(self.points_norm) - 1 and self.segments[curr].get('fixed_slope', False):
+            dy = self._fixed_slope_dy(curr, xs[curr + 1] - xs[curr])
+            offsets[curr + 1] = offsets[curr] + dy
+            curr += 1
+
+        return offsets
+
+    def _apply_fixed_slope_chain(self, index, y_value):
+        """Set handle `index` to y_value, carrying every fixed-slope neighbour with it.
+
+        The requested value is pulled back just far enough to keep the whole locked
+        chain inside [min_strain, max_strain], so that running into the top/bottom edge
+        never silently breaks a lock. Returns the value actually applied.
+        """
+        offsets = self._fixed_slope_offsets(index)
+
+        lo, hi = self._min_strain, self._max_strain
+        for off in offsets.values():
+            lo = max(lo, self._min_strain - off)
+            hi = min(hi, self._max_strain - off)
+
+        if lo <= hi:
+            y_value = max(lo, min(hi, y_value))
+        else:
+            # The chain cannot fit in the frame at all; keep at least this handle valid.
+            y_value = max(self._min_strain, min(self._max_strain, y_value))
+
+        for idx, off in offsets.items():
+            p = self._norm_to_data(self.points_norm[idx])
+            p.setY(y_value + off)
+            self.points_norm[idx] = self._data_to_norm(p)
+
+        for idx in offsets:
+            self._resync_adjacent_sines(idx)
+
+        return y_value
+
+    def _apply_slope_from_dialog(self, seg_idx, slope):
+        """Apply a slope/rate typed into the Slope dialog to segment `seg_idx`.
+
+        The dialog is authoritative: it overrules this segment's own lock (the stored
+        lock value is updated to the entered one) as well as the slope or position of
+        the neighbour it pushes, and the neighbouring sine follows the handle it shares.
+        """
+        p1_data = self._norm_to_data(self.points_norm[seg_idx])
+        p2_data = self._norm_to_data(self.points_norm[seg_idx + 1])
+        dx = p2_data.x() - p1_data.x()
+        seg = self.segments[seg_idx]
+
+        if seg.get('type') == 'sine':
+            # For a sine the label shows the mid-point slope, which is set through the
+            # amplitude (A = m / (k*cos(phase))) - the same relation used when a line
+            # with a locked slope is converted into a sine.
+            if abs(dx) < 1e-9: return
+            seg['amplitude'] = self._amplitude_for_midpoint_slope(seg, dx, slope)
+            new_y2 = p1_data.y() + self._sine_end_offset(seg)
+        else:
+            new_y2 = p1_data.y() + slope * dx
+
+        # The entered slope wins over this segment's own stored lock value.
+        if seg.get('fixed_slope', False):
+            seg['fixed_slope_value'] = slope
+
+        self.points_norm[seg_idx + 1] = self._data_to_norm(
+            QPointF(p2_data.x(), max(self._min_strain, min(self._max_strain, new_y2))))
+
+        # Drag the far side of the graph along so a locked neighbour keeps its slope,
+        # and re-fit any neighbouring sine to the handle that just moved.
+        self._apply_fixed_slope_chain(seg_idx + 1,
+                                      self._norm_to_data(self.points_norm[seg_idx + 1]).y())
+        self._enforce_sine_endpoint_link(seg_idx + 1)
+        self._resync_adjacent_sines(seg_idx + 1)
+
+    def _sine_phi_start(self, seg):
+        """Starting phase of a sine segment, as used by _get_sine_parameters."""
+        scheme = seg['scheme']
+        if "Alternating" in scheme:
+            return math.pi if "compressive" in scheme else 0
+        if "Pulsating" in scheme:
+            return -math.pi/2 if "tensile" in scheme else math.pi/2
+        return 0
+
+    def _amplitude_for_midpoint_slope(self, seg, dx, slope):
+        """Amplitude that gives a sine segment the requested mid-point slope."""
+        phi_start = self._sine_phi_start(seg)
+        k = seg['num_cycles'] * 2 * math.pi / dx if dx != 0 else 0
+
+        n = 0
+        first_zero_x_offset = -1
+        while True:
+            x_offset = (n * math.pi - phi_start) / k if k != 0 else -1
+            if x_offset >= -1e-9 and x_offset <= dx + 1e-9:
+                first_zero_x_offset = x_offset
+                break
+            n += 1
+            if n > 1000: break
+
+        if first_zero_x_offset != -1 and k != 0:
+            cos_val = math.cos(k * first_zero_x_offset + phi_start)
+            if abs(cos_val) > 1e-9:
+                return slope / (k * cos_val)
+        return seg.get('amplitude', 0)
+
+    def _sine_end_offset(self, seg):
+        """Height of a sine segment's end point relative to its start point."""
+        phi_start = self._sine_phi_start(seg)
+        end_angle = seg['num_cycles'] * 2 * math.pi + phi_start
+        amp = seg.get('amplitude', 0)
+        if "Pulsating" in seg['scheme']:
+            return amp * (math.sin(end_angle) - math.sin(phi_start))
+        return amp * math.sin(end_angle)
+
+    def _enforce_sine_endpoint_link(self, handle_idx):
+        """Keep both handles of a level sine segment at the same height.
+
+        Even-multiple Alternating and whole-period Pulsating waves return to their
+        baseline, so their two handles must stay level; `handle_idx` is the one that
+        just moved and therefore wins.
+        """
+        y = self._norm_to_data(self.points_norm[handle_idx]).y()
+
+        for seg_idx, other in ((handle_idx - 1, handle_idx - 1), (handle_idx, handle_idx + 1)):
+            if seg_idx < 0 or seg_idx >= len(self.segments): continue
+            seg = self.segments[seg_idx]
+            if seg.get('type') != 'sine': continue
+            is_even_alt = (seg['num_cycles'] * 4) % 2 == 0 and "Alternating" in seg['scheme']
+            is_full_puls = (seg['num_cycles'] * 4) % 4 == 0 and "Pulsating" in seg['scheme']
+            if not (is_even_alt or is_full_puls): continue
+            p = self._norm_to_data(self.points_norm[other])
+            p.setY(y)
+            self.points_norm[other] = self._data_to_norm(p)
+
+    def _is_slope_locked(self, seg_idx):
+        """True if the user locked this segment's slope/rate ('Fix Slope/Rate')."""
+        if seg_idx < 0 or seg_idx >= len(self.segments): return False
+        if self.segments[seg_idx].get('fixed_slope', False): return True
+        return seg_idx in self._fixed_segments   # configs from before the flag existed
+
+    def _locked_slope_value(self, seg_idx):
+        """The slope a locked segment has to keep."""
+        seg = self.segments[seg_idx]
+        if seg.get('fixed_slope', False):
+            return seg.get('fixed_slope_value', 0)
+        return self._calculate_segment_slope(seg_idx)
+
+    def _drag_group_has_slope_lock(self, rigid_offsets):
+        """True if the handles moving together are tied by an explicit slope lock.
+
+        Only user locks count: a whole-cycle sine also moves its endpoints together, but
+        that link is implicit and must keep behaving as before.
+        """
+        return any(idx + 1 in rigid_offsets and self._is_slope_locked(idx)
+                   for idx in rigid_offsets)
+
+    def _segment_within_frame(self, seg_idx, p1_norm, p2_norm):
+        """True if a segment placed on these two handles stays inside the frame."""
+        if not (-1e-9 <= p1_norm.y() <= 1.0 + 1e-9 and -1e-9 <= p2_norm.y() <= 1.0 + 1e-9):
+            return False
+
+        seg = self.segments[seg_idx]
+        if seg.get('type') != 'sine':
+            return True
+
+        p1 = self._norm_to_data(p1_norm)
+        amp, _, _ = self._get_sine_parameters_with_stored_amp(p1, self._norm_to_data(p2_norm),
+                                                             seg, seg_idx)
+        if amp is None:
+            return True
+        min_ex, max_ex = self._get_unit_wave_excursions(seg['scheme'], seg['num_cycles'])
+        return (p1.y() + abs(amp) * min_ex >= self._min_strain - 1e-9 and
+                p1.y() + abs(amp) * max_ex <= self._max_strain + 1e-9)
 
     def _is_segment_rigid_vertical(self, seg_idx):
         """
