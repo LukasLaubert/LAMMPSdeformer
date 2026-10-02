@@ -70,7 +70,7 @@ except ImportError as e:
 
 # Import the new graph widgets
 try:
-    from graph_widgets import DeformationTab, GraphWidget
+    from graph_widgets import DeformationTab, GraphWidget, parse_decimal
 except ImportError as e:
     DeformationTab = None
     GraphWidget = None
@@ -137,18 +137,23 @@ class SciDoubleSpinBox(QDoubleSpinBox):
         return f"{value:.6e}"
 
     def valueFromText(self, text):
-        return float(text)
+        return parse_decimal(text)
 
     def validate(self, text, pos):
+        s = text.strip()
+        # In-progress typing (sign, trailing exponent letter/separator) is
+        # intermediate rather than invalid so keystrokes are not swallowed.
+        if not s or s in ('-', '+') or s[-1] in ('e', 'E', ',', '.') or s[-2:] in ('e-', 'E-', 'e+', 'E+'):
+            return (QValidator.State.Intermediate, text, pos)
         try:
-            float(text)
+            parse_decimal(s)
             return (QValidator.State.Acceptable, text, pos)
         except ValueError:
             return (QValidator.State.Invalid, text, pos)
 
     def fixup(self, text):
         try:
-            return f"{float(text):.6e}"
+            return f"{parse_decimal(text):.6e}"
         except ValueError:
             return "0.0"
 
@@ -247,9 +252,9 @@ class NumericTableWidgetItem(QTableWidgetItem):
         if role == Qt.ItemDataRole.EditRole:
             try:
                 if self.is_float:
-                    num_value = float(value)
+                    num_value = parse_decimal(value)
                 else:
-                    num_value = int(value)
+                    num_value = int(parse_decimal(value))
                     
                 # Check bounds if specified
                 if self.min_val is not None and num_value < self.min_val:
@@ -2651,7 +2656,7 @@ class LAMMPSdeformerGui(QMainWindow):
 
     def _iter_studies(self):
         """Yield (study_widget, study_name, max_steps) for every *active*
-        study in the Processing tab.  The placeholder '+' tab and
+        study in the Studies tab.  The placeholder '+' tab and
         deactivated studies (is_enabled == False) are skipped so they
         do not contribute to thermo-frequency / averaging calculations
         or the grey italic 'Frequencies:' label."""
@@ -3461,7 +3466,7 @@ class LAMMPSdeformerGui(QMainWindow):
 
     def _refresh_output_freq_displays(self):
         """Single entry point: silent refresh of both spinboxes + grey label.
-        Used by Processing-tab-driven updates (no popup)."""
+        Used by Studies-tab-driven updates (no popup)."""
         self._refresh_thermo_freq_display(popup_on_diff=False)
         self._refresh_traj_freq_display(popup_on_diff=False)
         self._update_per_study_freq_label()
@@ -3712,7 +3717,7 @@ class LAMMPSdeformerGui(QMainWindow):
     def create_deformation_tab(self):
         """Create the deformation processing tab with the graphical UI"""
         self.deformation_tab = QWidget()
-        self.tab_widget.addTab(self.deformation_tab, "Processing")
+        self.tab_widget.addTab(self.deformation_tab, "Studies")
         
         deformation_layout = QVBoxLayout(self.deformation_tab)
         
@@ -3798,9 +3803,9 @@ class LAMMPSdeformerGui(QMainWindow):
             if not all([strain_rate_item, eng_strain_item, steps_item]):
                 return
             
-            strain_rate = float(strain_rate_item.text())
-            eng_strain = float(eng_strain_item.text())
-            steps = int(steps_item.text())
+            strain_rate = parse_decimal(strain_rate_item.text())
+            eng_strain = parse_decimal(eng_strain_item.text())
+            steps = int(parse_decimal(steps_item.text()))
             
             # Determine which parameter to calculate based on mode
             if self.calc_strain_rate.isChecked():

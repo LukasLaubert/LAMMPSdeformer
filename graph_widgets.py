@@ -8,23 +8,95 @@ from PyQt6.QtWidgets import (
     QTextEdit, QDialogButtonBox, QFormLayout, QPushButton, QInputDialog,
     QTabWidget, QComboBox, QScrollArea, QMessageBox, QStackedWidget, QListWidget, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QUrl
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence, QPixmap, QDesktopServices, QCursor, QPolygonF
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QUrl, QLocale
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QAction, QFontMetrics, QKeySequence, QPixmap, QDesktopServices, QCursor, QPolygonF, QValidator
+
+def parse_decimal(text):
+    """Parse a decimal number from free text, accepting '.' and the system locale separator.
+
+    The C locale is tried first so LAMMPS-style input ('1.5', '1e-4') always means
+    the same thing on every system; the system locale is the fallback so e.g.
+    German input ('1,5', '1.000,5') also works. Group separators are honored per
+    locale by QLocale.toDouble, which a naive comma-swap would corrupt.
+    Raises ValueError for non-numeric input. Never touches global locale state.
+    """
+    s = str(text).strip()
+    value, ok = QLocale.c().toDouble(s)
+    if ok:
+        return value
+    value, ok = QLocale.system().toDouble(s)
+    if ok:
+        return value
+    raise ValueError(f"Cannot parse decimal number from {text!r}")
 
 # --- Sci-Notation SpinBox ---
 class SciNotationDoubleSpinBox(QDoubleSpinBox):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.setDecimals(10) # Allow high precision
+        self.setDecimals(20) # Decimal places: covers tiny magnitudes exactly
 
     def textFromValue(self, value):
-        return f"{value:.4e}"
+        # Shortest scientific form that parses back to the exact value:
+        # full digits shown (trailing zeros removed), never silently rounded.
+        for _prec in range(6, 17):
+            _s = f"{value:.{_prec}e}"
+            try:
+                if float(_s) == value:
+                    _mantissa, _exp = _s.split("e")
+                    return f"{_mantissa.rstrip("0").rstrip(".")}e{_exp}"
+            except ValueError:
+                continue
+        _s = f"{value:.16e}"
+        _mantissa, _exp = _s.split("e")
+        return f"{_mantissa.rstrip("0").rstrip(".")}e{_exp}"
 
     def valueFromText(self, text):
         try:
-            return float(text)
+            return parse_decimal(text)
         except ValueError:
             return self.value()
+    def validate(self, text, pos):
+        s = text.strip()
+        # In-progress typing (sign, trailing exponent letter/separator)
+        # stays editable instead of having keystrokes swallowed.
+        if not s or s in ('-', '+') or s[-1] in ('e', 'E', ',', '.') or s[-2:] in ('e-', 'E-', 'e+', 'E+'):
+            return (QValidator.State.Intermediate, text, pos)
+        try:
+            parse_decimal(s)
+            return (QValidator.State.Acceptable, text, pos)
+        except ValueError:
+            return (QValidator.State.Invalid, text, pos)
+
+class TrimDoubleSpinBox(QDoubleSpinBox):
+    """QDoubleSpinBox accepting up to 12 decimals while displaying
+    without trailing zeros (300.15 stays 300.15, 0.000000456789 keeps
+    its full precision; smaller magnitudes fall back to exact scientific)."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setDecimals(20)
+    def textFromValue(self, value):
+        # Shortest fixed-point form that parses back exactly; beyond
+        # 20 places use repr (exact scientific).
+        for _prec in range(1, 21):
+            _s = f"{value:.{_prec}f}"
+            try:
+                if float(_s) == value:
+                    _t = _s.rstrip("0").rstrip(".")
+                    return "0" if _t in ("", "-", "-0") else _t
+            except ValueError:
+                continue
+        return repr(value)
+    def validate(self, text, pos):
+        s = text.strip()
+        # In-progress typing (sign, trailing exponent letter/separator)
+        # stays editable instead of having keystrokes swallowed.
+        if not s or s in ('-', '+') or s[-1] in ('e', 'E', ',', '.') or s[-2:] in ('e-', 'E-', 'e+', 'E+'):
+            return (QValidator.State.Intermediate, text, pos)
+        try:
+            parse_decimal(s)
+            return (QValidator.State.Acceptable, text, pos)
+        except ValueError:
+            return (QValidator.State.Invalid, text, pos)
 
 # --- Professional Style & Data ---
 STYLE_BACKGROUND = QColor("#FFFFFF"); STYLE_FRAME = QColor("#ADB5BD"); STYLE_LINE = QColor("#007BFF"); STYLE_HANDLE = QColor("#007BFF")
@@ -241,10 +313,16 @@ class SlopeEditDialog(QDialog):
         self._timestep = timestep
         self._dx_steps = p2.x() - p1.x()
         self.slope_box = SciNotationDoubleSpinBox(); self.rate_box = SciNotationDoubleSpinBox()
+        # Room for a full scientific-notation value plus spin buttons, so text
+        # is never clipped and the buttons keep their normal size.
+        for _box in (self.slope_box, self.rate_box):
+            _text_width = _box.fontMetrics().horizontalAdvance("-1.2345678901e-123")
+            _box.setMinimumWidth(_text_width + 48)
+            _box.setKeyboardTracking(False)
         initial_slope = (p2.y() - p1.y()) / self._dx_steps if self._dx_steps != 0 else 0
         for box, val in [(self.slope_box, initial_slope), (self.rate_box, 0)]: box.setRange(-1e9, 1e9); box.setSingleStep(max(1e-5, abs(val) * 0.02))
         self.slope_box.setValue(initial_slope); self.slope_box.valueChanged.connect(self._slope_changed); self.rate_box.valueChanged.connect(self._rate_changed); self._slope_changed(initial_slope)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self._on_accept); buttons.rejected.connect(self.reject)
         layout = QFormLayout(self)
         y_unit = parent.get_y_unit() if parent else "ε"
         slope_label = f"Slope ({y_unit}/step):"
@@ -260,12 +338,22 @@ class SlopeEditDialog(QDialog):
     def _slope_changed(self, val): self.rate_box.blockSignals(True); dx_time = self._dx_steps * self._timestep; self.rate_box.setValue(val * self._dx_steps / dx_time if dx_time != 0 else 0); self.rate_box.blockSignals(False); self.slope_box.setSingleStep(max(1e-5, abs(val) * 0.02))
     def _rate_changed(self, val): self.slope_box.blockSignals(True); dx_time = self._dx_steps * self._timestep; self.slope_box.setValue(val * dx_time / self._dx_steps if self._dx_steps != 0 else 0); self.slope_box.blockSignals(False); self.rate_box.setSingleStep(max(1e-5, abs(val) * 0.02))
     def get_slope(self): return self.slope_box.value()
+    def _on_accept(self):
+        # Commit typed text, but never re-parse already formatted display
+        # text: the .6e display holds fewer digits than the value, so parsing
+        # it back would silently truncate precision (and the cross-linked
+        # boxes would bounce the truncation back and forth).
+        for _box in (self.slope_box, self.rate_box):
+            if _box.lineEdit().text() != _box.textFromValue(_box.value()):
+                _box.interpretText()
+                break
+        self.accept()
 
 class TimeEditDialog(QDialog):
     def __init__(self, step, timestep, max_step, parent=None):
         super().__init__(parent); self.setWindowTitle("Edit Time"); self._timestep = timestep
         self.step_box = QSpinBox(); self.step_box.setRange(0, max_step); self.step_box.setValue(int(step)); self.step_box.setSingleStep(max(1, int(step*0.02) if step > 0 else 1))
-        self.time_box = QDoubleSpinBox(); self.time_box.setRange(0, max_step * timestep); self.time_box.setValue(step * timestep); self.time_box.setDecimals(3); self.time_box.setSuffix(" s"); self.time_box.setSingleStep(max(0.01, self.time_box.value()*0.02) if self.time_box.value() > 0 else 0.01)
+        self.time_box = TrimDoubleSpinBox(); self.time_box.setRange(0, max_step * timestep); self.time_box.setValue(step * timestep); self.time_box.setSuffix(" s"); self.time_box.setSingleStep(max(0.01, self.time_box.value()*0.02) if self.time_box.value() > 0 else 0.01)
         self.step_box.valueChanged.connect(self._step_changed); self.time_box.valueChanged.connect(self._time_changed)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
         layout = QFormLayout(self); layout.addRow("Time Step:", self.step_box); layout.addRow("Time (s):", self.time_box); layout.addWidget(buttons)
@@ -280,7 +368,7 @@ class CoordinateDialog(QDialog):
         self.setWindowTitle("Set Time and Temperature" if is_temp_mode else "Set Coordinates")
         self._index = index  # Store the index
         self.step_box = QSpinBox(); self.step_box.setRange(0, max_step); self.step_box.setValue(int(step)); self.step_box.setSingleStep(max(1, int(step*0.02) if step > 0 else 1))
-        self.strain_box = QDoubleSpinBox(); self.strain_box.setRange(min_strain, max_strain); self.strain_box.setValue(strain); self.strain_box.setDecimals(4); self.strain_box.setSingleStep(max(0.01, abs(strain)*0.02 if strain != 0 else 0.01))
+        self.strain_box = TrimDoubleSpinBox(); self.strain_box.setRange(min_strain, max_strain); self.strain_box.setValue(strain); self.strain_box.setSingleStep(max(0.01, abs(strain)*0.02 if strain != 0 else 0.01))
         if index == 0:
             self.step_box.setEnabled(False)
             self.strain_box.setEnabled(is_temp_mode)
@@ -350,15 +438,13 @@ class AmplitudeEditDialog(QDialog):
         
         layout = QFormLayout(self)
         
-        self.amplitude_box = QDoubleSpinBox()
+        self.amplitude_box = TrimDoubleSpinBox()
         self.amplitude_box.setRange(0.0, max(abs(min_strain), abs(max_strain)))
-        self.amplitude_box.setDecimals(6)
         self.amplitude_box.setValue(amplitude)
         self.amplitude_box.setSingleStep(0.01)
         
-        self.peak_box = QDoubleSpinBox()
+        self.peak_box = TrimDoubleSpinBox()
         self.peak_box.setRange(min_strain, max_strain)
-        self.peak_box.setDecimals(6)
         self.peak_box.setValue(self._peak_value)
         self.peak_box.setSingleStep(0.01)
         
@@ -481,6 +567,7 @@ class LateralContractDialog(QDialog):
 # --- Main Graph Widget ---
 class GraphWidget(QWidget):
     dataChanged = pyqtSignal()
+    commitPoint = pyqtSignal()  # user commit points for undo tracking only
     handleInserted = pyqtSignal(int)
     handleDeleted = pyqtSignal(int)
     def __init__(self, parent=None):
@@ -791,6 +878,10 @@ class GraphWidget(QWidget):
             t = max(0, min(1, QPointF.dotProduct(w, v) / l2))
             if (pos - (p1_w + t * v)).manhattanLength() < 5: return i
         return None
+    def _ordered_clickable_regions(self):
+        # Handle value labels paint on top of slope labels, so they win
+        # hit-testing too. Stable sort keeps every other priority as-is.
+        return sorted(self._clickable_regions, key=lambda r: 0 if r[1] in ("y_val", "x_val") else 1)
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -895,7 +986,9 @@ class GraphWidget(QWidget):
                     painter.setPen(STYLE_TEXT_PRIMARY)
                 painter.setFont(QFont("Arial", 10, QFont.Weight.Bold)); painter.drawText(y_rect, y_text)
                 self._clickable_regions.append((y_rect, "y_val", i))
-                step_text, time_text = f"{p_data.x():.0f}", f"({p_data.x() * self._timestep:.2f}{self._time_unit})"
+                t_str = f"{p_data.x() * self._timestep:.2f}".rstrip('0').rstrip('.')
+                sep = " " if self._time_unit else ""
+                step_text, time_text = f"{p_data.x():.0f}", f"({t_str}{sep}{self._time_unit})"
                 step_rect = QRectF(fm.boundingRect(step_text).adjusted(-4,0,4,0)); step_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 18))
                 time_rect = QRectF(fm.boundingRect(time_text)); time_rect.moveCenter(QPointF(p_w.x(), self.height() - self.padding['bottom'] + 34))
                 if i in self._locked_x_ticks:
@@ -1403,7 +1496,7 @@ class GraphWidget(QWidget):
         elif event.button() == Qt.MouseButton.RightButton:
             # Handle right-click for locking/unlocking x-axis ticks, y-value labels, and slope segments
             pos = event.position()
-            for region, type, index in self._clickable_regions:
+            for region, type, index in self._ordered_clickable_regions():
                 if region.contains(pos):
                     if type == "slope":
                         # Slope locking is handled exactly once, in contextMenuEvent.
@@ -1425,6 +1518,7 @@ class GraphWidget(QWidget):
                             self._locked_y_labels.add(index)
                     self.update()
                     self.dataChanged.emit()
+                    self.commitPoint.emit()
                     return
 
     def mouseMoveEvent(self, event):
@@ -1983,11 +2077,12 @@ class GraphWidget(QWidget):
             
         # Clear all dragging state to ensure no further changes happen after release
         self._dragged_handle_index, self._dragged_segment_index, self._drag_start_pos_widget, self._drag_axis_lock, self._dragged_amplitude_handle_index = None, None, None, None, None
+        self.commitPoint.emit()
         self.dataChanged.emit()
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             # 1. Check if a clickable region (slope, x_val, y_val) is hit
-            for region, type, index in self._clickable_regions:
+            for region, type, index in self._ordered_clickable_regions():
                 if region.contains(event.position()):
                     self._handle_direct_edit(type, index)
                     return
@@ -2056,7 +2151,7 @@ class GraphWidget(QWidget):
         pos_f = QPointF(event.pos())
         
         # 1. Check clickable regions first (Slope Labels, Axis Labels)
-        for region, type, index in self._clickable_regions:
+        for region, type, index in self._ordered_clickable_regions():
             if region.contains(pos_f):
                 if type == "slope":
                     # Immediately toggle fixed slope state (no context menu)
@@ -2078,6 +2173,7 @@ class GraphWidget(QWidget):
                 if idx in self._locked_y_labels: self._locked_y_labels.remove(idx)
                 else: self._locked_y_labels.add(idx)
                 self.update()
+                self.commitPoint.emit()
             fix_y_action.triggered.connect(toggle_y_lock)
             
             # Fix Time Step (X)
@@ -2088,6 +2184,7 @@ class GraphWidget(QWidget):
                 if idx in self._locked_x_ticks: self._locked_x_ticks.remove(idx)
                 else: self._locked_x_ticks.add(idx)
                 self.update()
+                self.commitPoint.emit()
             fix_x_action.triggered.connect(toggle_x_lock)
 
             if 0 < idx < len(self.points_norm) - 1: menu.addAction("Delete Handle", lambda: self._delete_handle(idx))
@@ -2131,6 +2228,7 @@ class GraphWidget(QWidget):
         dialog = LateralContractDialog(current_overrides, study_settings, self)
         if dialog.exec():
             new_overrides = dialog.get_overrides()
+            self.commitPoint.emit()
             if new_overrides:
                 self.segments[seg_idx]['lateral_overrides'] = new_overrides
             else:
@@ -2155,6 +2253,7 @@ class GraphWidget(QWidget):
 
         self.update()
         self.dataChanged.emit()
+        self.commitPoint.emit()
 
     def _change_segment_type(self, seg_idx, new_type):
         seg = self.segments[seg_idx]
@@ -2166,6 +2265,7 @@ class GraphWidget(QWidget):
         # And "Of course, graphically, the red highlighting... should then be translatable"
         
         self.segments[seg_idx]['type'] = new_type
+        self.commitPoint.emit()
         
         if is_fixed:
              # Calculate parameters to match the target slope
@@ -2309,6 +2409,7 @@ class GraphWidget(QWidget):
             
         self.update()
         self.dataChanged.emit()
+        self.commitPoint.emit()
 
     def _get_unit_wave_excursions(self, scheme, num_cycles):
         """
@@ -2384,6 +2485,7 @@ class GraphWidget(QWidget):
         dialog = InsertSineDialog(self)
         if dialog.exec():
             params = dialog.get_parameters()
+            self.commitPoint.emit()
             seg_idx = self._context_menu_segment_index
             if seg_idx is not None:
                 # 1. Get existing points
@@ -2447,6 +2549,7 @@ class GraphWidget(QWidget):
         dialog = SinePropertiesDialog(segment_info, self)
         if dialog.exec():
             new_params = dialog.get_parameters()
+            self.commitPoint.emit()
             self.segments[seg_idx] = {
                 'type': 'sine',
                 'num_cycles': new_params['num_cycles'],
@@ -2563,6 +2666,7 @@ class GraphWidget(QWidget):
             dialog = TimeEditDialog(p_data.x(), self._timestep, self._max_steps, self);
             if not dialog.exec(): return
             p_data.setX(float(dialog.get_step()))
+            self.commitPoint.emit()
             # A locked segment keeps its slope, so its new length moves the far endpoint.
             self.points_norm[index] = self._data_to_norm(p_data)
             self._apply_fixed_slope_chain(index, p_data.y())
@@ -2571,6 +2675,7 @@ class GraphWidget(QWidget):
             dialog = SlopeEditDialog(*self.get_data_points()[index:index+2], self._timestep, self._time_unit, self)
             if dialog.exec():
                 self._apply_slope_from_dialog(index, dialog.get_slope())
+                self.commitPoint.emit()
                 self._sort_points(); self.update(); self.dataChanged.emit()
             return
         elif type == "amplitude_label":
@@ -2600,6 +2705,7 @@ class GraphWidget(QWidget):
                 dialog = AmplitudeEditDialog(y_center, current_amplitude, self._min_strain, self._max_strain, scheme, self)
                 if dialog.exec():
                     new_amp = dialog.get_amplitude()
+                    self.commitPoint.emit()
                     self.segments[index]['amplitude'] = new_amp
                     self.update()
                     self.dataChanged.emit()
@@ -2644,6 +2750,7 @@ class GraphWidget(QWidget):
         dialog = CoordinateDialog(index, p_data.x(), p_data.y(), self._max_steps, self._min_strain, self._max_strain, self)
         if dialog.exec():
             step, strain = dialog.get_coordinates()
+            self.commitPoint.emit()
             # For the first point, always force step to 0
             if index == 0:
                 step = 0
@@ -2704,6 +2811,7 @@ class GraphWidget(QWidget):
 
             self.update()
             self.dataChanged.emit()
+            self.commitPoint.emit()
 
     def _resolve_dragged_handle_x(self, i, raw_x):
         """Final X (data coordinates) for the handle currently being dragged.
@@ -3220,8 +3328,8 @@ class StudyWidget(QWidget):
         layout.setSpacing(2)
         controls_layout = QHBoxLayout()
         self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
-        self.min_strain_spinbox = QDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-0.999999, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setDecimals(3); self.min_strain_spinbox.setKeyboardTracking(False)
-        self.max_strain_spinbox = QDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(-1e9, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setDecimals(3); self.max_strain_spinbox.setKeyboardTracking(False)
+        self.min_strain_spinbox = TrimDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-0.999999, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setKeyboardTracking(False)
+        self.max_strain_spinbox = TrimDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(-1e9, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setKeyboardTracking(False)
 
         # Make the Min/Max Strain fields shorter (20% shorter)
         self.min_strain_spinbox.setMaximumWidth(120)
@@ -3466,6 +3574,9 @@ class StudyWidget(QWidget):
         self.max_steps_spinbox.editingFinished.connect(self._update_graph_controls)
         self.min_strain_spinbox.editingFinished.connect(self._update_graph_controls)
         self.max_strain_spinbox.editingFinished.connect(self._update_graph_controls)
+        self.max_steps_spinbox.valueChanged.connect(self._schedule_undo_save)
+        self.min_strain_spinbox.valueChanged.connect(self._schedule_undo_save)
+        self.max_strain_spinbox.valueChanged.connect(self._schedule_undo_save)
 
         self.min_strain_spinbox.lineEdit().editingFinished.connect(self._min_strain_cleared)
         self.max_strain_spinbox.lineEdit().editingFinished.connect(self._max_strain_cleared)
@@ -3557,6 +3668,8 @@ class StudyWidget(QWidget):
         dialog = PresetDialog(self._last_scheme, self._last_staircase_params, self._last_cyclic_params, self._last_sinusoidal_params, max_steps, self)
         if dialog.exec():
             scheme, params = dialog.get_parameters()
+            self._schedule_undo_save()
+            self._schedule_undo_save()
             self._last_scheme = scheme
             if scheme == "Staircase Loading":
                 direction = params['direction']
@@ -3627,7 +3740,7 @@ class StudyWidget(QWidget):
         self.redo_button.clicked.connect(self.redo)
 
         # Use a single connection for all change events to prevent duplicate recordings
-        self.graph_widget.dataChanged.connect(self._schedule_undo_save)
+        self.graph_widget.commitPoint.connect(self._schedule_undo_save)
         
         # Timer to debounce undo saves
         self._undo_debounce_timer = QTimer()
@@ -3679,6 +3792,12 @@ class StudyWidget(QWidget):
             'max_steps': self.max_steps_spinbox.value(),
             'min_strain': self.min_strain_spinbox.value(),
             'max_strain': self.max_strain_spinbox.value(),
+            'locked_x': sorted(self.graph_widget._locked_x_ticks),
+            'locked_y': sorted(self.graph_widget._locked_y_labels),
+            'fixed_slopes': sorted(self.graph_widget._fixed_segments),
+            'locked_x': sorted(self.graph_widget._locked_x_ticks),
+            'locked_y': sorted(self.graph_widget._locked_y_labels),
+            'fixed_slopes': sorted(self.graph_widget._fixed_segments),
         }
 
     def set_undo_state(self, state):
@@ -3689,6 +3808,12 @@ class StudyWidget(QWidget):
         self.max_steps_spinbox.setValue(state['max_steps'])
         self.min_strain_spinbox.setValue(state['min_strain'])
         self.max_strain_spinbox.setValue(state['max_strain'])
+        self.graph_widget._locked_x_ticks = set(state.get('locked_x', []))
+        self.graph_widget._locked_y_labels = set(state.get('locked_y', []))
+        self.graph_widget._fixed_segments = set(state.get('fixed_slopes', []))
+        self.graph_widget._locked_x_ticks = set(state.get('locked_x', []))
+        self.graph_widget._locked_y_labels = set(state.get('locked_y', []))
+        self.graph_widget._fixed_segments = set(state.get('fixed_slopes', []))
 
         self.max_steps_spinbox.blockSignals(False)
         self.min_strain_spinbox.blockSignals(False)
@@ -4259,7 +4384,9 @@ class StudyWidget(QWidget):
     def _update_custom_commands_height(self):
         """Update the height of the custom commands text field based on content."""
         # Calculate the required height based on number of lines
-        line_count = self.custom_commands_text.document().lineCount()
+        # Empty document reports 0 lines: clamp to 1 so the field never
+        # collapses below its one-line minimum height.
+        line_count = max(1, self.custom_commands_text.document().lineCount())
         font_height = self.custom_commands_text.fontMetrics().lineSpacing()
         
         # Use consistent padding of 18px to account for borders and margins

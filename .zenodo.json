@@ -1,0 +1,37 @@
+{
+  "upload_type": "software",
+  "title": "LAMMPSdeformer",
+  "description": "A desktop GUI for building LAMMPS molecular dynamics input scripts for deformation and temperature-profile studies. Strain or temperature profiles are drawn interactively on a graph as linear ramps or sine segments and converted into LAMMPS instructions upon script generation, bundled into a complete simulation package. One or more studies each define a loading profile, deformation axis, and lateral or thermal ensemble; and the output settings specify which dump and thermo quantities, strains, stresses, and running averages are logged. Generated packages contain atom data and potential files, LAMMPS input scripts, local run scripts for Linux, Windows, or macOS, a SLURM job script with automatic walltime checkpointing and resubmission, and a session file that stores the run configuration.<br>Source code: <a href=\"https://github.com/LukasLaubert/LAMMPSdeformer\">https://github.com/LukasLaubert/LAMMPSdeformer</a>",
+  "license": "MIT",
+  "access_right": "open",
+  "creators": [
+    {
+      "name": "Laubert, Lukas",
+      "affiliation": "Friedrich-Alexander-Universität Erlangen-Nürnberg",
+      "orcid": "0009-0009-4524-2621"
+    }
+  ],
+  "contributors": [
+    {
+      "name": "Pfaller, Sebastian",
+      "type": "Supervisor",
+      "affiliation": "Friedrich-Alexander-Universität Erlangen-Nürnberg",
+      "orcid": "0000-0001-8577-5048"
+    }
+  ],
+  "keywords": [
+    "LAMMPS",
+    "molecular dynamics",
+    "deformation simulation",
+    "strain curves",
+    "temperature profiles",
+    "lateral contraction",
+    "time averaging",
+    "input script generation",
+    "graphical user interface",
+    "SLURM",
+    "bulk submission",
+    "checkpointing",
+    "job resubmission"
+  ]
+}
