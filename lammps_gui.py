@@ -996,25 +996,30 @@ class SystemSetWidget(QWidget):
 
         # Header Row (Before)
         header_before = QHBoxLayout()
-        self.use_potential_before = QCheckBox("Include potential commands")
+
+        source_layout_before = QHBoxLayout()
+        source_layout_before.setContentsMargins(0, 0, 0, 0)
+        source_layout_before.setSpacing(2)
+        self.use_potential_before = QCheckBox("Include potential commands from")
         # Removed checkbox bold styling to keep it clean, bolding the label instead
         self.use_potential_before.setChecked(False)
         self.use_potential_before.stateChanged.connect(lambda s: self.toggle_potential_settings(s, "before"))
         self.use_potential_before.stateChanged.connect(self._on_potential_changed)
 
-        header_before.addWidget(self.use_potential_before)
+        source_layout_before.addWidget(self.use_potential_before)
         
         label_before = QLabel("before")
         label_before.setStyleSheet("font-weight: bold;")
-        header_before.addWidget(label_before)
-        
-        header_before.addWidget(QLabel("reading atom data from"))
         
         self.potential_source_before = QComboBox()
         self.potential_source_before.addItems(["file", "text"])
         self.potential_source_before.currentTextChanged.connect(lambda s: self.update_potential_visibility(s, "before"))
         self.potential_source_before.currentTextChanged.connect(self._on_potential_changed)
-        header_before.addWidget(self.potential_source_before)
+        source_layout_before.addWidget(self.potential_source_before)
+        header_before.addLayout(source_layout_before)
+        header_before.addSpacing(3)
+        header_before.addWidget(label_before)
+        header_before.addWidget(QLabel("reading atom data"))
         
         header_before.addStretch()
         self.sync_potential_before = QCheckBox("Sync across tabs")
@@ -1055,24 +1060,29 @@ class SystemSetWidget(QWidget):
 
         # Header Row (After)
         header_after = QHBoxLayout()
-        self.use_potential_after = QCheckBox("Include potential commands")
+
+        source_layout_after = QHBoxLayout()
+        source_layout_after.setContentsMargins(0, 0, 0, 0)
+        source_layout_after.setSpacing(2)
+        self.use_potential_after = QCheckBox("Include potential commands from")
         self.use_potential_after.setChecked(False)
         self.use_potential_after.stateChanged.connect(lambda s: self.toggle_potential_settings(s, "after"))
         self.use_potential_after.stateChanged.connect(self._on_potential_changed)
 
-        header_after.addWidget(self.use_potential_after)
+        source_layout_after.addWidget(self.use_potential_after)
         
         label_after = QLabel("after")
         label_after.setStyleSheet("font-weight: bold;")
-        header_after.addWidget(label_after)
-        
-        header_after.addWidget(QLabel("reading atom data from"))
         
         self.potential_source_after = QComboBox()
         self.potential_source_after.addItems(["file", "text"])
         self.potential_source_after.currentTextChanged.connect(lambda s: self.update_potential_visibility(s, "after"))
         self.potential_source_after.currentTextChanged.connect(self._on_potential_changed)
-        header_after.addWidget(self.potential_source_after)
+        source_layout_after.addWidget(self.potential_source_after)
+        header_after.addLayout(source_layout_after)
+        header_after.addSpacing(3)
+        header_after.addWidget(label_after)
+        header_after.addWidget(QLabel("reading atom data"))
         
         header_after.addStretch()
         self.sync_potential_after = QCheckBox("Sync across tabs")
@@ -1592,12 +1602,12 @@ class LAMMPSdeformerGui(QMainWindow):
 
         # --- Global Settings (Below the Tabs) ---
         
-        # Create a horizontal layout for the three widgets
+        # Create a horizontal layout for the four widgets
         settings_layout = QHBoxLayout()
         
         # Basic LAMMPS settings
         basic_group = InfoGroupBox("Basic LAMMPS Settings", "atom_style")
-        basic_layout = QFormLayout()
+        basic_layout = QHBoxLayout()
         
         self.atom_style_combo = QComboBox()
         self.atom_style_combo.addItems(["atomic", "bond", "molecular", "full", "charge", "dipole"])
@@ -1605,7 +1615,8 @@ class LAMMPSdeformerGui(QMainWindow):
         
         atom_style_label = QLabel("Atom Style:")
         
-        basic_layout.addRow(atom_style_label, self.atom_style_combo)
+        basic_layout.addWidget(atom_style_label)
+        basic_layout.addWidget(self.atom_style_combo, 1)
         basic_group.setLayout(basic_layout)
         basic_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
@@ -1652,55 +1663,55 @@ class LAMMPSdeformerGui(QMainWindow):
         timestep_group.setLayout(timestep_layout)
         timestep_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
-        # Add all three widgets to the horizontal layout
-        settings_layout.addWidget(basic_group)
-        settings_layout.addWidget(units_group)
-        settings_layout.addWidget(timestep_group)
+        # First three columns (boundary column added below)
+        settings_layout.addWidget(basic_group, 1)
+        settings_layout.addWidget(units_group, 1)
+        settings_layout.addWidget(timestep_group, 1)
         
-        # Add the horizontal layout to the scroll layout
-        scroll_layout.addLayout(settings_layout)
-
         # Boundary conditions
         boundary_group = InfoGroupBox("Boundary Conditions", "boundary")
         main_boundary_layout = QVBoxLayout()
         boundary_layout = QHBoxLayout()
 
         # X Boundary
-        x_layout = QVBoxLayout()
-        x_label = QLabel("X Boundary:")
+        x_layout = QHBoxLayout()
+        x_label = QLabel("X:")
         self.boundary_x_combo = QComboBox()
         self.boundary_x_combo.addItems(["p", "f", "s", "m"])
         self.boundary_x_combo.setCurrentText("p")
         self.boundary_x_combo.setToolTip("X boundary condition: p=periodic, f=fixed, s=shrink, m=shrink-wrap")
         x_layout.addWidget(x_label)
-        x_layout.addWidget(self.boundary_x_combo)
-        boundary_layout.addLayout(x_layout)
+        x_layout.addWidget(self.boundary_x_combo, 1)
+        boundary_layout.addLayout(x_layout, 1)
 
         # Y Boundary
-        y_layout = QVBoxLayout()
-        y_label = QLabel("Y Boundary:")
+        y_layout = QHBoxLayout()
+        y_label = QLabel("Y:")
         self.boundary_y_combo = QComboBox()
         self.boundary_y_combo.addItems(["p", "f", "s", "m"])
         self.boundary_y_combo.setCurrentText("p")
         self.boundary_y_combo.setToolTip("Y boundary condition: p=periodic, f=fixed, s=shrink, m=shrink-wrap")
         y_layout.addWidget(y_label)
-        y_layout.addWidget(self.boundary_y_combo)
-        boundary_layout.addLayout(y_layout)
+        y_layout.addWidget(self.boundary_y_combo, 1)
+        boundary_layout.addLayout(y_layout, 1)
 
         # Z Boundary
-        z_layout = QVBoxLayout()
-        z_label = QLabel("Z Boundary:")
+        z_layout = QHBoxLayout()
+        z_label = QLabel("Z:")
         self.boundary_z_combo = QComboBox()
         self.boundary_z_combo.addItems(["p", "f", "s", "m"])
         self.boundary_z_combo.setCurrentText("p")
         self.boundary_z_combo.setToolTip("Z boundary condition: p=periodic, f=fixed, s=shrink, m=shrink-wrap")
         z_layout.addWidget(z_label)
-        z_layout.addWidget(self.boundary_z_combo)
-        boundary_layout.addLayout(z_layout)
+        z_layout.addWidget(self.boundary_z_combo, 1)
+        boundary_layout.addLayout(z_layout, 1)
         
         main_boundary_layout.addLayout(boundary_layout)
         boundary_group.setLayout(main_boundary_layout)
-        scroll_layout.addWidget(boundary_group)
+        settings_layout.addWidget(boundary_group, 1)
+
+        # Add the horizontal layout to the scroll layout
+        scroll_layout.addLayout(settings_layout)
 
         # Energy Minimization
         minimization_group = InfoGroupBox("Energy Minimization", "min_style", additional_docs=[("minimize", False)])

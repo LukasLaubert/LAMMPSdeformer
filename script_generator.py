@@ -1284,8 +1284,9 @@ class LAMMPSdeformerGenerator:
             if is_unix:
                 exec_path = os.path.join(root_simulation_dir, "local_run_all.sh")
                 lines = ["#!/bin/bash", "echo 'Starting LAMMPS simulations...'", ""]
-                command_prefix = "gnome-terminal -- bash -c '"
-                command_suffix = "; exec bash'"
+                # Parallel background jobs (&) + wait
+                command_prefix = ""
+                command_suffix = " &"
             else:
                 exec_path = os.path.join(root_simulation_dir, "local_run_all.bat")
                 lines = ["@echo off", "echo Starting LAMMPS simulations...", ""]
@@ -1311,6 +1312,9 @@ class LAMMPSdeformerGenerator:
                     f"cd ../../",
                     ""
                 ])
+
+            if is_unix:
+                lines.extend(["wait", "", "echo 'All simulations finished.'"])
 
             with open(exec_path, 'w', newline='\n') as f:
                 f.write("\n".join(lines))
