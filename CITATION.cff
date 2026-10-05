@@ -18,16 +18,35 @@ license: MIT
 repository-code: "https://github.com/LukasLaubert/LAMMPSdeformer"
 url: "https://github.com/LukasLaubert/LAMMPSdeformer"
 keywords:
+  - LAMMPSdeformer
   - LAMMPS
   - molecular dynamics
-  - deformation simulation
-  - strain curves
-  - temperature profiles
-  - lateral contraction
-  - time averaging
+  - LAMMPS input scripts
+  - LAMMPS input
   - input script generation
+  - deformation simulation
+  - deformation
+  - strain loading
+  - strain curves
+  - tensile deformation
+  - shear deformation
+  - volume contraction
+  - lateral contraction
+  - plane strain
+  - plane stress
+  - uniaxial strain
+  - uniaxial stress
+  - stress-strain
+  - temperature simulation
+  - temperature profiles
+  - thermo output
+  - trajectory output
+  - time averaging
   - graphical user interface
   - SLURM
+  - job submission
   - bulk submission
   - checkpointing
   - job resubmission
+  - Python
+  - PyQt

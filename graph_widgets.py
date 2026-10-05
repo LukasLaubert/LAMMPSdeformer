@@ -86,8 +86,17 @@ class TrimDoubleSpinBox(QDoubleSpinBox):
             except ValueError:
                 continue
         return repr(value)
+    def valueFromText(self, text):
+        try:
+            return parse_decimal(_strip_affixes(self, text))
+        except ValueError:
+            return self.value()
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if event.reason() != Qt.FocusReason.MouseFocusReason:
+            _select_numeric_part(self)
     def validate(self, text, pos):
-        s = text.strip()
+        s = _strip_affixes(self, text)
         # In-progress typing (sign, trailing exponent letter/separator)
         # stays editable instead of having keystrokes swallowed.
         if not s or s in ('-', '+') or s[-1] in ('e', 'E', ',', '.') or s[-2:] in ('e-', 'E-', 'e+', 'E+'):
@@ -97,6 +106,29 @@ class TrimDoubleSpinBox(QDoubleSpinBox):
             return (QValidator.State.Acceptable, text, pos)
         except ValueError:
             return (QValidator.State.Invalid, text, pos)
+
+def _strip_affixes(box, text):
+    s = str(text).strip()
+    if box.prefix() and s.startswith(box.prefix()):
+        s = s[len(box.prefix()):].strip()
+    if box.suffix() and s.endswith(box.suffix()):
+        s = s[:-len(box.suffix())].strip()
+    return s
+
+def _select_numeric_part(box):
+    le = box.lineEdit()
+    text = le.text()
+    start = len(box.prefix()) if box.prefix() and text.startswith(box.prefix()) else 0
+    end = len(text)
+    if box.suffix() and text.endswith(box.suffix()):
+        end -= len(box.suffix())
+    le.setSelection(start, max(0, end - start))
+
+class TrimSpinBox(QSpinBox):
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if event.reason() != Qt.FocusReason.MouseFocusReason:
+            _select_numeric_part(self)
 
 # --- Professional Style & Data ---
 STYLE_BACKGROUND = QColor("#FFFFFF"); STYLE_FRAME = QColor("#ADB5BD"); STYLE_LINE = QColor("#007BFF"); STYLE_HANDLE = QColor("#007BFF")
@@ -3327,7 +3359,7 @@ class StudyWidget(QWidget):
         layout.setContentsMargins(5,5,5,5)
         layout.setSpacing(2)
         controls_layout = QHBoxLayout()
-        self.max_steps_spinbox = QSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
+        self.max_steps_spinbox = TrimSpinBox(); self.max_steps_spinbox.setPrefix("Max Steps: "); self.max_steps_spinbox.setRange(1, 2147483647); self.max_steps_spinbox.setValue(100); self.max_steps_spinbox.setKeyboardTracking(False)
         self.min_strain_spinbox = TrimDoubleSpinBox(); self.min_strain_spinbox.setPrefix("Min Strain: "); self.min_strain_spinbox.setRange(-0.999999, 1e9); self.min_strain_spinbox.setValue(0.0); self.min_strain_spinbox.setKeyboardTracking(False)
         self.max_strain_spinbox = TrimDoubleSpinBox(); self.max_strain_spinbox.setPrefix("Max Strain: "); self.max_strain_spinbox.setRange(-1e9, 1e9); self.max_strain_spinbox.setValue(1.0); self.max_strain_spinbox.setKeyboardTracking(False)
 
@@ -3560,7 +3592,6 @@ class StudyWidget(QWidget):
         self._last_sinusoidal_params = {'equilibration_steps': 0, 'num_cycles': 4.0, 'relax_factor': 0.0, 'scheme': 'Alternating (tensile start)'}
         self._last_scheme = "Staircase Loading"
 
-        self._is_mode_switching = False
         self._undo_stacks = {'Deformation': [], 'Temperature': []}
         self._redo_stacks = {'Deformation': [], 'Temperature': []}
         self._mode_states = {}
@@ -3611,45 +3642,22 @@ class StudyWidget(QWidget):
     def _update_graph_controls(self):
         old_max_steps = getattr(self.graph_widget, "_max_steps", None)
         max_steps = self.max_steps_spinbox.value()
-        min_val = self.min_strain_spinbox.value()
-        max_val = self.max_strain_spinbox.value()
 
         self.min_strain_spinbox.blockSignals(True)
         self.max_strain_spinbox.blockSignals(True)
 
-        # Set ranges based on mode
         if self.mode == 'Deformation':
             self.min_strain_spinbox.setRange(-0.999999, 1e9)
             self.max_strain_spinbox.setRange(-1e9, 1e9)
-        else:  # Temperature
+        else:
             self.min_strain_spinbox.setRange(0.001, 1e9)
             self.max_strain_spinbox.setRange(0.001, 1e9)
 
-        if not self._is_mode_switching:
-            # Apply value corrections only when not mode switching
-            if self.mode == 'Deformation':
-                if min_val > 0:
-                    self.min_strain_spinbox.setValue(-min_val)
-                if min_val <= -1:
-                    self.min_strain_spinbox.setValue(-0.999)
-                if max_val < 0:
-                    self.max_strain_spinbox.setValue(-max_val)
-            else:  # Temperature
-                if min_val < 0.001:
-                    self.min_strain_spinbox.setValue(0.001)
-                if max_val < 0.001:
-                    self.max_strain_spinbox.setValue(0.001)
-
-        # Re-read values after potential changes
-        current_min = self.min_strain_spinbox.value()
-        current_max = self.max_strain_spinbox.value()
-
-        if current_min >= current_max:
-            if not self._is_mode_switching:
-                if self.mode == 'Temperature':
-                    self.max_strain_spinbox.setValue(current_min + 1.0)
-                else:
-                    self.min_strain_spinbox.setValue(round(current_max - 0.01, 3))
+        if self.min_strain_spinbox.value() > self.max_strain_spinbox.value():
+            if self.sender() is self.max_strain_spinbox:
+                self.max_strain_spinbox.setValue(self.min_strain_spinbox.value())
+            else:
+                self.min_strain_spinbox.setValue(self.max_strain_spinbox.value())
 
         self.min_strain_spinbox.blockSignals(False)
         self.max_strain_spinbox.blockSignals(False)
@@ -3954,6 +3962,10 @@ class StudyWidget(QWidget):
         max_steps = state.get('max_steps', 100)
         min_strain = state.get('min_strain', 0.0)
         max_strain = state.get('max_strain', 1.0)
+        if min_strain is None:
+            min_strain = 0.0
+        if max_strain is None or max_strain < min_strain:
+            max_strain = min_strain
         self.max_steps_spinbox.setValue(max_steps)
         self.min_strain_spinbox.setValue(min_strain)
         self.max_strain_spinbox.setValue(max_strain)
@@ -4022,15 +4034,18 @@ class StudyWidget(QWidget):
         self.graph_widget.set_max_values(max_steps, min_strain, max_strain)
 
         # 5. Load graph data
-        self.graph_widget._fixed_segments = set(state.get('fixed_segments', []))
-        self.graph_widget.segments = copy.deepcopy(state.get('segments', [{'type': 'line'} for _ in range(len(state.get('data_points', [])) - 1)]))
+        self.graph_widget._fixed_segments = set(state.get('fixed_segments', []) or [])
+        _segments = state.get('segments', None)
+        if not isinstance(_segments, list):
+            _segments = [{'type': 'line'} for _ in range(len(state.get('data_points', []) or []) - 1)]
+        self.graph_widget.segments = copy.deepcopy(_segments)
         
-        data_points_list = state.get('data_points', [])
+        data_points_list = state.get('data_points', []) or []
         if not data_points_list and 'points' in state:
-            data_points_list = state.get('points', [])
+            data_points_list = state.get('points', []) or []
 
         if not data_points_list and 'points_norm' in state:
-            points_norm = state.get('points_norm', [])
+            points_norm = state.get('points_norm', []) or []
             self.graph_widget.points_norm = [QPointF(p[0], p[1]) if isinstance(p, list) else QPointF(p.x(), p.y()) for p in points_norm]
         else:
             data_points = [QPointF(p[0], p[1]) for p in data_points_list]
@@ -4294,7 +4309,6 @@ class StudyWidget(QWidget):
         # 2. Switch mode
         self.mode = mode
         self.graph_widget.set_mode(mode) # Ensure graph widget mode is updated
-        self._is_mode_switching = True  # Flag to prevent control updates during transition
 
         # 3. Restore state or initialize defaults
         if mode in self._mode_states:
@@ -4378,8 +4392,6 @@ class StudyWidget(QWidget):
 
         self.dataChanged.emit()
         self.graph_widget.update()
-
-        self._is_mode_switching = False
 
     def _update_custom_commands_height(self):
         """Update the height of the custom commands text field based on content."""

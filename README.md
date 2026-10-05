@@ -20,7 +20,7 @@ Long cluster runs checkpoint themselves and resume automatically before the wall
 
 - Python 3.9 or newer (tested with 3.12)
 - PyQt6:
-  - **Ubuntu / Debian:** `sudo apt install python3-pyqt6` (or alternatively via venv and the following command)
+  - **Ubuntu / Debian:** `sudo apt install python3-pyqt6` (or alternatively via `venv` and the macOS/Win command:)
   - **macOS / Windows:** `pip install -r requirements.txt`
 - LAMMPS 30Mar2026 or newer to run the generated scripts (due to the `flip` keyword in `fix nvt/npt/nph`).
 
@@ -118,7 +118,8 @@ The simulation stops whenever the next chunk outlasts the remaining job time and
 
 ## All settings safe
 
-LAMMPSdeformer writes a safety `.json` session backup every 30 seconds and on app closing.
+LAMMPSdeformer writes a safety `.json` session backup every 30 seconds and on crashes.
+If the app did not close cleanly, the backup is offered for restore on the next start.
 Use **Save/Load Configuration** (bottom bar) to name and save a session file to a custom file path.
 On simulation input generation, a `LAMMPSdeformer_settings.json` is created (can be renamed) to reload or share the exact run settings.
 

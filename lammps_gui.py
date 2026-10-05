@@ -28,7 +28,7 @@ try:
                                 QDialogButtonBox, QToolTip, QFrame, QSizePolicy, QItemDelegate,
                                 QListWidget, QStyle, QLayout, QInputDialog, QMenu)
     from PyQt6.QtCore import (Qt, QSettings, pyqtSignal, QThread, QTimer, QUrl, QSize, QPointF, 
-                             QRect, QPoint, QMimeData, QObject, QEvent)
+                             QRect, QPoint, QMimeData, QObject, QEvent, QStandardPaths)
     from PyQt6.QtGui import (QIcon, QDesktopServices, QCursor, QPalette, QColor, QPixmap, 
                             QPainter, QFont, QDrag, QAction, QStandardItemModel, QStandardItem, QValidator)
     
@@ -1216,7 +1216,9 @@ class SystemSetWidget(QWidget):
         self.system_path_edit.setText(state.get("system_path", ""))
         
         # Extensions
-        self.data_file_extensions = state.get("data_file_extensions", [".data"])
+        self.data_file_extensions = state.get("data_file_extensions", [".data"]) or [".data"]
+        if isinstance(self.data_file_extensions, str):
+            self.data_file_extensions = [x.strip() for x in self.data_file_extensions.split(",") if x.strip()] or [".data"]
         while self.chips_layout.count():
             item = self.chips_layout.takeAt(0)
             if item.widget(): item.widget().deleteLater()
@@ -1499,8 +1501,8 @@ class LAMMPSdeformerGui(QMainWindow):
         # Create bottom buttons
         self.create_bottom_buttons()
         
-        # Load saved settings
         self.load_settings()
+        self._maybe_offer_emergency_restore()
 
         # Connect main tab widget switch to handle dynamic resizing of system tab widget
         self.tab_widget.currentChanged.connect(self._on_main_tab_changed)
@@ -1526,15 +1528,111 @@ class LAMMPSdeformerGui(QMainWindow):
         # Call original exception handler
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
     
+    def _emergency_file_path(self):
+        """Per-user crash-backup path (app-data dir, not the shared temp dir)."""
+        try:
+            base = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppDataLocation)
+        except Exception:
+            base = ""
+        if not base:
+            base = os.path.join(os.path.expanduser("~"), ".LAMMPSdeformer")
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception:
+            base = tempfile.gettempdir()
+        return os.path.join(base, "emergency_save.json")
+
+    @staticmethod
+    def _pid_is_alive(pid):
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0 or pid == os.getpid():
+            return pid == os.getpid()
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError as e:
+            import errno
+            if getattr(e, "errno", None) in (errno.ESRCH, errno.EINVAL):
+                return False
+            return True
+        except Exception:
+            return True
+
     def emergency_save(self):
-        """Emergency save of current settings"""
+        """Emergency save of current settings (crash-recovery backup)."""
         try:
             config = self.collect_config(for_saving=True)
-            emergency_file = os.path.join(tempfile.gettempdir(), "lammps_gui_emergency_save.json")
-            with open(emergency_file, 'w') as f:
-                json.dump(config, f, indent=2)
+            payload = {"pid": os.getpid(), "config": config}
+            with open(self._emergency_file_path(), 'w', encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
         except Exception as e:
             pass
+
+    def _discard_emergency_file(self):
+        try:
+            os.remove(self._emergency_file_path())
+        except OSError:
+            pass
+
+    def _maybe_offer_emergency_restore(self):
+        """Offer restore if a backup from an unclean shutdown exists."""
+        try:
+            path = self._emergency_file_path()
+        except Exception:
+            return
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, 'r', encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            self._discard_emergency_file()
+            return
+        if isinstance(payload, dict) and isinstance(payload.get("config"), dict):
+            config = payload["config"]
+            owner_pid = payload.get("pid")
+        elif isinstance(payload, dict):
+            config = payload
+            owner_pid = None
+        else:
+            self._discard_emergency_file()
+            return
+        if (owner_pid is not None and int(owner_pid) != os.getpid()
+                and self._pid_is_alive(owner_pid)):
+            return
+        try:
+            mtime = time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(os.path.getmtime(path)))
+        except OSError:
+            mtime = "unknown time"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Unsaved Work Found")
+        box.setText("Found unsaved work from a previous session "
+                    f"(saved {mtime}).\nThe application may not have closed properly.")
+        box.setInformativeText("Restore it? Choosing Discard keeps the current settings.")
+        restore_btn = box.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(restore_btn)
+        box.exec()
+        if box.clickedButton() == restore_btn:
+            try:
+                self.apply_config(config)
+                QMessageBox.information(self, "Restored",
+                                        "The unsaved work has been restored.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error",
+                                     f"Could not restore the backup: {e}")
+                return
+        self._discard_emergency_file()
     
     def closeEvent(self, event):
         """Handle window close event - save all settings"""
@@ -1543,8 +1641,9 @@ class LAMMPSdeformerGui(QMainWindow):
             print("Settings saved successfully")
         except Exception as e:
             print(f"Error saving settings on close: {e}")
-        
-        # Accept the close event
+        # Clean close: drop the backup so its absence signals "no crash".
+        self._discard_emergency_file()
+
         event.accept()
 
     def _on_main_tab_changed(self, index):
@@ -3603,7 +3702,7 @@ class LAMMPSdeformerGui(QMainWindow):
     def read_units_from_data_file(self, data_file):
         """Read units from LAMMPS data file"""
         try:
-            with open(data_file, 'r') as f:
+            with open(data_file, 'r', encoding="utf-8", errors="replace") as f:
                 # Read the first line which typically contains the units information
                 first_line = f.readline().strip()
                 
@@ -3638,7 +3737,7 @@ class LAMMPSdeformerGui(QMainWindow):
     def read_atom_style_from_data_file(self, data_file):
         """Read atom style from LAMMPS data file"""
         try:
-            with open(data_file, 'r') as f:
+            with open(data_file, 'r', encoding="utf-8", errors="replace") as f:
                 # Look for the "Atoms # <atom_style>" line in the file
                 for line in f:
                     line = line.strip()
@@ -5149,7 +5248,8 @@ class LAMMPSdeformerGui(QMainWindow):
         return config
     
     def load_settings(self):
-        """Load settings from QSettings"""
+        """Load settings from QSettings. Returns False if restore failed."""
+        ok = True
         try:
             # Set batch loading flag for deformation tab widget if it exists to optimize performance
             if hasattr(self, 'deformation_tab_widget'):
@@ -5164,6 +5264,8 @@ class LAMMPSdeformerGui(QMainWindow):
                     system_sets_list = []
             else:
                 system_sets_list = system_sets_data
+            if not isinstance(system_sets_list, list):
+                system_sets_list = []
 
             if system_sets_list:
                 self.update_system_sets(len(system_sets_list))
@@ -5185,9 +5287,16 @@ class LAMMPSdeformerGui(QMainWindow):
                 # Fallback to single system settings
                 self.update_system_sets(1)
                 if self.system_sets_tab_widget.count() > 0:
+                    _ext_raw = self.settings.value("system/data_file_extensions", ".data")
+                    if _ext_raw is None:
+                        _ext_list = [".data"]
+                    elif isinstance(_ext_raw, (list, tuple)):
+                        _ext_list = [str(x) for x in _ext_raw] or [".data"]
+                    else:
+                        _ext_list = [x.strip() for x in str(_ext_raw).split(",") if x.strip()] or [".data"]
                     fallback_state = {
                         "system_path": self.settings.value("system/system_path", ""),
-                        "data_file_extensions": self.settings.value("system/data_file_extensions", ".data").split(","),
+                        "data_file_extensions": _ext_list,
                         "use_potential_file": self.settings.value("system/use_potential_file", False, type=bool),
                         "potential_file": self.settings.value("system/potential_file", ""),
                         "potential_source": self.settings.value("system/potential_source", "file"),
@@ -5225,8 +5334,14 @@ class LAMMPSdeformerGui(QMainWindow):
             self.export_bonds_checkbox.setChecked(self.settings.value("output/export_bonds", False, type=bool))
 
             # Trajectory Items
-            trj_items_str = self.settings.value("output/trj_output_items", "id type x y z vx vy vz")
-            self.traj_selector.set_items(trj_items_str.split())
+            trj_items_raw = self.settings.value("output/trj_output_items", "id type x y z vx vy vz")
+            if trj_items_raw is None:
+                trj_items = []
+            elif isinstance(trj_items_raw, (list, tuple)):
+                trj_items = [str(x) for x in trj_items_raw]
+            else:
+                trj_items = str(trj_items_raw).split()
+            self.traj_selector.set_items(trj_items)
 
             self.enable_thermo.setChecked(self.settings.value("output/enable_thermo", True, type=bool))
             self.thermo_freq_spinbox.setValue(self.settings.value("output/thermo_freq", 100, type=int))
@@ -5252,12 +5367,27 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.thermo_freq_spinbox.setValue(thermo_target_n)
 
             # Thermo Items (Merge standard + strains + stresses)
-            thermo_std = self.settings.value("output/thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density").split()
+            # Empty lists read back as None from QSettings IniFormat (Linux),
+            # so guard every list read against None here.
+            thermo_raw = self.settings.value("output/thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
+            if thermo_raw is None:
+                thermo_std = []
+            elif isinstance(thermo_raw, (list, tuple)):
+                thermo_std = [str(x) for x in thermo_raw]
+            else:
+                thermo_std = str(thermo_raw).split()
 
             def get_list(key):
                 val = self.settings.value(key, [])
-                if isinstance(val, str): return [x.strip() for x in val.split(',') if x.strip()]
-                return val
+                if val is None:
+                    return []
+                if isinstance(val, str):
+                    if ',' in val:
+                        return [x.strip() for x in val.split(',') if x.strip()]
+                    return [x for x in val.split() if x]
+                if isinstance(val, (list, tuple)):
+                    return [str(x).strip() for x in val if str(x).strip()]
+                return []
 
             strains = get_list("output/eng_strains")
             stresses = get_list("output/cauchy_stresses")
@@ -5407,19 +5537,33 @@ class LAMMPSdeformerGui(QMainWindow):
                 self._current_thermo_mode_text = self.thermo_mode_combo.currentText()
 
         except Exception as e:
+            import traceback
             print(f"Error loading settings: {e}")
+            traceback.print_exc()
+            ok = False
 
         main_tab_index = self.settings.value("gui/active_main_tab_index", 0, type=int)
         if 0 <= main_tab_index < self.tab_widget.count():
             self.tab_widget.setCurrentIndex(main_tab_index)
             
         self._update_output_tab_visibility()
+        return ok
 
     def apply_chips_from_settings(self, settings_key, chips_layout, all_items_list, combo_box, remove_slot):
         """Helper to load chip selections from QSettings."""
         selected_items = self.settings.value(settings_key, [])
-        if isinstance(selected_items, str): # QSettings can return a string
-            selected_items = [q.strip() for q in selected_items.split(',') if q.strip()]
+        if selected_items is None:
+            # Linux IniFormat reads a saved empty list back as None.
+            selected_items = []
+        elif isinstance(selected_items, str): # QSettings can return a string
+            if ',' in selected_items:
+                selected_items = [q.strip() for q in selected_items.split(',') if q.strip()]
+            else:
+                selected_items = [q for q in selected_items.split() if q]
+        elif isinstance(selected_items, tuple):
+            selected_items = list(selected_items)
+        elif not isinstance(selected_items, list):
+            selected_items = []
 
         while chips_layout.count():
             child = chips_layout.takeAt(0)
@@ -5824,7 +5968,7 @@ class LAMMPSdeformerGui(QMainWindow):
                 system = config["system"]
                 
                 # Handle system sets (new multi-set format)
-                if "system_sets" in system and system["system_sets"]:
+                if isinstance(system.get("system_sets"), list) and system["system_sets"]:
                     # Clear existing sets
                     while self.system_sets_tab_widget.count() > 0:
                         self._close_system_tab(0, force=True)
@@ -5890,8 +6034,14 @@ class LAMMPSdeformerGui(QMainWindow):
                 self.export_bonds_checkbox.setChecked(output.get("export_bonds", False))
 
                 # Trajectory Items
-                trj_items_str = output.get("trj_output_items", "id type x y z vx vy vz")
-                self.traj_selector.set_items(trj_items_str.split())
+                trj_items_raw = output.get("trj_output_items", "id type x y z vx vy vz")
+                if trj_items_raw is None:
+                    trj_items = []
+                elif isinstance(trj_items_raw, (list, tuple)):
+                    trj_items = [str(x) for x in trj_items_raw]
+                else:
+                    trj_items = str(trj_items_raw).split()
+                self.traj_selector.set_items(trj_items)
 
                 self.enable_thermo.setChecked(output.get("enable_thermo", True))
                 self.thermo_freq_spinbox.setValue(output.get("thermo_freq", 100))
@@ -5922,14 +6072,26 @@ class LAMMPSdeformerGui(QMainWindow):
                     self.thermo_freq_spinbox.setValue(thermo_target_n)
 
                 # Thermo Items (Merge standard + strains + stresses)
-                thermo_std = output.get("thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density").split()
-                strains = output.get("eng_strains", [])
-                stresses = output.get("cauchy_stresses", [])
-                self.thermo_selector.set_items(thermo_std + strains + stresses)
+                thermo_raw = output.get("thermo_style", "step etotal pe ke temp press pxx pyy pzz pxy pxz pyz lx ly lz density")
+                if thermo_raw is None:
+                    thermo_std = []
+                elif isinstance(thermo_raw, (list, tuple)):
+                    thermo_std = [str(x) for x in thermo_raw]
+                else:
+                    thermo_std = str(thermo_raw).split()
+                strains = output.get("eng_strains", []) or []
+                stresses = output.get("cauchy_stresses", []) or []
+                if isinstance(strains, str):
+                    strains = [strains]
+                if isinstance(stresses, str):
+                    stresses = [stresses]
+                self.thermo_selector.set_items(list(thermo_std) + list(strains) + list(stresses))
 
                 # Averaged Items
-                avg_items = output.get("averaged_quantities", [])
-                self.avg_selector.set_items(avg_items)
+                avg_items = output.get("averaged_quantities", []) or []
+                if isinstance(avg_items, str):
+                    avg_items = [avg_items]
+                self.avg_selector.set_items(list(avg_items))
 
                 # Explicitly update visibility and labels after setting items
                 self.update_avg_settings_visibility()
@@ -6082,7 +6244,13 @@ class LAMMPSdeformerGui(QMainWindow):
 
     def apply_chips_from_config(self, config_section, key, chips_layout, all_items_list, combo_box, remove_slot):
         """Helper to load chip selections from a config dictionary."""
-        selected_items = config_section.get(key, [])
+        selected_items = config_section.get(key, []) or []
+        if isinstance(selected_items, str):
+            selected_items = [selected_items]
+        elif isinstance(selected_items, tuple):
+            selected_items = list(selected_items)
+        elif not isinstance(selected_items, list):
+            selected_items = []
         
         while chips_layout.count():
             child = chips_layout.takeAt(0)
@@ -6123,6 +6291,8 @@ def main():
     """Main function to run the application"""
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+    app.setOrganizationName("LAMMPSdeformer")
+    app.setApplicationName("LAMMPSdeformer")
     
     # Create and show the main window
     window = LAMMPSdeformerGui()
