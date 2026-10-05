@@ -89,6 +89,12 @@ Strains are dimensionless; stresses come in the pressure unit of the selected un
 The `Average` row averages chosen quantities over time, keeping the sampling combination of `fix ave/time` valid.
 - **Trajectory output:** Also as `Frequency` or `Count`, letting you choose from all LAMMPS-available output quantities.
 
+<table>
+<tr>
+<td>💡 <strong>Hint:</strong> Simulation output generated using scripts from <strong>LAMMPSdeformer</strong> can be easily visualized and analyzed with <strong><a href="https://github.com/LukasLaubert/LMPvisualizer">LMPvisualizer</a></strong>.</td>
+</tr>
+</table>
+
 ### Tab 4: Job Submission
 
 - **Local runs:** Single-processor or multiprocessor; the OS choice decides whether you get a `.bat` or `.sh` run file.
